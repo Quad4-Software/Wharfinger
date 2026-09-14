@@ -126,9 +126,13 @@ channel. No SSH anywhere; the agent already proves possession.
       (resolve-vs-agent-address, wildcard probe, private-answer and
       ACME warnings), suggested records, conflict warnings when two
       apps claim one host; duplicates resolve to the lowest app id
-- [ ] WAF posture: reuse ravenguard edge policy blocks
-      (blocklists/allowlists, seccomp) as agent proxy config where
-      applicable
+- [x] WAF posture: agent proxy carries the applicable ravenguard
+      blocks: IP/UA blocklists and IP allowlists (file-backed, hot
+      reload on route sync), per-client-IP token-bucket rate limit,
+      8KB URL cap on top of the existing body/header caps. Detect/
+      challenge and process seccomp intentionally not ported (no
+      telemetry collected; a process-wide filter would break the
+      agent's docker/kubectl control)
 - [ ] UFW integration: agent detects docker/podman publishing ports
       that bypass ufw (the classic docker-iptables problem) and can
       apply/fix rules with an explicit opt-in command. Detection

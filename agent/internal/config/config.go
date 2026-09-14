@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -70,6 +71,15 @@ type Config struct {
 	// DNSHook is an executable run for DNS-01 challenges with argv
 	// <action> <domain> <token> <keyAuth>. Required for wildcards.
 	DNSHook string
+	// Edge WAF posture: operator-managed list files (one entry per
+	// line, # comments) and a per-client-IP rate limit. Blocked IPs
+	// and UA substrings get 403; allowlisted IPs skip only the rate
+	// limiter. The client IP is always the socket peer.
+	EdgeBlockIPs  string
+	EdgeAllowIPs  string
+	EdgeBlockUA   string
+	EdgeRate      float64 // requests/sec per client IP; <= 0 off
+	EdgeRateBurst int
 }
 
 func getenv(keys ...string) string {
@@ -124,6 +134,11 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&c.ACMEDir, "acme-dir", "", "ACME directory URL (default Let's Encrypt prod)")
 	fs.BoolVar(&c.ACMEStaging, "acme-staging", false, "use the Let's Encrypt staging directory")
 	fs.StringVar(&c.DNSHook, "dns-hook", "", "DNS-01 hook executable (required for wildcard certs)")
+	fs.StringVar(&c.EdgeBlockIPs, "edge-block-ips", "", "file of blocked client IPs/CIDRs (one per line)")
+	fs.StringVar(&c.EdgeAllowIPs, "edge-allow-ips", "", "file of client IPs/CIDRs exempt from rate limiting")
+	fs.StringVar(&c.EdgeBlockUA, "edge-block-ua", "", "file of blocked user-agent substrings (one per line)")
+	fs.Float64Var(&c.EdgeRate, "edge-rate", 0, "edge rate limit, requests/sec per client IP (0 disables)")
+	fs.IntVar(&c.EdgeRateBurst, "edge-rate-burst", 0, "edge rate limit burst size (defaults to edge-rate)")
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}
@@ -206,6 +221,29 @@ func Load(args []string) (Config, error) {
 	}
 	if v := getenv("WHARFINGER_AGENT_DNS_HOOK"); v != "" {
 		c.DNSHook = v
+	}
+	if v := getenv("WHARFINGER_AGENT_EDGE_BLOCK_IPS"); v != "" {
+		c.EdgeBlockIPs = v
+	}
+	if v := getenv("WHARFINGER_AGENT_EDGE_ALLOW_IPS"); v != "" {
+		c.EdgeAllowIPs = v
+	}
+	if v := getenv("WHARFINGER_AGENT_EDGE_BLOCK_UA"); v != "" {
+		c.EdgeBlockUA = v
+	}
+	if v := getenv("WHARFINGER_AGENT_EDGE_RATE"); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return c, fmt.Errorf("WHARFINGER_AGENT_EDGE_RATE: %w", err)
+		}
+		c.EdgeRate = f
+	}
+	if v := getenv("WHARFINGER_AGENT_EDGE_RATE_BURST"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return c, fmt.Errorf("WHARFINGER_AGENT_EDGE_RATE_BURST: %w", err)
+		}
+		c.EdgeRateBurst = n
 	}
 	if c.ACMEStaging && c.ACMEDir == "" {
 		c.ACMEDir = "https://acme-staging-v02.api.letsencrypt.org/directory"

@@ -186,6 +186,13 @@ func main() {
 			StateDir:   st.Dir(),
 			ACMEDir:    cfg.ACMEDir,
 			DNSHook:    cfg.DNSHook,
+			WAF: edge.PolicyConfig{
+				BlockIPs:  cfg.EdgeBlockIPs,
+				AllowIPs:  cfg.EdgeAllowIPs,
+				BlockUA:   cfg.EdgeBlockUA,
+				Rate:      cfg.EdgeRate,
+				RateBurst: cfg.EdgeRateBurst,
+			},
 		}, ec)
 		if eerr != nil {
 			log.Printf("edge: disabled: %v", eerr)

@@ -188,6 +188,16 @@ webauthn_origin`/`webauthn_rp_id` overrides
   app id deterministically (audit: deploy.view-gated read, bounded
   DNS-only lookups through the system resolver, no outbound connect to
   resolved IPs)
+- Edge WAF posture: the agent proxy now supports ravenguard-style
+  policy via -edge-block-ips/-edge-allow-ips/-edge-block-ua list files
+  (one entry per line, reloaded on every route sync) and a
+  per-client-IP rate limit (-edge-rate/-edge-rate-burst). Denied IPs
+  and UA substrings get 403, over-limit clients get 429 + Retry-After,
+  allowlisted IPs skip only the limiter, and the client IP is always
+  the socket peer. An 8KB request-target cap joins the existing body
+  and header caps; /edgez reports the loaded policy counts (audit:
+  ACME challenge path exempt, no regex in list parsing, limiter map
+  capped and swept)
 
 ### Fixed
 

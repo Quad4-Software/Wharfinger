@@ -19,8 +19,10 @@ const (
 	// challengePrefix is the HTTP-01 interception point: it is
 	// checked before any host routing so tokens are never proxied.
 	challengePrefix = "/.well-known/acme-challenge/"
-	// maxBodyBytes caps proxied request bodies.
+	// maxBodyBytes caps proxied request bodies; maxURLBytes caps the
+	// request target (RavenGuard protect block parity).
 	maxBodyBytes = 512 << 10
+	maxURLBytes  = 8 << 10
 	maxRoutes    = 200
 )
 
@@ -34,6 +36,8 @@ type Config struct {
 	StateDir   string // certs and account key live under <StateDir>/edge
 	ACMEDir    string // ACME directory URL; empty = Let's Encrypt prod
 	DNSHook    string // optional DNS-01 hook executable
+	// WAF lists and the rate limit; all fields optional.
+	WAF PolicyConfig
 }
 
 // Server is the agent-side reverse proxy: it owns the route table,
@@ -43,6 +47,7 @@ type Server struct {
 	client *Client
 	certs  *CertManager
 	table  atomic.Value // *RouteTable
+	waf    atomic.Value // *guard
 	poke   chan struct{}
 	// tlsPort is appended to redirect targets when ListenTLS is not
 	// the default :443 (e.g. ":8443" in tests or behind port maps).
@@ -67,6 +72,7 @@ func NewServer(cfg Config, client *Client) (*Server, error) {
 		solver = ExecSolver{Path: cfg.DNSHook}
 	}
 	s := &Server{cfg: cfg, client: client, poke: make(chan struct{}, 1)}
+	s.waf.Store(newGuard(LoadPolicy(cfg.WAF)))
 	if _, port, err := net.SplitHostPort(cfg.ListenTLS); err == nil && port != "443" {
 		s.tlsPort = ":" + port
 	}
@@ -201,6 +207,13 @@ func (s *Server) handler(secure bool) http.Handler {
 			s.certs.serveChallenge(w, r)
 			return
 		}
+		if len(r.URL.RequestURI()) > maxURLBytes {
+			http.Error(w, "uri too long", http.StatusRequestURITooLong)
+			return
+		}
+		if g, _ := s.waf.Load().(*guard); g != nil && !g.admit(w, r) {
+			return
+		}
 		if secure {
 			w.Header().Set("Strict-Transport-Security", "max-age=15552000")
 		}
@@ -227,6 +240,15 @@ func (s *Server) handler(secure bool) http.Handler {
 // applied table version, routes, and cert inventory.
 func (s *Server) serveDebug(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"certs": s.Certs()}
+	if g, _ := s.waf.Load().(*guard); g != nil && g.policy != nil {
+		out["waf"] = map[string]any{
+			"blockIps": len(g.policy.blockIPs),
+			"allowIps": len(g.policy.allowIPs),
+			"blockUa":  len(g.policy.blockUA),
+			"rate":     g.policy.rate,
+			"burst":    g.policy.burst,
+		}
+	}
 	if t := s.routes(); t != nil {
 		out["version"] = t.Version
 		out["routes"] = t.Routes
@@ -265,6 +287,7 @@ func (s *Server) sync(ctx context.Context) {
 		return // 304: unchanged
 	}
 	s.table.Store(t)
+	s.waf.Store(newGuard(LoadPolicy(s.cfg.WAF)))
 	log.Printf("edge: route table v%d applied (%d routes)", t.Version, len(t.Routes))
 	s.ensureTLS()
 }
