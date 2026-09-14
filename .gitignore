@@ -1,5 +1,7 @@
 node_modules
 build
+dist
+release-assets
 .svelte-kit
 .svelte-check
 .output

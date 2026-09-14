@@ -1,0 +1,44 @@
+version: 2
+
+project_name: wharfinger-agent
+
+builds:
+  - id: agent
+    dir: agent
+    main: ./cmd/wharfinger-agent
+    binary: wharfinger-agent
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/Quad4-Software/Wharfinger/agent/internal/collect.AgentVersion={{ .Tag }}
+
+# Raw binaries, not tarballs: install.sh downloads
+# wharfinger-agent-linux-<arch> straight off the release.
+archives:
+  - formats: [binary]
+    name_template: wharfinger-agent-{{ .Os }}-{{ .Arch }}
+
+checksum:
+  name_template: SHA256SUMS.txt
+  algorithm: sha256
+  # install.sh, the systemd unit, and the OpenRC script are staged into
+  # release-assets/ by the workflow so their hashes land in the same file.
+  extra_files:
+    - glob: ./release-assets/*
+
+release:
+  github:
+    owner: Quad4-Software
+    name: Wharfinger
+  extra_files:
+    - glob: ./release-assets/*
+
+changelog:
+  use: github
