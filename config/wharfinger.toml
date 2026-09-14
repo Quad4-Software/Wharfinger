@@ -1,0 +1,460 @@
+# Quad4 Software status page configuration.
+# Every field except [site].name and one [[services]] entry is optional.
+# Strings support ${ENV_VAR} and ${ENV_VAR:-fallback} interpolation.
+# Send SIGHUP to a running server to reload this file.
+
+[site]
+name = "Quad4 Software"
+# title defaults to "<name> Status"
+description = "Live status and uptime history for Quad4 Software services."
+url = "${SITE_URL:-https://status.quad4.io}"
+accent = "#10b981"
+# announcement = "We are investigating elevated API latency."
+# announcement_severity = "warning"  # info | warning | critical
+# logo_url = "/logo.svg"
+
+[page]
+refresh_seconds = 30   # client cache/poll cadence
+history_days = 90      # uptime bars
+
+[monitor]
+concurrency = 8
+default_interval_seconds = 60
+default_timeout_ms = 10000
+default_degraded_ms = 1500   # slower than this = "degraded"
+failure_threshold = 2        # consecutive failures before showing an outage
+recovery_threshold = 2       # consecutive successes before showing recovery
+retention_days = 400         # raw check retention in sqlite
+cert_warn_days = 14          # TLS certs expiring within this = degraded
+# user_agent = "status/1.0"
+# allow_link_local = false   # outbound checks/notify sends refuse
+                             # link-local targets (cloud metadata
+                             # endpoints) unless enabled; loopback and
+                             # RFC1918 are always allowed
+
+# Groups are implicit and rendered in order of first appearance.
+[[services]]
+id = "socket"
+name = "Socket"
+group = "Core"
+description = "Realtime WebSocket gateway"
+type = "tcp"
+host = "socket.quad4.io"
+port = 443
+tls = true                 # also validates the TLS cert and expiry
+interval_seconds = 30
+degraded_ms = 800
+
+[[services]]
+id = "chat"
+name = "Chat"
+group = "Core"
+description = "XMPP chat server"
+type = "tcp"
+host = "chat.quad4.io"
+port = 5222                # XMPP client-to-server
+
+[[services]]
+id = "dns"
+name = "DNS"
+group = "Core"
+type = "dns"
+host = "quad4.io"
+record_type = "A"
+
+[[services]]
+id = "push"
+name = "Push"
+group = "Platform"
+description = "ntfy notification server"
+type = "http"
+url = "https://push.quad4.io"
+expected_statuses = [200, 301, 302]
+
+[[services]]
+id = "todo"
+name = "Todo"
+group = "Platform"
+description = "Kaneo task tracking"
+type = "http"
+url = "https://todo.quad4.io"
+expected_statuses = [200, 301, 302]
+
+[[services]]
+id = "bugs"
+name = "Bug Tracking"
+group = "Platform"
+description = "Bugsink error monitoring"
+type = "http"
+url = "https://bugs.quad4.io"
+expected_statuses = [200, 301, 302]
+
+[[services]]
+id = "meshchatx"
+name = "MeshChatX"
+group = "Projects"
+description = "Decentralized chat over Reticulum"
+type = "http"
+url = "https://meshchatx.com"
+expected_statuses = [200]
+
+[[services]]
+id = "lxmfy"
+name = "LXMFy"
+group = "Projects"
+description = "Python LXMF bot framework docs"
+type = "http"
+url = "https://lxmfy.quad4.io"
+expected_statuses = [200]
+
+[[services]]
+id = "reticulum-go"
+name = "Reticulum-Go"
+group = "Projects"
+description = "Reticulum network stack for Go"
+type = "http"
+url = "https://reticulum-go.quad4.io"
+expected_statuses = [200]
+
+[[services]]
+id = "wharfinger-domain"
+name = "quad4.io domain"
+group = "Infrastructure"
+description = "DNS, TLS, DANE, security headers, and open ports"
+type = "domain"
+domain = "quad4.io"
+expected_open = [22, 25, 53, 80, 443, 465, 587, 993]
+
+# More check types:
+# http also supports: keyword = "text", keyword_absent = true,
+#   headers = { Authorization = "${TOKEN}" }, cert_check = false,
+#   cert_warn_days = 7
+# tcp also supports: tls = true (TLS handshake + cert monitoring)
+# dns: record_type = A | AAAA | CNAME | MX | TXT | NS
+# ping: bare host or IP reachability. Probes a list of TCP ports
+#   (no ICMP in rootless containers) and reports up when any accepts.
+# [[services]]
+# id = "node-eu-1"
+# name = "Node EU-1"
+# group = "Infrastructure"
+# type = "ping"
+# host = "203.0.113.10"
+# ports = [443, 80, 22]    # optional, this is the default
+# [[services]]
+# id = "db-primary"
+# name = "Database"
+# type = "tcp"
+# host = "198.51.100.7"
+# port = 5432              # ip:port checks need no extra config
+#
+# json: GET a URL, assert a dot path (a.b.0.c) exists or equals a
+# value. headers and expected_statuses work like http.
+# [[services]]
+# id = "api-health"
+# name = "API health"
+# type = "json"
+# url = "https://api.example.com/healthz"
+# json_path = "status"         # e.g. data.checks.0.ok
+# json_value = "ok"            # optional: compare stringified value
+# expected_statuses = [200]
+#
+# a2s: Source Engine / Steam server query (UDP). Reports server name,
+# map, and players/max in the check detail.
+# [[services]]
+# id = "cs2"
+# name = "CS2 match server"
+# type = "a2s"
+# host = "198.51.100.20"
+# port = 27015
+#
+# postgres/mysql/redis: raw-socket protocol pings. postgres sends a
+# StartupMessage (no auth, a refused connection is still "up" because
+# the server answered); mysql and redis read the greeting/PONG.
+# [[services]]
+# id = "pg"
+# name = "Postgres"
+# type = "postgres"
+# host = "198.51.100.30"
+# port = 5432            # mysql: 3306, redis: 6379
+# user = "monitor"       # postgres only, optional
+# database = "app"       # postgres only, optional
+#
+# rdap: domain registration expiry via the IANA RDAP bootstrap (with a
+#   verisign fallback for com/net). up when the domain
+# resolves past warn_days, degraded inside it, down past expiry.
+# [[services]]
+# id = "domain"
+# name = "example.com registration"
+# type = "rdap"
+# domain = "example.com"
+# warn_days = 14
+#
+# domain: composite domain health. Resolves A/AAAA (down when the
+#   name does not resolve), watches the :443 cert, scores six security
+#   headers on https://<domain>/, sweeps a TCP port list
+#   (expected_open flags drift as degraded), and validates published
+#   DANE TLSA records against the leaf certificate.
+# [[services]]
+# id = "site-domain"
+# name = "example.com health"
+# type = "domain"
+# domain = "example.com"
+# expected_open = [80, 443]   # optional; stray open ports degrade
+#
+# xmpp: opens a client stream and waits for <stream:features>.
+#   tls = true is direct TLS on connect (5223), not STARTTLS.
+# [[services]]
+# id = "xmpp"
+# name = "XMPP c2s"
+# type = "xmpp"
+# host = "198.51.100.40"
+# port = 5222
+# domain = "example.com"      # optional stream 'to'; defaults to host
+#
+# irc: registers a throwaway nick and waits for the 001 welcome
+#   numeric; a 433 nick-in-use reply still proves the server.
+# [[services]]
+# id = "irc"
+# name = "IRC network"
+# type = "irc"
+# host = "198.51.100.50"
+# port = 6697                 # tls defaults to true
+# nick = "statusmon"          # optional; random statXXXXXX otherwise
+#
+# websocket: HTTP upgrade handshake; up on 101 Switching Protocols.
+# [[services]]
+# id = "socket"
+# name = "Realtime socket"
+# type = "websocket"
+# url = "wss://example.com/ws"
+#
+# push: dead man's switch for cron jobs and batch pipelines. The job
+# calls its unique check-in URL (Admin -> Services -> copy icon) every
+# expected_interval_seconds; a missed interval + grace flips it down.
+# Never beaten reads as degraded, not down.
+# [[services]]
+# id = "nightly-backup"
+# name = "Nightly backup"
+# type = "push"
+# expected_interval_seconds = 86400
+# grace_seconds = 3600
+
+# SLO targets: per-service uptime objective over a rolling window.
+# Shows an error-budget bar and burn rate on the service card.
+# [[slos]]
+# service = "api"
+# target_percent = 99.9
+# window_days = 30
+
+# Manual incidents shown alongside auto-detected ones.
+# [[incidents]]
+# title = "Database failover"
+# severity = "major"           # minor | major
+# services = ["api"]
+# started_at = "2026-09-01T14:00:00Z"
+# resolved_at = "2026-09-01T15:30:00Z"
+# [[incidents.updates]]
+# at = "2026-09-01T14:20:00Z"
+# message = "Failover initiated, reads restored."
+
+# Maintenance windows mark matching services as "maintenance" and paint
+# fully-covered days in the uptime bars. Use start+end for a one-shot
+# window, or weekly+at+duration_minutes for a recurring one (times UTC).
+# [[maintenance]]
+# title = "Cluster upgrade"
+# description = "Rolling kernel update."
+# services = ["socket", "chat"]  # or ["all"]
+# start = "2026-09-20T02:00:00Z"
+# end = "2026-09-20T04:00:00Z"
+
+[[maintenance]]
+title = "Patch Tuesday"
+description = "Weekly OS and dependency updates across all services. Expect brief disruptions or restarts."
+services = ["all"]
+weekly = "tue"
+at = "02:00"
+duration_minutes = 120
+
+# Extra status pages live at /p/<slug> and show a filtered view of the
+# same data: services, incidents, and maintenance scoped to the list.
+# title is required; description and accent are optional overrides.
+# noindex = true keeps a page out of search engines (meta, x-robots-tag,
+# and a Disallow line in robots.txt).
+# [[pages]]
+# slug = "core"
+# title = "Core Infrastructure"
+# services = ["socket", "chat", "dns"]
+# [[pages]]
+# slug = "everything"
+# title = "All Systems"
+# services = ["all"]
+
+[[pages]]
+slug = "projects"
+title = "Projects"
+description = "Status for Quad4 open-source projects."
+services = ["meshchatx", "lxmfy", "reticulum-go"]
+
+[[links]]
+label = "MeshChatX"
+href = "https://meshchatx.com"
+
+# Admin panel. Multi-user panel for runtime edits: services, pages,
+# maintenance, incidents, links, notification targets, and these
+# settings can all be changed from the UI and persist as sqlite
+# overrides on top of this file.
+# enabled = false turns the whole panel off (routes 404).
+# WHARFINGER_ADMIN_ENABLED=false in the environment does the same and
+# cannot be re-enabled by a runtime override.
+# base_path moves the panel off /admin for obscurity; it must not
+# shadow /api, /badge, /favicon, /ingress, /p, /feed.xml, /healthz, or
+# /robots.txt.
+# allow_setup = false disables the first-run /setup account creation;
+# combine it with WHARFINGER_ADMIN_USERNAME/WHARFINGER_ADMIN_PASSWORD env
+# bootstrap or an invite-only flow.
+[admin]
+enabled = true
+# base_path = "/admin"
+session_ttl_hours = 12
+invite_ttl_hours = 72
+password_min_length = 12
+login_max_attempts = 5        # failures per ip+username before lockout
+login_lockout_minutes = 15
+allow_setup = true
+# Passkey (WebAuthn) relying-party overrides. Both default to the
+# request origin; set webauthn_origin when the panel is reached
+# through a different public origin, and webauthn_rp_id to a parent
+# domain to share passkeys across subdomains.
+# webauthn_origin = "https://status.example.com"
+# webauthn_rp_id = "example.com"
+
+# Outbound notifications on status transitions (down, degraded,
+# recovered), maintenance activation, manual incidents, and panel test
+# sends. Targets: ntfy, unifiedpush, slack, discord, teams, telegram,
+# gotify, pushover, or a generic JSON webhook.
+# Per-target events/services filters and a (target, service, event)
+# cooldown prevent notification storms.
+[notifications]
+enabled = true
+cooldown_seconds = 300   # min seconds between repeats per tuple
+timeout_ms = 8000
+retries = 1              # extra attempts after a failed delivery
+
+# [[notifications.targets]]
+# name = "ntfy-ops"
+# type = "ntfy"
+# url = "https://ntfy.sh/my-topic"        # or self-hosted ntfy
+# token = "${NTFY_TOKEN}"                 # tk_ token or user:pass
+# priority = "urgent"                     # min|low|default|high|urgent|1-5
+# tags = ["quad4"]
+# click_url = "https://status.quad4.io"
+# events = ["down", "recovered"]          # default: all events
+# services = ["socket", "chat"]           # default: ["all"]
+
+# [[notifications.targets]]
+# name = "unifiedpush-phone"
+# type = "unifiedpush"
+# url = "https://push.example.com/UP?token=abc"  # endpoint carries the secret
+
+# [[notifications.targets]]
+# name = "webhook-chat"
+# type = "webhook"
+# url = "https://chat.example.com/hooks/status"
+# token = "Bearer ${WEBHOOK_TOKEN}"       # sent as Authorization header
+# headers = { "X-Custom" = "1" }
+
+# [[notifications.targets]]               # slack/discord/teams look the
+# name = "slack-alerts"                   # same: an incoming webhook url
+# type = "slack"
+# url = "https://hooks.slack.com/services/${SLACK_HOOK}"
+
+# [[notifications.targets]]
+# name = "telegram-ops"
+# type = "telegram"
+# bot_token = "${TG_BOT_TOKEN}"           # from @BotFather
+# chat_id = "-1001234567890"
+
+# [[notifications.targets]]
+# name = "gotify-local"
+# type = "gotify"
+# url = "https://gotify.example.com"      # server base url
+# token = "${GOTIFY_APP_TOKEN}"           # application token
+# priority = "high"                       # mapped onto gotify 0-10
+
+# [[notifications.targets]]
+# name = "pushover-phone"
+# type = "pushover"
+# token = "${PUSHOVER_API_TOKEN}"         # application/api token
+# user = "${PUSHOVER_USER_KEY}"           # user or group key
+
+# Host metrics ingest for the Go agent (agent/). Register systems in
+# the panel under Systems; each gets a one-time bearer token. Agents
+# push JSON to POST /ingress, or keep a websocket open at /ingress/ws
+# (production server only) using the Beszel-style handshake: token ->
+# hub ed25519 signature -> machine fingerprint bind. GET /ingress/pubkey
+# exposes the hub public key for the agent KEY env var.
+# [ingress]
+# enabled = true
+# max_body_kb = 512          # payload size cap
+# sample_retention_days = 30 # graph history retention
+# online_seconds = 90        # last-seen window that counts as online
+# # Agent alerts route through [notifications] targets as
+# # down/degraded/recovered events; 0 disables each rule.
+# alert_offline_minutes = 10 # silent agent fires down, reporting fires recovered
+# alert_cpu_pct = 0          # e.g. 90: degraded at >=90, recovers below 80
+# alert_mem_pct = 0
+# alert_disk_pct = 0         # worst disk usage across mounts
+
+# OIDC sign-in for the panel (Pocket ID, Authelia, Authentik, Keycloak,
+# any spec-compliant provider with discovery + userinfo). Create an
+# OIDC client with redirect URI https://<host><admin.base_path>/api/auth/oidc/callback.
+# Roles come from group claims: admin_group/operator_group map members,
+# everyone else falls back to default_role ("deny" rejects the login;
+# any other value must name a role in the roles table).
+# External users are provisioned on first login (source = oidc) and
+# never get a local password.
+# [oidc]
+# enabled = true
+# issuer = "https://auth.quad4.io"
+# client_id = "status"
+# client_secret = "${OIDC_CLIENT_SECRET}"
+# scopes = "openid profile email groups"
+# button_label = "Sign in with Pocket ID"
+# admin_group = "status-admins"
+# operator_group = "status-viewers"
+# default_role = "deny"            # any role name, or "deny"
+# sync_profile = true              # refresh name+role on every login
+
+# LDAP password auth for the panel (OpenLDAP, Active Directory, lldap).
+# Direct bind verifies the password; the optional service-account
+# search resolves display name and memberOf groups for role mapping.
+# [ldap]
+# enabled = true
+# url = "ldaps://ldap.example.com:636"   # or ldap:// + starttls = true
+# starttls = false
+# bind_dn = "uid={username},ou=people,dc=example,dc=com"
+# search_bind_dn = "uid=status-ro,ou=service,dc=example,dc=com"
+# search_bind_password = "${LDAP_BIND_PASSWORD}"
+# search_base = "ou=people,dc=example,dc=com"
+# user_filter = "(uid={username})"
+# display_attr = "cn"
+# admin_group = "cn=status-admins,ou=groups,dc=example,dc=com"
+# operator_group = "cn=status-viewers,ou=groups,dc=example,dc=com"
+# default_role = "deny"            # any role name, or "deny"
+# timeout_ms = 8000
+
+# Error telemetry over the Sentry event protocol. One dsn works with
+# Sentry, GlitchTip, and Bugsink; all three accept the same envelope
+# endpoint. Unexpected server errors are reported with an errorId that
+# also appears on the error page; browser crashes from the error
+# boundary and client error hook relay through POST /api/telemetry so
+# the dsn never reaches the page. Set enabled = false or dsn = "" to
+# turn reporting off. Reported URLs are stripped of query strings.
+# Disabled by default: set enabled = true to opt in, and point dsn at
+# your own Sentry/GlitchTip/Bugsink project.
+[telemetry]
+enabled = false
+dsn = "https://e4312b8cd18c427c803fb19041285df8@bugs.quad4.io/4"
+environment = "production"
+client_reports = true   # forward browser crashes
+max_per_minute = 60     # event cap; duplicates always collapse
