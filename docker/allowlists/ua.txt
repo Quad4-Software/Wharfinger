@@ -1,0 +1,2 @@
+# Trusted User-Agent substrings that skip detect scoring and challenge.
+# Camo Asset Proxy

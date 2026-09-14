@@ -1,0 +1,95 @@
+# Convenience compose file; pulls the image CI builds, scans, and signs
+# on every push to master:
+#   docker compose -f docker/compose.yaml up -d
+#
+# Traffic flow: clients -> ravenguard (:8080, WAF/anti-bot) -> wharfinger:3000.
+# The app port is no longer published; ravenguard is the only edge.
+#
+# Required: set RG_CHALLENGE_SECRET (min 16 chars) in the environment or
+# a .env file next to this compose file before starting.
+#
+# To build from source instead, uncomment the build block:
+#   docker build -f docker/Dockerfile -t status .
+#
+# To bypass the WAF (e.g. local debugging), publish the app directly:
+#   docker compose -f docker/compose.yaml up -d status
+# after adding back a ports: '3000:3000' mapping on the wharfinger service.
+services:
+  wharfinger:
+    image: ghcr.io/quad4-software/wharfinger:latest
+    # build:
+    #   context: ..
+    #   dockerfile: docker/Dockerfile
+    expose:
+      - '3000'
+    environment:
+      # ravenguard terminates TLS and sets X-Forwarded-For; without
+      # this every client shares the proxy's address for rate limits
+      # and audit IPs.
+      WHARFINGER_TRUST_PROXY: ${WHARFINGER_TRUST_PROXY:-true}
+    volumes:
+      - ../config/wharfinger.toml:/etc/wharfinger/wharfinger.toml:ro
+      - wharfinger-data:/var/lib/wharfinger
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    # Optional: send SIGHUP after editing wharfinger.toml
+    #   docker kill -s HUP <container>
+
+  # Named volumes are root-owned by default; bootstrap them for the
+  # nonroot ravenguard UID before first start.
+  ravenguard-init:
+    image: busybox:musl
+    user: '0:0'
+    volumes:
+      - rg-admin-data:/data/admin
+      - rg-certs-data:/data/certs
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p /data/admin /data/certs
+        chown -R 65532:65532 /data
+    restart: on-failure
+
+  ravenguard:
+    image: ${RG_IMAGE:-ghcr.io/quad4-software/ravenguard:edge}
+    user: '65532:65532'
+    ports:
+      - '8080:8080'
+    volumes:
+      - ./ravenguard.toml:/config/ravenguard.toml:ro
+      - ./blocklists:/blocklists:ro
+      - ./allowlists:/allowlists:ro
+      - rg-admin-data:/data/admin
+      - rg-certs-data:/data/certs
+    environment:
+      # Required: HMAC secret for the challenge cookie (min 16 chars).
+      RG_CHALLENGE_SECRET: ${RG_CHALLENGE_SECRET:?set RG_CHALLENGE_SECRET to a random value of at least 16 characters}
+      RG_SANDBOX_MODE: ${RG_SANDBOX_MODE:-best_effort}
+      RG_ADMIN_ENABLED: 'false'
+      RG_TLS_MODE: ${RG_TLS_MODE:-off}
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=seccomp-ravenguard.json
+    depends_on:
+      wharfinger:
+        condition: service_started
+      ravenguard-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  wharfinger-data:
+  rg-admin-data:
+  rg-certs-data:

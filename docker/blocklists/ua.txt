@@ -1,0 +1,3 @@
+# One User-Agent substring or pattern per line. Reloaded every reload_interval.
+# sqlmap
+# masscan

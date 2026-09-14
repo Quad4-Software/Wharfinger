@@ -1,0 +1,127 @@
+# Coolify Docker Compose build pack file.
+#
+# Traffic flow:
+#   clients -> Coolify proxy (TLS) -> ravenguard (:8080, WAF/anti-bot)
+#     -> wharfinger:3000
+#
+# Setup:
+#   1. Add the repo as a resource, pick Build Pack = "Docker Compose".
+#   2. Base Directory = /, Docker Compose Location = /docker/compose.coolify.yaml
+#   3. SERVICE_URL_RAVENGUARD_8080 below makes Coolify generate a domain for
+#      the ravenguard service and route it to container port 8080. After
+#      the first save or deploy it shows up under Environment Variables
+#      and in the service's Domains field - set it to
+#      https://status.quad4.io (the generated wildcard URL works too).
+#      SITE_URL then carries the same value into site.url inside
+#      wharfinger.toml for canonical links and the RSS feed.
+#   4. Set RG_CHALLENGE_SECRET (min 16 chars) under Environment
+#      Variables before deploying; the stack refuses to start without it.
+#
+# The GHCR image is built, Trivy-scanned, and cosign-signed by CI on
+# every push to master, so a config commit redeploys by pulling
+# :latest once the publish run finishes. To build from source instead,
+# uncomment the build block. To live-edit the TOML, uncomment the bind
+# mount below and enable
+# Configuration > General > Preserve Repository During Deployment.
+services:
+  wharfinger:
+    image: ghcr.io/quad4-software/wharfinger:latest
+    # build:
+    #   context: ..
+    #   dockerfile: docker/Dockerfile
+    # No ports: block. Coolify's proxy handles inbound traffic and a
+    # published host port would bypass domain-based routing.
+    environment:
+      SITE_URL: ${SERVICE_URL_RAVENGUARD_8080}
+      # ${VAR:-default} creates editable variables under the resource's
+      # Environment Variables in Coolify, seeded with these values.
+      WHARFINGER_CONFIG: ${WHARFINGER_CONFIG:-/etc/wharfinger/wharfinger.toml}
+      WHARFINGER_DATA_DIR: ${WHARFINGER_DATA_DIR:-/var/lib/wharfinger}
+      # ravenguard terminates TLS and sets X-Forwarded-For; without
+      # this every client shares the proxy's address for rate limits
+      # and audit IPs.
+      WHARFINGER_TRUST_PROXY: ${WHARFINGER_TRUST_PROXY:-true}
+      # Optional: bootstrap the first admin non-interactively (only
+      # applies while the users table is empty).
+      # WHARFINGER_ADMIN_USERNAME: ${WHARFINGER_ADMIN_USERNAME}
+      # WHARFINGER_ADMIN_PASSWORD: ${WHARFINGER_ADMIN_PASSWORD}
+      # Optional: TOTP sealing key; a random file is generated in the
+      # data volume when unset.
+      # WHARFINGER_SECRET_KEY: ${WHARFINGER_SECRET_KEY}
+      HOST: ${HOST:-0.0.0.0}
+      PORT: ${PORT:-3000}
+    volumes:
+      - wharfinger-data:/var/lib/wharfinger
+      # Optional live config reload. Requires Preserve Repository During
+      # Deployment so the source file exists in the deployment directory.
+      # Reload with: docker kill -s HUP <container>
+      # - ../config/wharfinger.toml:/etc/wharfinger/wharfinger.toml:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # $$ escapes Compose interpolation so the container's own PORT applies.
+      test:
+        - CMD-SHELL
+        - wget -qO- "http://127.0.0.1:$${PORT:-3000}/healthz" >/dev/null 2>&1 || exit 1
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Named volumes are root-owned by default; bootstrap them for the
+  # nonroot ravenguard UID before first start.
+  ravenguard-init:
+    image: busybox:musl
+    user: '0:0'
+    volumes:
+      - rg-admin-data:/data/admin
+      - rg-certs-data:/data/certs
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p /data/admin /data/certs
+        chown -R 65532:65532 /data
+    restart: on-failure
+
+  ravenguard:
+    image: ${RG_IMAGE:-ghcr.io/quad4-software/ravenguard:edge}
+    user: '65532:65532'
+    environment:
+      # Magic variable: routes the generated Coolify domain to the WAF.
+      SERVICE_URL_RAVENGUARD_8080: /
+      # Required: HMAC secret for the challenge cookie (min 16 chars).
+      RG_CHALLENGE_SECRET: ${RG_CHALLENGE_SECRET:?set RG_CHALLENGE_SECRET to a random value of at least 16 characters}
+      RG_SANDBOX_MODE: ${RG_SANDBOX_MODE:-best_effort}
+      RG_ADMIN_ENABLED: 'false'
+    volumes:
+      - ./ravenguard.coolify.toml:/config/ravenguard.toml:ro
+      - ./blocklists:/blocklists:ro
+      - ./allowlists:/allowlists:ro
+      - rg-admin-data:/data/admin
+      - rg-certs-data:/data/certs
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=seccomp-ravenguard.json
+    depends_on:
+      wharfinger:
+        condition: service_started
+      ravenguard-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  wharfinger-data:
+  rg-admin-data:
+  rg-certs-data:

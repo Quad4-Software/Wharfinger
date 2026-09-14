@@ -1,0 +1,4 @@
+# Trusted client IPs/CIDRs that skip detect scoring and challenge.
+# Add uptime monitors, GitHub Camo ranges (badge embeds), and office
+# egress IPs here. Still subject to blocklists and rate limits.
+# 192.0.2.10
