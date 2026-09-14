@@ -1,0 +1,304 @@
+@import 'tailwindcss';
+
+/*
+ * Theme tokens. Rebrand by editing this block (and the matching hex map
+ * in src/lib/utils/status-style.ts, which feeds server-rendered SVGs).
+ * site.accent from wharfinger.toml overrides --color-accent at runtime via an
+ * inline custom property on the page wrapper.
+ */
+@theme {
+	--font-sans: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, sans-serif;
+	--font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, monospace;
+
+	/*
+	 * Layout breakpoint where the page can afford a second column. Below
+	 * this width everything stacks in a single column. Roughly: main
+	 * column ~48rem + incident rail ~18rem + gaps and padding.
+	 */
+	--breakpoint-rail: 72rem;
+
+	/* Surfaces and structure */
+	--color-bg: #07090d;
+	--color-raised: #0c1016;
+	--color-panel: #131922;
+	--color-edge: rgb(255 255 255 / 0.08);
+	--color-overlay: #ffffff; /* used only with opacity modifiers */
+
+	/* Text */
+	--color-fg: #e6edf3;
+	--color-muted: #97a3b1;
+	--color-faint: #5d6b7a;
+
+	/* Brand */
+	--color-accent: #10b981;
+
+	/* Status colors: base = fills/bars, -fg = text on dark surfaces */
+	--color-up: #34d399;
+	--color-up-fg: #6ee7b7;
+	--color-degraded: #fbbf24;
+	--color-degraded-fg: #fcd34d;
+	--color-partial: #fb923c;
+	--color-partial-fg: #fdba74;
+	--color-down: #f43f5e;
+	--color-down-fg: #fb7185;
+	--color-maint: #38bdf8;
+	--color-maint-fg: #7dd3fc;
+	--color-nodata: #3f4a5a;
+	--color-nodata-fg: #94a3b8;
+
+	/* Motion */
+	--animate-fade-in: fade-in 200ms ease-out both;
+	--animate-rise: rise 240ms ease-out both;
+
+	@keyframes fade-in {
+		from {
+			opacity: 0;
+		}
+		to {
+			opacity: 1;
+		}
+	}
+	@keyframes rise {
+		from {
+			opacity: 0;
+			transform: translateY(6px);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0);
+		}
+	}
+}
+
+html {
+	color-scheme: dark;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+	html {
+		scroll-behavior: smooth;
+	}
+}
+
+body {
+	background:
+		radial-gradient(1200px 500px at 50% -10%, rgb(56 189 248 / 0.06), transparent 60%),
+		radial-gradient(900px 400px at 85% 0%, rgb(52 211 153 / 0.05), transparent 55%), var(--color-bg);
+	color: var(--color-fg);
+	font-family: var(--font-sans);
+	font-feature-settings: 'cv11', 'ss01';
+	-webkit-font-smoothing: antialiased;
+	min-height: 100vh;
+}
+
+::selection {
+	background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+
+/* Visible keyboard focus for interactive elements. */
+:focus-visible {
+	outline: 2px solid var(--color-accent);
+	outline-offset: 2px;
+	border-radius: 4px;
+}
+
+/* Skip link: hidden until focused. */
+.skip-link {
+	position: absolute;
+	left: 1rem;
+	top: -3rem;
+	z-index: 50;
+	padding: 0.5rem 0.875rem;
+	border-radius: 0.5rem;
+	background: var(--color-panel);
+	color: var(--color-fg);
+	font-size: 0.8125rem;
+	text-decoration: none;
+	transition: top 150ms ease;
+}
+.skip-link:focus-visible {
+	top: 1rem;
+}
+
+/* Subtle top border glow for cards. */
+.card {
+	background: linear-gradient(
+		180deg,
+		color-mix(in srgb, var(--color-overlay) 3.5%, transparent),
+		color-mix(in srgb, var(--color-overlay) 1.5%, transparent)
+	);
+	border: 1px solid var(--color-edge);
+	border-radius: 0.875rem;
+	backdrop-filter: blur(6px);
+}
+
+.bar {
+	transition:
+		transform 120ms ease,
+		filter 120ms ease;
+	transform-origin: bottom;
+}
+.bar:hover {
+	transform: scaleY(1.15);
+	filter: brightness(1.35);
+}
+
+/* Toasts sit over arbitrary content: no backdrop blur, so the text
+   never picks up a glow from what is behind them. */
+.toast {
+	backdrop-filter: none;
+	background: var(--color-panel);
+}
+
+/* Countdown bar under toasts; duration is set inline per toast. */
+@keyframes toast-progress {
+	from {
+		transform: scaleX(1);
+	}
+	to {
+		transform: scaleX(0);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.bar {
+		transition: none;
+	}
+	.bar:hover {
+		transform: none;
+	}
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+	}
+}
+
+/* Admin panel form controls. */
+.input {
+	width: 100%;
+	border-radius: 0.5rem;
+	border: 1px solid var(--color-edge);
+	background: var(--color-raised);
+	padding: 0.5rem 0.75rem;
+	font-size: 0.875rem;
+	color: var(--color-fg);
+	outline: none;
+	transition: border-color 120ms ease;
+}
+.input::placeholder {
+	color: var(--color-faint);
+}
+.input:focus {
+	border-color: color-mix(in srgb, var(--color-accent) 60%, transparent);
+}
+select.input {
+	appearance: none;
+	background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2397a3b1' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+	background-repeat: no-repeat;
+	background-position: right 0.625rem center;
+	padding-right: 2rem;
+}
+textarea.input {
+	font-family: var(--font-mono);
+	font-size: 0.8125rem;
+	line-height: 1.55;
+}
+
+.btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.375rem;
+	border-radius: 0.5rem;
+	border: 1px solid var(--color-edge);
+	background: var(--color-panel);
+	padding: 0.5rem 0.875rem;
+	font-size: 0.8125rem;
+	font-weight: 500;
+	color: var(--color-fg);
+	cursor: pointer;
+	transition:
+		background 120ms ease,
+		border-color 120ms ease,
+		opacity 120ms ease;
+	white-space: nowrap;
+}
+.btn:hover {
+	background: color-mix(in srgb, var(--color-panel) 70%, var(--color-overlay) 8%);
+}
+.btn:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+.btn-primary {
+	background: var(--color-accent);
+	border-color: transparent;
+	color: #04140d;
+	font-weight: 600;
+}
+.btn-primary:hover {
+	background: color-mix(in srgb, var(--color-accent) 85%, #ffffff 10%);
+}
+.btn-danger {
+	background: transparent;
+	border-color: color-mix(in srgb, var(--color-down) 45%, transparent);
+	color: var(--color-down-fg);
+}
+.btn-danger:hover {
+	background: color-mix(in srgb, var(--color-down) 15%, transparent);
+}
+.btn-ghost {
+	background: transparent;
+	border-color: transparent;
+	color: var(--color-muted);
+}
+.btn-ghost:hover {
+	background: color-mix(in srgb, var(--color-overlay) 6%, transparent);
+	color: var(--color-fg);
+}
+.btn-sm {
+	padding: 0.3rem 0.6rem;
+	font-size: 0.75rem;
+}
+
+.chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.3rem;
+	border-radius: 999px;
+	border: 1px solid var(--color-edge);
+	padding: 0.15rem 0.6rem;
+	font-size: 0.7rem;
+	font-weight: 500;
+	color: var(--color-muted);
+}
+.chip-on {
+	border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+	background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+	color: var(--color-up-fg);
+}
+.chip-warn {
+	border-color: color-mix(in srgb, var(--color-degraded) 55%, transparent);
+	background: color-mix(in srgb, var(--color-degraded) 12%, transparent);
+	color: var(--color-degraded-fg);
+}
+.chip-down {
+	border-color: color-mix(in srgb, var(--color-down) 55%, transparent);
+	background: color-mix(in srgb, var(--color-down) 12%, transparent);
+	color: var(--color-down-fg);
+}
+.chip-muted {
+	border-color: var(--color-edge);
+	background: color-mix(in srgb, var(--color-panel) 60%, transparent);
+	color: var(--color-faint);
+}
+
+/* Thin scrollbars for expanded panels: standard properties, so
+   Firefox and Chrome both honor them without pseudo-element hacks. */
+.thin-scroll {
+	scrollbar-width: thin;
+	scrollbar-color: var(--color-panel) transparent;
+}

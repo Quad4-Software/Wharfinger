@@ -1,0 +1,18 @@
+# Supply-chain safe defaults.
+# minimumReleaseAge: refuse to install package versions published less than
+# 7 days ago (in minutes). This blocks the window in which most malicious
+# releases are caught and yanked.
+minimumReleaseAge: 10080
+# Fail hard if a dependency tries to run install/postinstall scripts that
+# are not explicitly allow-listed below.
+strictDepBuilds: true
+# Nothing in the dependency tree legitimately needs build scripts.
+# esbuild/rollup/lighthouse-style optional platform binaries ship as
+# optionalDependencies and do not require postinstall.
+onlyBuiltDependencies: []
+
+# cookie <0.7.0 ships in @sveltejs/kit's transitive tree and dependabot
+# cannot bump it; pin the fixed line. cookie 1.x/2.x renamed the
+# parse/serialize API SvelteKit imports, so stay on 0.7.x.
+overrides:
+  cookie: '0.7.2'

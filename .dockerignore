@@ -1,0 +1,17 @@
+node_modules
+build
+.svelte-kit
+.svelte-check
+coverage
+playwright-report
+test-results
+.git
+.github
+docker
+tests
+data
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.*

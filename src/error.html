@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en" class="dark">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="color-scheme" content="dark" />
+		<meta name="robots" content="noindex, nofollow" />
+		<title>%sveltekit.status% %sveltekit.error.message%</title>
+		<style>
+			body {
+				margin: 0;
+				min-height: 100vh;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				background: #07090d;
+				color: #e6edf3;
+				font-family:
+					ui-sans-serif,
+					system-ui,
+					-apple-system,
+					sans-serif;
+			}
+			.card {
+				max-width: 30rem;
+				margin: 0 1rem;
+				padding: 2rem;
+				text-align: center;
+				border: 1px solid rgb(255 255 255 / 0.08);
+				border-radius: 0.875rem;
+				background: #0c1016;
+			}
+			.code {
+				margin: 0;
+				font-family: ui-monospace, Menlo, monospace;
+				font-size: 0.875rem;
+				letter-spacing: 0.2em;
+				color: #5d6b7a;
+			}
+			h1 {
+				margin: 0.5rem 0 0;
+				font-size: 1.25rem;
+			}
+			.msg {
+				margin: 0.5rem 0 0;
+				font-size: 0.875rem;
+				color: #97a3b1;
+			}
+			a {
+				display: inline-block;
+				margin-top: 1.5rem;
+				padding: 0.5rem 0.875rem;
+				border-radius: 0.5rem;
+				background: #10b981;
+				color: #04140d;
+				font-size: 0.8125rem;
+				font-weight: 600;
+				text-decoration: none;
+			}
+		</style>
+	</head>
+	<body>
+		<main class="card">
+			<p class="code">%sveltekit.status%</p>
+			<h1>Something went wrong</h1>
+			<p class="msg">%sveltekit.error.message%</p>
+			<a href="/">Back to status</a>
+		</main>
+	</body>
+</html>
