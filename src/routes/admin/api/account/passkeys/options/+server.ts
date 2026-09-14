@@ -1,5 +1,5 @@
 import { generateRegistrationOptions } from '@simplewebauthn/server';
-import type { AuthenticatorTransportFuture } from '@simplewebauthn/server';
+import type { AuthenticatorTransport } from '@simplewebauthn/server';
 import type { RequestHandler } from './$types';
 import { getRuntime } from '$lib/server/runtime';
 import { relyingParty } from '$lib/server/admin/webauthn';
@@ -23,7 +23,7 @@ export const POST: RequestHandler = async (event) => {
 		attestationType: 'none',
 		excludeCredentials: rt.passkeys.forUser(user.id).map((c) => ({
 			id: c.credentialId,
-			transports: c.transports as AuthenticatorTransportFuture[]
+			transports: c.transports as AuthenticatorTransport[]
 		})),
 		authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred' }
 	});

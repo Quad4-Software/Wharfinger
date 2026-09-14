@@ -1,5 +1,5 @@
 import { generateAuthenticationOptions } from '@simplewebauthn/server';
-import type { AuthenticatorTransportFuture } from '@simplewebauthn/server';
+import type { AuthenticatorTransport } from '@simplewebauthn/server';
 import type { RequestHandler } from './$types';
 import { getRuntime } from '$lib/server/runtime';
 import { relyingParty } from '$lib/server/admin/webauthn';
@@ -21,14 +21,14 @@ export const POST: RequestHandler = async (event) => {
 
 	const { rpID } = relyingParty(rt.config, event.url);
 	let userId: number | null = null;
-	let allowCredentials: { id: string; transports?: AuthenticatorTransportFuture[] }[] | undefined;
+	let allowCredentials: { id: string; transports?: AuthenticatorTransport[] }[] | undefined;
 	if (username) {
 		const row = rt.users.rowByName(username);
 		if (row?.disabled_at === null) {
 			userId = row.id;
 			allowCredentials = rt.passkeys.forUser(row.id).map((c) => ({
 				id: c.credentialId,
-				transports: c.transports as AuthenticatorTransportFuture[]
+				transports: c.transports as AuthenticatorTransport[]
 			}));
 		}
 	}

@@ -1,8 +1,5 @@
 import { verifyAuthenticationResponse } from '@simplewebauthn/server';
-import type {
-	AuthenticationResponseJSON,
-	AuthenticatorTransportFuture
-} from '@simplewebauthn/server';
+import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
 import type { RequestHandler } from './$types';
 import { getRuntime } from '$lib/server/runtime';
 import { hashToken } from '$lib/server/admin/crypto';
@@ -87,7 +84,7 @@ export const POST: RequestHandler = async (event) => {
 				id: cred.credentialId,
 				publicKey: new Uint8Array(cred.publicKey),
 				counter: cred.counter,
-				transports: cred.transports as AuthenticatorTransportFuture[]
+				transports: cred.transports
 			},
 			requireUserVerification: false
 		});
