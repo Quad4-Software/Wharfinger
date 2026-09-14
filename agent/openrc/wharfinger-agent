@@ -1,0 +1,26 @@
+#!/sbin/openrc-run
+# Status monitoring agent service for OpenRC (Alpine, Gentoo).
+# Env comes from /etc/conf.d/wharfinger-agent: export HUB_URL, TOKEN, KEY
+# there; conf.d is sourced in the service context so exports reach
+# the daemon.
+#
+# supervise-daemon respawns the agent on exit: crashes recover
+# automatically, and the self-update flow exits cleanly so the
+# supervisor restarts it on the new binary. Sandboxing stays light
+# on purpose: full metric coverage needs root, real /proc and /sys,
+# the docker socket, and exec of systemctl/ufw/fail2ban-client/cscli.
+
+name="wharfinger-agent"
+description="Status monitoring agent"
+supervisor="supervise-daemon"
+command="/usr/local/bin/wharfinger-agent"
+pidfile="/run/${RC_SVCNAME}.pid"
+respawn_delay=5
+respawn_max=0
+output_log="/var/log/${RC_SVCNAME}.log"
+error_log="/var/log/${RC_SVCNAME}.log"
+
+depend() {
+	need net
+	after firewall docker
+}

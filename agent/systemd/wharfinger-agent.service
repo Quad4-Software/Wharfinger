@@ -1,0 +1,40 @@
+[Unit]
+Description=Wharfinger monitoring agent
+Documentation=https://github.com/Quad4-Software/Wharfinger
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/wharfinger-agent.env
+ExecStart=/usr/local/bin/wharfinger-agent
+# always, not on-failure: the self-update path exits 0 after swapping
+# the binary and must still come back on the new version.
+Restart=always
+RestartSec=5
+
+# Full metric coverage needs root, real /proc and /sys, the docker
+# socket, and exec of systemctl/ufw/fail2ban-client/cscli, so
+# sandboxing is intentionally light: no DynamicUser and no
+# ProtectSystem=strict, which would hide exactly what the agent
+# measures. Harden what does not interfere.
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=full
+# ProtectSystem=full mounts /usr read-only; self-update needs to
+# create wharfinger-agent.new and rename over the binary, so the install
+# directory stays writable.
+ReadWritePaths=/usr/local/bin
+PrivateTmp=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# Soft cap at 64M; the hard cap is higher because exec'd helpers
+# (cscli, systemctl) share the cgroup limit and would otherwise OOM.
+MemoryHigh=64M
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target
