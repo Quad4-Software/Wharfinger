@@ -101,3 +101,29 @@ export interface DeploySpec {
 	prevRelease?: { id: string; container: string; image: string | null };
 	rollbackOf?: string;
 }
+
+export interface DomainConflict {
+	appId: string;
+	name: string;
+	host: string;
+}
+
+// DNS preflight report for one app domain; produced by the
+// domain-check endpoint.
+export interface DomainReport {
+	host: string;
+	wildcard: boolean;
+	// ok: answered; unresolved: NXDOMAIN/ENODATA/timeout; skipped for
+	// inputs that are not literal hostnames.
+	dns: 'ok' | 'unresolved' | 'skipped';
+	cname: string | null;
+	addresses: string[];
+	// true when a resolved address is one the agent reports on a real
+	// interface; null when the agent has not reported addresses yet.
+	pointsAtAgent: boolean | null;
+	// Every answer is loopback/RFC1918/CGNAT/ULA/link-local: public
+	// ACME validation can never reach it.
+	privateOnly: boolean;
+	conflicts: DomainConflict[];
+	suggestions: string[];
+}

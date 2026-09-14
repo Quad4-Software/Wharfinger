@@ -2,6 +2,7 @@
 	import { onDestroy, onMount } from 'svelte';
 	import {
 		Copy,
+		Globe,
 		KeyRound,
 		Pencil,
 		Play,
@@ -19,7 +20,7 @@
 	import Field from '$lib/components/admin/Field.svelte';
 	import ConfirmDialog from '$lib/components/admin/ConfirmDialog.svelte';
 	import DeployAppForm from '$lib/components/admin/DeployAppForm.svelte';
-	import type { DeployApp, DeployRelease } from '$lib/shared/deploy';
+	import type { DeployApp, DeployRelease, DomainReport } from '$lib/shared/deploy';
 	import type { Job } from '$lib/shared/jobs';
 	import type { Recommendation, ScanFinding, ScanReport } from '$lib/shared/scan';
 	import { api, ApiError, errMessage } from '$lib/state/admin.svelte';
@@ -48,6 +49,8 @@
 	let scanning = $state(false);
 	let findingsOpen = $state(false);
 	let recBusy = $state<string | null>(null);
+	let domainChecks = $state<DomainReport[] | null>(null);
+	let domainChecking = $state(false);
 
 	const agentName = $derived(agents.find((a) => a.id === app?.agentId)?.name ?? app?.agentId ?? '');
 	const appJobs = $derived(
@@ -185,6 +188,18 @@
 			toast('success', what === 'webhook' ? 'Webhook rotated' : 'Deploy key rotated');
 		} catch (err) {
 			toast('error', errMessage(err, 'rotate failed').slice(0, 400));
+		}
+	}
+
+	async function checkDomains(): Promise<void> {
+		domainChecking = true;
+		try {
+			const res = await api<{ checks: DomainReport[] }>(`/deploy/apps/${appId}/domain-check`);
+			domainChecks = res.checks;
+		} catch (err) {
+			toast('error', errMessage(err, 'domain check failed').slice(0, 400));
+		} finally {
+			domainChecking = false;
 		}
 	}
 
@@ -326,6 +341,53 @@
 				<p class="mt-1.5 text-xs text-degraded">
 					No port mapping: the edge route needs a published port or a healthcheck port.
 				</p>
+			{/if}
+			{#if app.domains.length}
+				<div class="mt-2 flex items-center gap-2">
+					<button
+						class="btn btn-ghost btn-sm"
+						disabled={domainChecking}
+						onclick={() => void checkDomains()}
+					>
+						<Globe class="size-3.5" />
+						{domainChecking ? 'Checking…' : 'Check DNS'}
+					</button>
+				</div>
+				{#if domainChecks}
+					<ul class="mt-2 space-y-1.5">
+						{#each domainChecks as c (c.host)}
+							<li class="rounded-lg border border-edge bg-raised px-3 py-2 text-xs">
+								<div class="flex flex-wrap items-center gap-1.5">
+									<span class="font-mono">{c.host}</span>
+									{#if c.dns === 'ok'}
+										<span class="chip">resolves</span>
+									{:else if c.dns === 'unresolved'}
+										<span class="chip text-degraded">no answer</span>
+									{:else}
+										<span class="chip text-faint">invalid</span>
+									{/if}
+									{#if c.pointsAtAgent === true}
+										<span class="chip text-up">points here</span>
+									{:else if c.pointsAtAgent === false}
+										<span class="chip text-down">wrong address</span>
+									{/if}
+									{#if c.conflicts.length}
+										<span class="chip text-degraded">conflict</span>
+									{/if}
+								</div>
+								{#if c.cname}
+									<p class="mt-1 text-faint">CNAME to {c.cname}</p>
+								{/if}
+								{#if c.addresses.length}
+									<p class="mt-1 font-mono text-faint">{c.addresses.join(', ')}</p>
+								{/if}
+								{#each c.suggestions as s (s)}
+									<p class="mt-1 text-muted">{s}</p>
+								{/each}
+							</li>
+						{/each}
+					</ul>
+				{/if}
 			{/if}
 		</div>
 	{/if}

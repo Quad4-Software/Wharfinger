@@ -147,7 +147,8 @@ export const AgentPayload = v.object({
 	net: v.object({
 		rxBps: Num,
 		txBps: Num,
-		interfaces: v.optional(v.pipe(v.array(NetIface), v.maxLength(128)))
+		interfaces: v.optional(v.pipe(v.array(NetIface), v.maxLength(128))),
+		addresses: v.optional(v.pipe(v.array(MidStr), v.maxLength(64)))
 	}),
 	connections: v.object({
 		established: Int,

@@ -145,9 +145,13 @@ function upstreamFor(spec: DeploySpec): string | null {
  */
 export function buildRouteTable(db: DatabaseSync, agentId: string): EdgeRouteTable {
 	const apps = db
-		.prepare('SELECT id, domains, updated_at FROM deploy_apps WHERE agent_id = ?')
+		.prepare('SELECT id, domains, updated_at FROM deploy_apps WHERE agent_id = ? ORDER BY id')
 		.all(agentId) as unknown as AppRow[];
 
+	// Exact-host conflicts resolve to the lowest app id so two apps
+	// claiming one host route deterministically instead of depending
+	// on row order. domainCheck surfaces the conflict to the panel.
+	const claimed = new Set<string>();
 	const routes: EdgeRoute[] = [];
 	for (const app of apps) {
 		let domains: string[];
@@ -178,6 +182,8 @@ export function buildRouteTable(db: DatabaseSync, agentId: string): EdgeRouteTab
 		if (source.kind === 'static') {
 			const staticRoot = safeRelJoin(`src/${app.id}`, source.subdir);
 			for (const host of hosts) {
+				if (claimed.has(host)) continue;
+				claimed.add(host);
 				routes.push({ host, appId: app.id, tls: DEFAULT_TLS, staticRoot });
 			}
 			continue;
@@ -186,6 +192,8 @@ export function buildRouteTable(db: DatabaseSync, agentId: string): EdgeRouteTab
 		const upstream = upstreamFor(spec);
 		if (!upstream) continue;
 		for (const host of hosts) {
+			if (claimed.has(host)) continue;
+			claimed.add(host);
 			routes.push({ host, upstream, appId: app.id, tls: DEFAULT_TLS });
 		}
 	}

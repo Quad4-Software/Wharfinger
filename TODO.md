@@ -122,9 +122,10 @@ channel. No SSH anywhere; the agent already proves possession.
       HTTP-01 + DNS-01 (user-supplied hook script), plus manual cert
       drop-in; cert state reported back as inventory and shown on
       the agent page
-- [ ] Smart domain config: DNS preflight check before issuance,
-      suggested records, wildcard detection, conflict warnings when
-      two apps claim one host
+- [x] Smart domain config: DNS preflight per app domain
+      (resolve-vs-agent-address, wildcard probe, private-answer and
+      ACME warnings), suggested records, conflict warnings when two
+      apps claim one host; duplicates resolve to the lowest app id
 - [ ] WAF posture: reuse ravenguard edge policy blocks
       (blocklists/allowlists, seccomp) as agent proxy config where
       applicable

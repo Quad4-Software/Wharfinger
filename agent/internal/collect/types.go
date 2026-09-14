@@ -122,6 +122,9 @@ type Net struct {
 	RxBps      float64    `json:"rxBps"`
 	TxBps      float64    `json:"txBps"`
 	Interfaces []NetIface `json:"interfaces,omitempty"`
+	// Non-loopback unicast addresses on real interfaces; the hub uses
+	// them for domain preflight (does DNS point at this machine).
+	Addresses []string `json:"addresses,omitempty"`
 }
 
 type NetIface struct {

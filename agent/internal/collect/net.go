@@ -1,7 +1,9 @@
 package collect
 
 import (
+	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -49,8 +51,73 @@ func readNetDev() (map[string]ifaceCounters, error) {
 	return parseNetDev(b), nil
 }
 
+// ifAddrs is one interface's address list; the indirection exists so
+// tests can feed synthetic addrs without touching netlink.
+type ifAddrs struct {
+	name  string
+	addrs []net.Addr
+}
+
+var listIfaceAddrs = func() ([]ifAddrs, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ifAddrs, 0, len(ifaces))
+	for _, ifi := range ifaces {
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			continue
+		}
+		out = append(out, ifAddrs{name: ifi.Name, addrs: addrs})
+	}
+	return out, nil
+}
+
+// collectIfaceAddrs keeps non-loopback, non-link-local unicast
+// addresses on real interfaces (same skip list as the byte
+// counters). Sorted and capped so the payload stays stable and
+// bounded.
+func collectIfaceAddrs(list []ifAddrs) []string {
+	out := make([]string, 0, 16)
+	for _, ifi := range list {
+		if skipIfaces[ifi.name] || strings.HasPrefix(ifi.name, "veth") ||
+			strings.HasPrefix(ifi.name, "docker") || strings.HasPrefix(ifi.name, "br-") ||
+			strings.HasPrefix(ifi.name, "virbr") || strings.HasPrefix(ifi.name, "zt") {
+			continue
+		}
+		for _, a := range ifi.addrs {
+			var ip net.IP
+			switch t := a.(type) {
+			case *net.IPNet:
+				ip = t.IP
+			case *net.IPAddr:
+				ip = t.IP
+			}
+			if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
+				ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+				continue
+			}
+			out = append(out, ip.String())
+		}
+	}
+	sort.Strings(out)
+	if len(out) > 64 {
+		out = out[:64]
+	}
+	return out
+}
+
+func ifaceAddrs() []string {
+	list, err := listIfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	return collectIfaceAddrs(list)
+}
+
 func netMetrics(cur, prev map[string]ifaceCounters, elapsed float64) Net {
-	n := Net{}
+	n := Net{Addresses: ifaceAddrs()}
 	for name, c := range cur {
 		var rxBps, txBps float64
 		if p, ok := prev[name]; ok && elapsed > 0 {

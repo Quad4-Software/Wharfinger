@@ -177,6 +177,17 @@ webauthn_origin`/`webauthn_rp_id` overrides
   keys and dropped semantics loudly instead of silently discarding
   them (audit: deploy.manage-gated, 256KB body cap, env sealed via
   setEnv, all-or-nothing create with rollback cleanup)
+- Smart domain config: `GET /admin/api/deploy/apps/[id]/domain-check`
+  runs a DNS preflight per app domain and a Check DNS panel button
+  renders it: resolved A/AAAA answers compared against the
+  agent-reported interface addresses (new `net.addresses` in the
+  signed payload), wildcard probing via an unlikely label, private-only
+  answer warnings for ACME reachability, CNAME chain display, and
+  conflict warnings when another app claims the same host or a
+  covering wildcard. Duplicate exact hosts now route to the lowest
+  app id deterministically (audit: deploy.view-gated read, bounded
+  DNS-only lookups through the system resolver, no outbound connect to
+  resolved IPs)
 
 ### Fixed
 
