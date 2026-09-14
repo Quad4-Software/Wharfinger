@@ -199,12 +199,16 @@
 				if (eq === -1) throw new Error(`bad line: ${t.slice(0, 40)}`);
 				env[t.slice(0, eq).trim()] = t.slice(eq + 1);
 			}
-			await api(`/deploy/apps/${appId}/env`, { method: 'PUT', body: { env } });
+			await api(`/deploy/apps/${appId}/env`, {
+				method: 'PUT',
+				body: { env, expectedUpdatedAt: app?.updatedAt }
+			});
 			envDirty = false;
 			toast('success', 'Environment sealed and saved');
 			await load();
 		} catch (err) {
 			toast('error', errMessage(err, 'env save failed').slice(0, 400));
+			if (err instanceof ApiError && err.status === 409) await load();
 		} finally {
 			envSaving = false;
 		}
@@ -212,12 +216,16 @@
 
 	async function saveEdit(body: Record<string, unknown>): Promise<void> {
 		try {
-			await api(`/deploy/apps/${appId}`, { method: 'PATCH', body });
+			await api(`/deploy/apps/${appId}`, {
+				method: 'PATCH',
+				body: { ...body, expectedUpdatedAt: app?.updatedAt }
+			});
 			editOpen = false;
 			toast('success', 'Application updated');
 			await load();
 		} catch (err) {
 			toast('error', errMessage(err, 'update failed').slice(0, 400));
+			if (err instanceof ApiError && err.status === 409) await load();
 		}
 	}
 

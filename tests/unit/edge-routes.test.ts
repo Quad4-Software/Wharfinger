@@ -140,6 +140,20 @@ describe('buildRouteTable', () => {
 		expect(after.routes.some((r) => r.host === 'gone.example.com')).toBe(false);
 	});
 
+	it('regenerates routes when a domain edit lands through updateApp', () => {
+		const { app } = liveApp('renamed', { domains: ['old.example.com'] });
+		const before = routeTable(ref.rt.db, 'agent-1');
+		expect(before.routes.some((r) => r.host === 'old.example.com')).toBe(true);
+		ref.rt.deploys.updateApp(app.id, {
+			domains: ['new-name.example.com'],
+			expectedUpdatedAt: app.updatedAt
+		});
+		const after = routeTable(ref.rt.db, 'agent-1');
+		expect(after.version).not.toBe(before.version);
+		expect(after.routes.some((r) => r.host === 'old.example.com')).toBe(false);
+		expect(after.routes.some((r) => r.host === 'new-name.example.com')).toBe(true);
+	});
+
 	it('memoizes per db+agent and rebuilds on change', () => {
 		const t1 = routeTable(ref.rt.db, 'agent-1');
 		const t2 = routeTable(ref.rt.db, 'agent-1');

@@ -8,12 +8,19 @@ export const PUT: RequestHandler = async (event) => {
 	requirePerm(event, 'deploy.manage');
 	const rt = getRuntime();
 	if (!rt.deploys.getApp(event.params.id)) return apiError(404, 'app not found');
-	const body = await readJson<{ env?: unknown }>(event.request, 256 * 1024);
+	const body = await readJson<{ env?: unknown; expectedUpdatedAt?: unknown }>(
+		event.request,
+		256 * 1024
+	);
 	if (!body.env || typeof body.env !== 'object' || Array.isArray(body.env)) {
 		return apiError(422, 'expected an env object');
 	}
 	try {
-		rt.deploys.setEnv(event.params.id, body.env as Record<string, string>);
+		rt.deploys.setEnv(
+			event.params.id,
+			body.env as Record<string, string>,
+			typeof body.expectedUpdatedAt === 'number' ? body.expectedUpdatedAt : undefined
+		);
 	} catch (err) {
 		if (err instanceof DeployError) return apiError(err.status, err.message);
 		throw err;

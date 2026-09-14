@@ -165,8 +165,29 @@ webauthn_origin`/`webauthn_rp_id` overrides
   chain-integrity verify action
 - Skeleton loading and shaped empty states across the panel and status
   pages; Escape closes the mobile nav drawer
+- Static site deploys: `static` source apps clone the repo, run the
+  build, and publish the output dir through the agent edge proxy via
+  an atomic versioned-symlink swap; serving falls back to index.html,
+  emits weak ETags + 304s, and marks hashed assets immutable
+  (audit: paths stay under the app state root, traversal rejected,
+  no secrets in the static spec)
+- Compose import: `POST /admin/api/deploy/apps/compose` converts a
+  compose file into linked apps under a shared group; the panel gets
+  an Import compose modal with a preview plan that lists unsupported
+  keys and dropped semantics loudly instead of silently discarding
+  them (audit: deploy.manage-gated, 256KB body cap, env sealed via
+  setEnv, all-or-nothing create with rollback cleanup)
 
 ### Fixed
+
+- Deploy app edits (env, domains, runtime fields) now carry an
+  optimistic-concurrency stamp: a stale writer gets a 409 instead of
+  silently clobbering a concurrent edit, and the panel reloads on
+  conflict
+- Route-table version is now a content hash of the routes, not a
+  timestamp: a domain edit landing in the same millisecond as a
+  release transition could previously leave agents with a stale table
+  because the version never moved
 
 - Snapshot rebuilds reuse fetched check rows for uptime windows covered
   by history, cutting redundant per-service SQL on every check

@@ -109,6 +109,45 @@ describe('DeployStore apps', () => {
 		expect(deploys.byWebhook(next)!.id).toBe(app.id);
 	});
 
+	it('updateApp rejects a stale updatedAt and accepts a fresh one', () => {
+		const { deploys } = stores();
+		const { app } = deploys.createApp({
+			name: 'stale',
+			agentId: 'a',
+			source: GIT,
+			domains: ['a.example.com']
+		});
+		// First writer wins and moves the stamp.
+		deploys.updateApp(app.id, { domains: ['b.example.com'], expectedUpdatedAt: app.updatedAt });
+		// A second writer still holding the old stamp loses.
+		expectDeployError(
+			() =>
+				deploys.updateApp(app.id, {
+					domains: ['c.example.com'],
+					expectedUpdatedAt: app.updatedAt
+				}),
+			409
+		);
+		const after = deploys.getApp(app.id)!;
+		expect(after.domains).toEqual(['b.example.com']);
+		// Fresh stamp applies cleanly.
+		deploys.updateApp(app.id, {
+			domains: ['c.example.com'],
+			expectedUpdatedAt: after.updatedAt
+		});
+		expect(deploys.getApp(app.id)!.domains).toEqual(['c.example.com']);
+	});
+
+	it('setEnv rejects a stale updatedAt', () => {
+		const { deploys } = stores();
+		const { app } = deploys.createApp({ name: 'envstale', agentId: 'a', source: GIT });
+		deploys.setEnv(app.id, { A: '1' }, app.updatedAt);
+		expectDeployError(() => {
+			deploys.setEnv(app.id, { B: '2' }, app.updatedAt);
+		}, 409);
+		expect(deploys.envFor(app.id)).toEqual({ A: '1' });
+	});
+
 	it('deploy key rotates to a different sealed pair', () => {
 		const { deploys } = stores();
 		const { app, deployKeyPub } = deploys.createApp({ name: 'keyed', agentId: 'a', source: GIT });
@@ -139,6 +178,26 @@ describe('triggerDeploy', () => {
 		expect(spec.run.healthcheck?.port).toBe(3000);
 		expect('env' in spec).toBe(false); // secrets never ride the spec
 		expect(deploys.release(releaseId!)!.status).toBe('pending');
+	});
+
+	it('emits a static spec with no ports or healthcheck', () => {
+		const { deploys, rt } = stores();
+		const { app } = deploys.createApp({
+			name: 'stat',
+			agentId: 'a',
+			source: { kind: 'static', url: GIT.url, ref: 'main', subdir: 'dist' },
+			domains: ['stat.example.com'],
+			ports: [{ host: 8080, container: 80 }],
+			healthcheck: { kind: 'http', port: 8080 }
+		});
+		const { job } = triggerDeploy(rt, app);
+		const spec = JSON.parse(job.spec) as DeploySpec;
+		expect(spec.source.kind).toBe('static');
+		expect(spec.build).toEqual({ kind: 'static', context: 'dist' });
+		expect(spec.run.ports).toEqual([]);
+		expect(spec.run.healthcheck).toBeUndefined();
+		// envRef stays: the agent fetches the deploy key through it.
+		expect(spec.run.envRef).toBe(app.id);
 	});
 
 	it('dedupes repeat triggers on jobKey without a new release', () => {

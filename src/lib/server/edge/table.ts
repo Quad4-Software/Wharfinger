@@ -41,19 +41,48 @@ function tableStamp(db: DatabaseSync, agentId: string): string {
 					UNION ALL
 					SELECT COALESCE(live_at, created_at) AS stamp FROM deploy_releases
 					WHERE app_id IN (SELECT id FROM deploy_apps WHERE agent_id = ?)
-				)) AS s`
+				)) AS s,
+				(SELECT SUM(stamp) FROM (
+					SELECT updated_at AS stamp FROM deploy_apps WHERE agent_id = ?
+					UNION ALL
+					SELECT COALESCE(live_at, created_at) AS stamp FROM deploy_releases
+					WHERE app_id IN (SELECT id FROM deploy_apps WHERE agent_id = ?)
+				)) AS total`
 		)
-		.get(agentId, agentId, agentId, agentId) as {
+		.get(agentId, agentId, agentId, agentId, agentId, agentId) as {
 		apps: number;
 		rels: number;
 		s: number | null;
+		total: number | null;
 	};
-	return `${row.apps}:${row.rels}:${row.s ?? 0}`;
+	// The sum catches edits that land inside the same millisecond as
+	// a newer row: MAX alone cannot see an updated_at that moved to a
+	// value already present in the set.
+	return `${row.apps}:${row.rels}:${row.s ?? 0}:${row.total ?? 0}`;
 }
 
 // TLS mode emitted for every route until the app model carries a
 // per-app tls field; 'manual'/'off' stay reserved in the wire type.
 const DEFAULT_TLS: EdgeTlsMode = 'acme';
+
+/**
+ * Table version derived from the route payload itself. Agents only
+ * ever compare it for equality (?v= / If-None-Match), so a content
+ * hash is strictly safer than a timestamp: two edits landing in the
+ * same millisecond still produce a different version whenever the
+ * routes differ, and identical routes always answer 304.
+ * Two FNV-1a streams folded to 53 bits.
+ */
+function routeVersion(routes: EdgeRoute[]): number {
+	const s = JSON.stringify(routes);
+	let h1 = 0x811c9dc5;
+	let h2 = 0x811c9dc5;
+	for (let i = 0; i < s.length; i++) {
+		h1 = Math.imul(h1 ^ s.charCodeAt(i), 0x01000193);
+		h2 = Math.imul(h2 ^ s.charCodeAt(i), 0x85ebca6b);
+	}
+	return (h1 >>> 5) * 2 ** 26 + (h2 >>> 6);
+}
 
 // dns1123 label folding, mirrors agent/internal/deploy/kube.go.
 function dns1123(v: string): string {
@@ -119,8 +148,6 @@ export function buildRouteTable(db: DatabaseSync, agentId: string): EdgeRouteTab
 		.prepare('SELECT id, domains, updated_at FROM deploy_apps WHERE agent_id = ?')
 		.all(agentId) as unknown as AppRow[];
 
-	let maxStamp = 0;
-	let liveCount = 0;
 	const routes: EdgeRoute[] = [];
 	for (const app of apps) {
 		let domains: string[];
@@ -138,9 +165,7 @@ export function buildRouteTable(db: DatabaseSync, agentId: string): EdgeRouteTab
 				 WHERE app_id = ? AND status = 'live' ORDER BY live_at DESC LIMIT 1`
 			)
 			.get(app.id) as LiveRow | undefined;
-		maxStamp = Math.max(maxStamp, app.updated_at, live?.live_at ?? 0, live?.created_at ?? 0);
 		if (!live) continue;
-		liveCount++;
 
 		let spec: DeploySpec;
 		try {
@@ -165,14 +190,9 @@ export function buildRouteTable(db: DatabaseSync, agentId: string): EdgeRouteTab
 		}
 	}
 
-	// version must move on any input change agents could care about,
-	// including app deletion, which a bare MAX would miss when the
-	// removed row was not the newest. A bounded checksum of the input
-	// shape rides in the low digits; stays below 2^53.
-	const shape = (apps.length * 37 + liveCount * 7 + routes.length) % 1000;
-	const version = maxStamp * 1000 + shape;
 	routes.sort((a, b) => a.host.localeCompare(b.host));
-	return { version, routes: routes.slice(0, EDGE_MAX_ROUTES) };
+	const capped = routes.slice(0, EDGE_MAX_ROUTES);
+	return { version: routeVersion(capped), routes: capped };
 }
 
 // Per-db lazy cache: rebuild only when tableStamp moves. WeakMap so

@@ -61,13 +61,13 @@ channel. No SSH anywhere; the agent already proves possession.
 - [x] Panel: apps list, app detail (releases, logs, domains, env
       editor), deploy/rollback buttons, live job status, webhook URL
       copy
-- [ ] Static site path: build artifacts served through the proxy
+- [x] Static site path: build artifacts served through the proxy
       layer with correct cache headers and immutable-hashed asset
       rules
-- [ ] Docker-compose converter: ingest a compose file, emit our app
+- [x] Docker-compose converter: ingest a compose file, emit our app
       spec (services -> linked apps or a multi-container app),
       flag unsupported keys instead of silently dropping them
-- [ ] Manual env/domain editing only through validated panel/API
+- [x] Manual env/domain editing only through validated panel/API
       paths; no hand-editing of generated proxy config
 
 ## Phase 1b: Runtimes, security scanning, org structure

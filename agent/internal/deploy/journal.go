@@ -19,8 +19,11 @@ const (
 	StepRun      = "run"
 	StepHealth   = "healthcheck"
 	StepStopPrev = "stopping_prev"
-	StepSucceed  = "succeed"
-	StepFailed   = "failed"
+	// StepPublish is the static-path commit point: journaled right
+	// after the atomic symlink swap, so reconcile treats it as done.
+	StepPublish = "publish"
+	StepSucceed = "succeed"
+	StepFailed  = "failed"
 )
 
 // JournalEntry is the persisted state of one in-flight job. Runtime

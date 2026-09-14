@@ -206,7 +206,6 @@ export class DeployStore {
 			out.url = source.url.slice(0, 300);
 		} else {
 			out.url = typeof source.url === 'string' ? source.url.slice(0, 500) : undefined;
-			if (source.compose) out.compose = source.compose.slice(0, 128 * 1024);
 			if (source.subdir) out.subdir = source.subdir.slice(0, 200);
 		}
 		return out;
@@ -339,6 +338,7 @@ export class DeployStore {
 			ports: PortMap[];
 			namespace: string | null;
 			replicas: number | null;
+			expectedUpdatedAt: number;
 		}>
 	): DeployApp {
 		const app = this.getApp(id);
@@ -392,11 +392,26 @@ export class DeployStore {
 			args.push(JSON.stringify(this.validatePorts(patch.ports)));
 		}
 		if (!sets.length) return app;
-		sets.push('updated_at = ?');
+		// MAX() keeps the stamp strictly increasing: two writes in the
+		// same millisecond must still produce distinct stamps or the
+		// optimistic-concurrency guard below cannot tell them apart.
+		sets.push('updated_at = MAX(?, updated_at + 1)');
 		args.push(Date.now(), id);
+		// Optimistic concurrency: the writer must have seen the row it
+		// is replacing. A stale stamp means someone else edited first.
+		let guard = '';
+		if (patch.expectedUpdatedAt !== undefined) {
+			guard = ' AND updated_at = ?';
+			args.push(patch.expectedUpdatedAt);
+		}
 		try {
-			this.db.prepare(`UPDATE deploy_apps SET ${sets.join(', ')} WHERE id = ?`).run(...args);
+			const n = this.db
+				.prepare(`UPDATE deploy_apps SET ${sets.join(', ')} WHERE id = ?${guard}`)
+				.run(...args).changes;
+			if (!Number(n))
+				throw new DeployError(409, 'app changed since it was loaded; reload and retry');
 		} catch (err) {
+			if (err instanceof DeployError) throw err;
 			if (String(err).includes('UNIQUE'))
 				throw new DeployError(409, 'an app with that name exists');
 			throw err;
@@ -411,7 +426,7 @@ export class DeployStore {
 	}
 
 	/** Sealed env map; fetched by the bound agent through the secrets endpoint. */
-	setEnv(id: string, env: Record<string, string>): void {
+	setEnv(id: string, env: Record<string, string>, expectedUpdatedAt?: number): void {
 		if (!this.getApp(id)) throw new DeployError(404, 'app not found');
 		const keys = Object.keys(env);
 		if (keys.length > MAX_ENV_KEYS) throw new DeployError(422, 'too many env keys');
@@ -419,9 +434,16 @@ export class DeployStore {
 			if (!ENV_KEY_RE.test(k)) throw new DeployError(422, `invalid env key: ${k}`);
 			if (env[k].length > 32 * 1024) throw new DeployError(422, 'env value too large');
 		}
-		this.db
-			.prepare('UPDATE deploy_apps SET env = ?, updated_at = ? WHERE id = ?')
-			.run(sealSecret(JSON.stringify(env)), Date.now(), id);
+		let sql = 'UPDATE deploy_apps SET env = ?, updated_at = MAX(?, updated_at + 1) WHERE id = ?';
+		const args: (string | number)[] = [sealSecret(JSON.stringify(env)), Date.now(), id];
+		if (expectedUpdatedAt !== undefined) {
+			sql += ' AND updated_at = ?';
+			args.push(expectedUpdatedAt);
+		}
+		const n = this.db.prepare(sql).run(...args).changes;
+		if (!Number(n)) {
+			throw new DeployError(409, 'app changed since it was loaded; reload and retry');
+		}
 	}
 
 	envFor(id: string): Record<string, string> {

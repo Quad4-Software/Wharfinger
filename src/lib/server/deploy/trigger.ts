@@ -11,14 +11,15 @@ function buildSpec(
 	rollbackOf?: string
 ): DeploySpec {
 	const live = rt.deploys.liveRelease(app.id);
+	// Static apps publish files, not containers: ports and
+	// healthchecks are meaningless and must not leak into the spec.
+	const isStatic = app.source.kind === 'static';
 	const build =
 		app.source.kind === 'image'
 			? { kind: 'image' as const }
-			: app.source.kind === 'compose'
-				? { kind: 'compose' as const }
-				: app.source.kind === 'static'
-					? { kind: 'static' as const, context: app.source.subdir }
-					: { kind: 'dockerfile' as const };
+			: app.source.kind === 'static'
+				? { kind: 'static' as const, context: app.source.subdir }
+				: { kind: 'dockerfile' as const };
 	const spec: DeploySpec = {
 		appId: app.id,
 		releaseId,
@@ -30,14 +31,17 @@ function buildSpec(
 			// but no ports falls back to publishing its healthcheck port
 			// (localhost-bound) so the edge proxy and the k8s ClusterIP
 			// service have an upstream without exposing the port publicly.
-			ports:
-				app.ports.length > 0
+			ports: isStatic
+				? []
+				: app.ports.length > 0
 					? app.ports
 					: app.domains.length > 0 && app.healthcheck.port
 						? [{ host: app.healthcheck.port, container: app.healthcheck.port, local: true }]
 						: [],
 			healthcheck:
-				app.healthcheck.port && app.healthcheck.kind ? (app.healthcheck as Healthcheck) : undefined,
+				!isStatic && app.healthcheck.port && app.healthcheck.kind
+					? (app.healthcheck as Healthcheck)
+					: undefined,
 			envRef: app.id,
 			...(app.replicas ? { replicas: app.replicas } : {})
 		},

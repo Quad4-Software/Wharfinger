@@ -26,8 +26,9 @@ export interface EdgeRoute {
 }
 
 /**
- * Versioned route table. version is a timestamp stamp (ms); agents
- * send it back via ?v= or If-None-Match and get a 304 when unchanged.
+ * Versioned route table. version is an opaque content stamp (a hash
+ * of the routes); agents send it back via ?v= or If-None-Match and
+ * get a 304 when unchanged.
  */
 export interface EdgeRouteTable {
 	version: number;

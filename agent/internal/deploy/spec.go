@@ -259,7 +259,20 @@ func (s *Spec) Validate() error {
 			return fmt.Errorf("image reference %q is not safe", s.effectiveImage())
 		}
 	case "static":
-		// Pre-staged checkout under the state dir; nothing to fetch.
+		// A repo cloned and served as files, or a pre-staged dir
+		// under the state dir when url is empty. A present url is
+		// a clone target and gets the same rules as a git source.
+		if s.Source.URL != "" {
+			if !gitURLRE.MatchString(s.Source.URL) {
+				return fmt.Errorf("git url must be https://, ssh://, or git@")
+			}
+			if s.Source.Ref != "" && !refRE.MatchString(s.Source.Ref) {
+				return fmt.Errorf("git ref %q is not a safe reference", s.Source.Ref)
+			}
+			if s.Source.Commit != "" && !refRE.MatchString(s.Source.Commit) {
+				return fmt.Errorf("git commit %q is not a safe reference", s.Source.Commit)
+			}
+		}
 	default:
 		return fmt.Errorf("source kind %q unsupported", s.Source.Kind)
 	}
@@ -277,7 +290,13 @@ func (s *Spec) Validate() error {
 		if s.Source.Kind == "image" {
 			return fmt.Errorf("dockerfile build requires a source checkout")
 		}
-	case "static", "image":
+	case "static":
+		// Artifact path: the checkout is exported to the static
+		// root and served by the edge proxy; no image is built.
+		if s.Source.Kind == "image" {
+			return fmt.Errorf("static build requires a source checkout")
+		}
+	case "image":
 		if s.effectiveImage() == "" {
 			return fmt.Errorf("build kind %q requires run.image or an image source", s.Build.Kind)
 		}

@@ -1,10 +1,12 @@
 package deploy
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -71,4 +73,17 @@ func (g *Git) CloneOrFetch(ctx context.Context, dir, url, ref, keyFile string, o
 		return fmt.Errorf("git checkout: %w", err)
 	}
 	return nil
+}
+
+// RevParse resolves a ref (HEAD right after a fetch/checkout) to its
+// commit sha for the release record.
+func (g *Git) RevParse(ctx context.Context, dir, ref string) (string, error) {
+	var buf bytes.Buffer
+	ctx, cancel := context.WithTimeout(ctx, opTimeout)
+	defer cancel()
+	err := g.runner.Run(ctx, []string{g.Bin, "rev-parse", "--verify", ref}, CmdOpts{Dir: dir}, &buf)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(buf.String()), nil
 }

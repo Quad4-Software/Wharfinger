@@ -27,6 +27,7 @@ export const PATCH: RequestHandler = async (event) => {
 		namespace?: unknown;
 		replicas?: unknown;
 		hookSecret?: unknown;
+		expectedUpdatedAt?: unknown;
 	}>(event.request, 64 * 1024);
 	try {
 		const app = rt.deploys.updateApp(event.params.id, {
@@ -38,7 +39,9 @@ export const PATCH: RequestHandler = async (event) => {
 			healthcheck: body.healthcheck as Healthcheck | undefined,
 			ports: Array.isArray(body.ports) ? (body.ports as PortMap[]) : undefined,
 			namespace: body.namespace === undefined ? undefined : (body.namespace as string | null),
-			replicas: body.replicas === undefined ? undefined : (body.replicas as number | null)
+			replicas: body.replicas === undefined ? undefined : (body.replicas as number | null),
+			expectedUpdatedAt:
+				typeof body.expectedUpdatedAt === 'number' ? body.expectedUpdatedAt : undefined
 		});
 		if (typeof body.hookSecret === 'string' && body.hookSecret) {
 			rt.deploys.setHookSecret(app.id, body.hookSecret.slice(0, 256));

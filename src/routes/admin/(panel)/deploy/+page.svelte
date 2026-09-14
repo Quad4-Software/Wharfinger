@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Plus, Rocket, GitBranch, Layers } from '@lucide/svelte';
+	import { Plus, Rocket, GitBranch, Layers, FileInput } from '@lucide/svelte';
 	import PageHeader from '$lib/components/admin/PageHeader.svelte';
 	import DeployAppForm from '$lib/components/admin/DeployAppForm.svelte';
+	import ComposeImport from '$lib/components/admin/ComposeImport.svelte';
 	import type { DeployApp } from '$lib/shared/deploy';
 	import type { Job } from '$lib/shared/jobs';
 	import { adminHref, api, ApiError, errMessage } from '$lib/state/admin.svelte';
@@ -14,6 +15,7 @@
 	let agents = $state<{ id: string; name: string }[]>([]);
 	let loading = $state(true);
 	let formOpen = $state(false);
+	let importOpen = $state(false);
 	let saving = $state(false);
 
 	async function load(): Promise<void> {
@@ -72,6 +74,9 @@
 	title="Deployments"
 	description="Git, image, static, and compose workloads on your systems"
 >
+	<button class="btn" onclick={() => (importOpen = true)} disabled={saving}>
+		<FileInput class="size-4" /> Import compose
+	</button>
 	<button class="btn btn-primary" onclick={() => (formOpen = true)} disabled={saving}>
 		<Plus class="size-4" /> New app
 	</button>
@@ -139,3 +144,4 @@
 {/if}
 
 <DeployAppForm bind:open={formOpen} {agents} onsave={create} />
+<ComposeImport bind:open={importOpen} {agents} onimported={load} />

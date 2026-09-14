@@ -83,7 +83,9 @@ func NewExecutor(stateDir string, hub *Client, runner CmdRunner, kubeconfig stri
 		e.kube = kb
 	}
 	if e.rt == nil && e.kube == nil {
-		return nil, fmt.Errorf("no deploy runtime (%v; %v)", rtErr, kbErr)
+		// Static-site jobs need no runtime; container specs still
+		// fail at runtimeFor with a clear error.
+		log.Printf("deploy: no container runtime (%v; %v); static-only", rtErr, kbErr)
 	}
 	return e, nil
 }
@@ -96,6 +98,9 @@ func (e *Executor) RuntimeName() string {
 	}
 	if e.kube != nil {
 		names = append(names, RuntimeK8s)
+	}
+	if len(names) == 0 {
+		return "static-only"
 	}
 	return strings.Join(names, "+")
 }
@@ -140,13 +145,17 @@ func (e *Executor) Execute(ctx context.Context, job *Job) error {
 		return e.finishFail(job, JournalEntry{JobID: job.ID, Lease: job.Lease},
 			"spec", err, "")
 	}
-	if spec.Runtime == RuntimeK8s {
+	static := isStaticSpec(spec)
+	if spec.Runtime == RuntimeK8s && !static {
 		return e.executeKube(ctx, job, spec)
 	}
-	rt, err := e.runtimeFor(spec.Runtime)
-	if err != nil {
-		return e.finishFail(job, JournalEntry{JobID: job.ID, Lease: job.Lease},
-			"spec", err, "")
+	var rt *Runtime
+	if !static {
+		rt, err = e.runtimeFor(spec.Runtime)
+		if err != nil {
+			return e.finishFail(job, JournalEntry{JobID: job.ID, Lease: job.Lease},
+				"spec", err, "")
+		}
 	}
 
 	jctx, cancel := context.WithTimeout(ctx, jobTimeout)
@@ -173,8 +182,11 @@ func (e *Executor) Execute(ctx context.Context, job *Job) error {
 		JobID:     job.ID,
 		Lease:     job.Lease,
 		ReleaseID: spec.ReleaseID,
-		Container: spec.ContainerName(),
-		Runtime:   rt.Name,
+		Runtime:   "static",
+	}
+	if rt != nil {
+		entry.Runtime = rt.Name
+		entry.Container = spec.ContainerName()
 	}
 	if prev := spec.Prev(); prev != nil {
 		entry.Prev = prev.Name
@@ -218,6 +230,10 @@ func (e *Executor) Execute(ctx context.Context, job *Job) error {
 		scrub := &scrubWriter{w: out, needles: needles}
 		out = scrub
 		defer scrub.Flush()
+	}
+
+	if static {
+		return e.executeStatic(jctx, job, spec, entry, prog, out, jobLog, needles)
 	}
 
 	entry.Step = StepFetch
@@ -698,7 +714,7 @@ func (e *Executor) reconcileItem(ctx context.Context, en JournalEntry) Reconcile
 	// Steps at or past the zero-gap point had already proven health
 	// before the agent stopped, so the swap outcome is success.
 	outcome := "failed"
-	if en.Step == StepStopPrev || en.Step == StepSucceed {
+	if en.Step == StepStopPrev || en.Step == StepSucceed || en.Step == StepPublish {
 		outcome = "succeeded"
 	}
 	result := map[string]any{

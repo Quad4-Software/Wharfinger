@@ -1,7 +1,7 @@
 // Deploy domain types shared by hub and panel. The wire spec the
 // agent executes is DeploySpec; see .agents/skills/deploy-pipeline.
 
-export const SOURCE_KINDS = ['git', 'image', 'static', 'compose'] as const;
+export const SOURCE_KINDS = ['git', 'image', 'static'] as const;
 type SourceKind = (typeof SOURCE_KINDS)[number];
 
 export const RUNTIMES = ['podman', 'docker', 'k8s'] as const;
@@ -12,11 +12,11 @@ export type ReleaseStatus = 'pending' | 'live' | 'failed' | 'rolled_back' | 'sup
 export interface AppSource {
 	kind: SourceKind;
 	// git: clone url + ref; image: registry ref; static: dir in repo
-	// or artifact url; compose: inline compose yaml or repo path.
+	// or artifact url. Compose files are imported via the converter
+	// endpoint, which expands them into linked apps.
 	url?: string;
 	ref?: string;
 	subdir?: string;
-	compose?: string;
 }
 
 export interface Healthcheck {
@@ -80,7 +80,7 @@ export interface DeploySpec {
 	jobKey: string;
 	source: AppSource;
 	build: {
-		kind: 'dockerfile' | 'static' | 'compose' | 'image';
+		kind: 'dockerfile' | 'static' | 'image';
 		dockerfile?: string;
 		context?: string;
 	};

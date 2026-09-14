@@ -29,7 +29,6 @@
 	let url = $state('');
 	let ref = $state('main');
 	let subdir = $state('');
-	let compose = $state('');
 	let runtime = $state<DeployRuntime>('podman');
 	let namespace = $state('');
 	let replicas = $state(1);
@@ -51,7 +50,6 @@
 		url = app?.source.url ?? '';
 		ref = app?.source.ref ?? 'main';
 		subdir = app?.source.subdir ?? '';
-		compose = app?.source.compose ?? '';
 		runtime = app?.runtime ?? 'podman';
 		namespace = app?.namespace ?? '';
 		replicas = app?.replicas ?? 1;
@@ -135,11 +133,10 @@
 		}
 		const source: AppSource = { kind: sourceKind };
 		if (url.trim()) source.url = url.trim();
-		if (sourceKind === 'git' || sourceKind === 'static' || sourceKind === 'compose') {
+		if (sourceKind === 'git' || sourceKind === 'static') {
 			if (ref.trim()) source.ref = ref.trim();
 			if (subdir.trim()) source.subdir = subdir.trim();
 		}
-		if (sourceKind === 'compose' && compose.trim()) source.compose = compose;
 		const healthcheck: Partial<Healthcheck> = hcEnabled
 			? { kind: hcKind, port: hcPort, path: hcPath || '/' }
 			: {};
@@ -240,15 +237,6 @@
 					<input class="input" bind:value={subdir} placeholder="apps/web" />
 				</Field>
 			</div>
-		{/if}
-
-		{#if sourceKind === 'compose'}
-			<Field
-				label="Compose override"
-				hint="Optional raw compose YAML; when empty the repo's own file is used. Unsupported keys are reported, never silently dropped"
-			>
-				<textarea class="input min-h-28 font-mono text-xs" bind:value={compose}></textarea>
-			</Field>
 		{/if}
 
 		<div class="grid gap-4 sm:grid-cols-2">
