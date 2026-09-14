@@ -1,0 +1,9 @@
+displayName: Status Edge Reporter
+type: middleware
+import: github.com/Quad4-Software/Wharfinger/plugins/traefikedge
+summary: Reports client, path, status, and error aggregates to a wharfinger hub over /ingress/edge.
+iconPath: .assets/icon.png
+testData:
+  hubUrl: http://localhost:3000
+  token: st_example
+  intervalSeconds: 60
