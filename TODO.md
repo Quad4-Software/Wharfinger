@@ -137,10 +137,10 @@ channel. No SSH anywhere; the agent already proves possession.
       challenge and process seccomp intentionally not ported (no
       telemetry collected; a process-wide filter would break the
       agent's docker/kubectl control)
-- [ ] UFW integration: agent detects docker/podman publishing ports
-      that bypass ufw (the classic docker-iptables problem) and can
-      apply/fix rules with an explicit opt-in command. Detection
-      shipped for ufw and firewalld; fix command still pending
+- [x] UFW integration: agent detects docker/podman publishing ports
+      that bypass ufw or firewalld (the classic docker-iptables
+      problem) and `wharfinger-agent firewall` repairs them with
+      tagged DOCKER-USER rules; -yes applies, -revert removes
 - [x] Static file serving mode on the proxy for artifact deploys
       (safe path join, index fallback, weak ETag + 304, immutable
       hashed-asset caching)

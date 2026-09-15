@@ -172,7 +172,8 @@ export const AgentPayload = v.object({
 			v.object({
 				enabled: v.boolean(),
 				default: v.optional(MidStr),
-				rules: Int
+				rules: Int,
+				bypassed: v.optional(v.pipe(v.array(ShortStr), v.maxLength(256)))
 			})
 		),
 		// firewalld mirrors ufw for hosts that run it instead. Bypassed

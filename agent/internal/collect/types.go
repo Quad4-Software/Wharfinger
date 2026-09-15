@@ -186,6 +186,10 @@ type UFW struct {
 	Enabled bool   `json:"enabled"`
 	Default string `json:"default,omitempty"`
 	Rules   int    `json:"rules"`
+	// Bypassed lists published container ports no inbound ufw rule
+	// opens; docker and podman program their own NAT rules and slip
+	// past ufw filtering. Only set while ufw is active.
+	Bypassed []string `json:"bypassed,omitempty"`
 }
 
 // Firewalld mirrors the ufw section for firewalld hosts. A host runs

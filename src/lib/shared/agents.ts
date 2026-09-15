@@ -226,7 +226,7 @@ export interface AgentPayloadView {
 	services?: AgentService[];
 	processes?: AgentProcess[];
 	security: {
-		ufw?: { enabled: boolean; default?: string; rules: number };
+		ufw?: { enabled: boolean; default?: string; rules: number; bypassed?: string[] };
 		firewalld?: {
 			enabled: boolean;
 			default?: string;

@@ -86,12 +86,12 @@ func splitFwRange(tok string) (int, int, string, bool) {
 	return l, h, proto, err1 == nil && err2 == nil
 }
 
-// firewalldBypassed flags published container ports that no zone
-// opens. docker and podman program their own NAT rules, so a
-// published port bypasses firewalld filtering entirely; reporting
-// them makes the gap visible instead of implying the zone set covers
-// all listeners.
-func firewalldBypassed(published, open []string) []string {
+// publishedBypassed flags published container ports that the
+// firewall's open set does not cover. docker and podman program
+// their own NAT rules, so a published port bypasses ufw or firewalld
+// filtering entirely; reporting them makes the gap visible instead
+// of implying the firewall covers all listeners.
+func publishedBypassed(published, open []string) []string {
 	var out []string
 	for _, p := range published {
 		if !fwOpenCovers(open, p) {
@@ -118,6 +118,6 @@ func firewalldStatus() *Firewalld {
 	if b, err := runCmd(5*time.Second, "firewall-cmd", "--list-all-zones"); err == nil {
 		f.Zones, f.Ports, f.RichRules = parseFirewalldZones(string(b))
 	}
-	f.Bypassed = firewalldBypassed(publishedHostPorts(), f.Ports)
+	f.Bypassed = publishedBypassed(publishedHostPorts(), f.Ports)
 	return f
 }

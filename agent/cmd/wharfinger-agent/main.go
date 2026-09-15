@@ -41,6 +41,13 @@ func main() {
 		return
 	}
 
+	// wharfinger-agent firewall: opt-in repair for container ports
+	// that bypass ufw/firewalld via docker's own iptables rules.
+	if len(os.Args) > 1 && os.Args[1] == "firewall" {
+		runFirewall(os.Args[2:])
+		return
+	}
+
 	cfg, err := config.Load(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "wharfinger-agent:", err)

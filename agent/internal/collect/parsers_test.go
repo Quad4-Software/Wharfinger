@@ -177,7 +177,7 @@ func TestParseRcStatus(t *testing.T) {
 }
 
 func TestParseUfw(t *testing.T) {
-	u := parseUfwStatus(`Status: active
+	u, open := parseUfwStatus(`Status: active
 Default: deny (incoming), allow (outgoing), disabled (routed)
 
 To                         Action      From
@@ -195,8 +195,49 @@ To                         Action      From
 	if u.Default == "" {
 		t.Fatal("default policy missing")
 	}
-	if parseUfwStatus("Status: inactive").Enabled {
+	if u, _ := parseUfwStatus("Status: inactive"); u.Enabled {
 		t.Fatal("inactive ufw misparsed")
+	}
+	// 22/tcp from two rule rows dedupes; bare 443 covers both protos.
+	want := map[string]bool{"22/tcp": true, "443/tcp": true, "443/udp": true}
+	if len(open) != len(want) {
+		t.Fatalf("open ports = %v", open)
+	}
+	for _, p := range open {
+		if !want[p] {
+			t.Fatalf("unexpected open port %q", p)
+		}
+	}
+}
+
+func TestUfwRulePorts(t *testing.T) {
+	cases := []struct {
+		line string
+		want []string
+	}{
+		{"22/tcp                     ALLOW       Anywhere", []string{"22/tcp"}},
+		{"80,443/tcp                 ALLOW       Anywhere", []string{"80/tcp", "443/tcp"}},
+		{"8080:8090/tcp              ALLOW       Anywhere", []string{"8080-8090/tcp"}},
+		{"443                        ALLOW       Anywhere", []string{"443/tcp", "443/udp"}},
+		{"53/udp                     ALLOW OUT   Anywhere", nil},
+		{"22/tcp                     DENY        Anywhere", nil},
+		{"80/tcp                     ALLOW FWD   Anywhere", []string{"80/tcp"}},
+		{"Anywhere                   ALLOW       Anywhere", []string{"1-65535/tcp", "1-65535/udp"}},
+		// A source-restricted allow does not close the docker bypass.
+		{"22/tcp                     ALLOW       10.0.0.1", nil},
+		{"Anywhere                   ALLOW       10.0.0.1", nil},
+		{"Nginx Full                 ALLOW       Anywhere", nil},
+	}
+	for _, c := range cases {
+		got := ufwRulePorts(c.line)
+		if len(got) != len(c.want) {
+			t.Fatalf("%q: got %v want %v", c.line, got, c.want)
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Fatalf("%q: got %v want %v", c.line, got, c.want)
+			}
+		}
 	}
 }
 

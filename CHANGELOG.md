@@ -198,6 +198,14 @@ webauthn_origin`/`webauthn_rp_id` overrides
   and header caps; /edgez reports the loaded policy counts (audit:
   ACME challenge path exempt, no regex in list parsing, limiter map
   capped and swept)
+- Firewall bypass repair: the agent now reports which published
+  container ports bypass ufw (joining the existing firewalld
+  bypassed list, shown on the agent page), and the new opt-in
+  `wharfinger-agent firewall` subcommand prints a plan then, with
+  -yes as root, inserts tagged DOCKER-USER rules: private sources
+  return early, external traffic jumps into ufw-user-forward so
+  `ufw route allow` governs again, and new forwards toward private
+  space drop. -revert removes every wharfinger-fwfix rule
 - Pluggable storage: the hub store layer now sits behind an async
   `Db` driver interface. SQLite over node:sqlite stays the default
   and is unchanged; `[storage] driver = "surreal"` with url/ns/db/

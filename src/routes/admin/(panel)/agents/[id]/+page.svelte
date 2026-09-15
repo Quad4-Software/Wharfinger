@@ -455,6 +455,16 @@
 									: 'not installed'}
 							</span>
 						</div>
+						{#if payload.security.ufw?.bypassed?.length}
+							{@const ufw = payload.security.ufw}
+							<div class="flex justify-between pl-3">
+								<span class="text-degraded">container bypass</span>
+								<span
+									class="max-w-56 truncate font-mono text-degraded"
+									title={ufw.bypassed?.join(', ')}>{ufw.bypassed?.length} ports</span
+								>
+							</div>
+						{/if}
 						{#if payload.security.firewalld}
 							{@const fwd = payload.security.firewalld}
 							<div class="flex justify-between">
