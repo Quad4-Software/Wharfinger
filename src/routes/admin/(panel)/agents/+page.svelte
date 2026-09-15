@@ -128,6 +128,10 @@
 		s += a.alerts.length * 500;
 		if (a.summary) {
 			s += Math.max(a.summary.cpuPct, a.summary.memPct, a.summary.diskPct ?? 0);
+			if (a.summary.updates) {
+				s += a.summary.updates.security * 20 + Math.min(a.summary.updates.pending, 50);
+				if (a.summary.updates.rebootRequired) s += 30;
+			}
 		}
 		return s;
 	}
@@ -252,6 +256,27 @@
 							<span
 								class="shrink-0 rounded bg-degraded/15 px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-degraded"
 								title="No identity key bound: pre-keypair (legacy) agent">legacy</span
+							>
+						{/if}
+						{#if a.summary?.updates}
+							{@const u = a.summary.updates}
+							{#if u.pending > 0 || u.rebootRequired}
+								<span
+									class="shrink-0 rounded {u.security > 0
+										? 'bg-down/15 text-down'
+										: 'bg-degraded/15 text-degraded'} px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide"
+									title="{u.pending} pending update{u.pending === 1
+										? ''
+										: 's'} ({u.security} security){u.rebootRequired
+										? '; reboot required'
+										: ''} via {u.manager}">{u.rebootRequired ? 'reboot' : `${u.pending} upd`}</span
+								>
+							{/if}
+						{/if}
+						{#if a.mutedUntil && a.mutedUntil > Date.now()}
+							<span
+								class="shrink-0 rounded bg-degraded/15 px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-degraded"
+								title="Offline alerts muted for a scheduled reboot">muted</span
 							>
 						{/if}
 					</div>

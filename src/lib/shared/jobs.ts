@@ -31,6 +31,8 @@ export interface Job {
 	log: string | null;
 	leaseOwner: string | null;
 	leaseUntil: number | null;
+	/** Scheduled tasks: queued but not claimable before this ms. */
+	notBefore: number | null;
 	attempts: number;
 	maxAttempts: number;
 	createdAt: number;
@@ -46,4 +48,28 @@ export interface ClaimedJob {
 	lease: string;
 	leaseUntil: number;
 	attempt: number;
+}
+
+// Operator-initiated host verbs. service.* act on one unit;
+// packages.* manage OS updates; host.reboot drains and reboots.
+// Every spec field is validated on the hub before enqueue and
+// revalidated by the agent before exec; nothing here is a shell
+// fragment.
+export const AGENT_TASK_ACTIONS = [
+	'service.start',
+	'service.stop',
+	'service.restart',
+	'packages.refresh',
+	'packages.apply',
+	'host.reboot'
+] as const;
+export type AgentTaskAction = (typeof AGENT_TASK_ACTIONS)[number];
+
+export interface AgentTaskSpec {
+	action: AgentTaskAction;
+	/** service.* only: systemd unit or OpenRC service name. */
+	unit?: string;
+	/** packages.apply only: limit to security updates when the
+	    package manager supports it (dnf). */
+	securityOnly?: boolean;
 }

@@ -143,6 +143,9 @@ func (e *Executor) Execute(ctx context.Context, job *Job) error {
 	if job.Kind == "teardown" {
 		return e.executeTeardown(ctx, job)
 	}
+	if job.Kind == "agent-task" {
+		return e.executeTask(ctx, job)
+	}
 	spec, err := ParseSpec(job.Spec)
 	if err != nil {
 		return e.finishFail(job, JournalEntry{JobID: job.ID, Lease: job.Lease},

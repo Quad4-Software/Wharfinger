@@ -58,7 +58,7 @@ func (c *Client) post(ctx context.Context, path string, body any) ([]byte, error
 // drains before a teardown for the same app.
 func (c *Client) Claim(ctx context.Context) (*Job, error) {
 	res, err := c.post(ctx, "/ingress/jobs/claim", map[string]any{
-		"kinds": []string{"deploy", "teardown"},
+		"kinds": []string{"deploy", "teardown", "agent-task"},
 	})
 	if err != nil {
 		return nil, err

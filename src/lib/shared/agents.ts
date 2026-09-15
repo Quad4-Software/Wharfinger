@@ -14,6 +14,13 @@ interface AgentSummary {
 	tempMax: number | null;
 	containers: { running: number; total: number } | null;
 	servicesFailed: number | null;
+	/** Package-manager posture from the updates collector. */
+	updates?: {
+		manager: string;
+		pending: number;
+		security: number;
+		rebootRequired: boolean | null;
+	} | null;
 }
 
 export interface AgentMeta {
@@ -40,6 +47,9 @@ export interface AgentView {
 	revoked: boolean;
 	/** Active alert rule keys, e.g. ['offline', 'cpu']. */
 	alerts: string[];
+	/** Offline-alert silence window (scheduled reboot); null or a
+	    future epoch ms. */
+	mutedUntil: number | null;
 	meta: AgentMeta | null;
 	summary: AgentSummary | null;
 }
@@ -251,6 +261,15 @@ export interface AgentPayloadView {
 	reticulum?: ReticulumView;
 	logins?: LoginsView;
 	edgeCerts?: EdgeCertInfo[];
+	/** OS package posture: pending + security update counts and the
+	    reboot-required flag, when the collector found a package
+	    manager. */
+	updates?: {
+		manager: string;
+		pending: number;
+		security: number;
+		rebootRequired?: boolean;
+	};
 }
 
 // Reticulum node state from the agent collector: daemon liveness,

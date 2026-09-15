@@ -59,6 +59,38 @@ describe('JobQueue claim', () => {
 	});
 });
 
+describe('JobQueue scheduling', () => {
+	it('holds not_before jobs until their time', async () => {
+		const q = queue();
+		const future = Date.now() + 60_000;
+		const { job } = await q.enqueue({
+			kind: 'agent-task',
+			target: 'a1',
+			spec,
+			notBefore: future
+		});
+		expect(job.notBefore).toBe(future);
+		expect(await q.claim('agent-task', 'a1')).toBeNull();
+
+		// An unscheduled sibling still claims while the future job waits.
+		await q.enqueue({ kind: 'agent-task', target: 'a1', spec });
+		const c = await q.claim('agent-task', 'a1');
+		expect(c).not.toBeNull();
+		expect(c!.id).not.toBe(job.id);
+	});
+
+	it('claims a job whose not_before has passed', async () => {
+		const q = queue();
+		await q.enqueue({
+			kind: 'agent-task',
+			target: 'a1',
+			spec,
+			notBefore: Date.now() - 1000
+		});
+		expect(await q.claim('agent-task', 'a1')).not.toBeNull();
+	});
+});
+
 describe('JobQueue lease lifecycle', () => {
 	it('only the lease owner can start and finish', async () => {
 		const q = queue();

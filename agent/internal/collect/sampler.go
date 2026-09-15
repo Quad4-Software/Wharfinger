@@ -90,6 +90,7 @@ func (s *Sampler) Collect() *Payload {
 		Traefik:     traefikMetrics(),
 		Reticulum:   reticulumMetrics(),
 		Logins:      loginsMetrics(),
+		Updates:     updateMetrics(),
 	}
 	return p
 }

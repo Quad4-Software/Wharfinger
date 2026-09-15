@@ -17,6 +17,7 @@ export interface AgentRow {
 	lastSeenAt: number | null;
 	meta: AgentMeta | null;
 	alerts: Record<string, number>;
+	mutedUntil: number | null;
 	revokedAt: number | null;
 }
 
@@ -33,6 +34,7 @@ interface AgentDbRow {
 	last_payload: string | null;
 	meta: string | null;
 	alerts: string | null;
+	muted_until: number | null;
 	revoked_at: number | null;
 }
 
@@ -68,6 +70,7 @@ function toRow(r: AgentDbRow): AgentRow {
 		lastSeenAt: r.last_seen_at,
 		meta: safeJson<AgentMeta | null>(r.meta, null),
 		alerts: safeJson<Record<string, number>>(r.alerts, {}),
+		mutedUntil: r.muted_until,
 		revokedAt: r.revoked_at
 	};
 }
@@ -255,6 +258,15 @@ export class AgentStore {
 	}
 
 	/**
+	 * Silence the offline alert until a timestamp. The hub sets this
+	 * when a reboot task is queued so the expected gap does not page;
+	 * the column expires on its own and needs no clearing.
+	 */
+	async setMutedUntil(id: string, until: number): Promise<void> {
+		await this.db.prepare('UPDATE agents SET muted_until = ? WHERE id = ?').run(until, id);
+	}
+
+	/**
 	 * Lightweight rows for the periodic offline scan: no last_payload
 	 * parsing, just what the alerter needs.
 	 */
@@ -263,16 +275,23 @@ export class AgentStore {
 			id: string;
 			name: string;
 			lastSeenAt: number | null;
+			mutedUntil: number | null;
 			alerts: Record<string, number>;
 		}[]
 	> {
 		const rows = (await this.db
-			.prepare('SELECT id, name, last_seen_at, alerts FROM agents WHERE revoked_at IS NULL')
-			.all()) as unknown as Pick<AgentDbRow, 'id' | 'name' | 'last_seen_at' | 'alerts'>[];
+			.prepare(
+				'SELECT id, name, last_seen_at, alerts, muted_until FROM agents WHERE revoked_at IS NULL'
+			)
+			.all()) as unknown as Pick<
+			AgentDbRow,
+			'id' | 'name' | 'last_seen_at' | 'alerts' | 'muted_until'
+		>[];
 		return rows.map((r) => ({
 			id: r.id,
 			name: r.name,
 			lastSeenAt: r.last_seen_at,
+			mutedUntil: r.muted_until,
 			alerts: safeJson<Record<string, number>>(r.alerts, {})
 		}));
 	}

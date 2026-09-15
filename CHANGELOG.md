@@ -234,6 +234,19 @@ webauthn_origin`/`webauthn_rp_id` overrides
   page (audit: previews carry the parent's secrets so the opt-in is
   explicit; previews cannot spawn previews; forge responses are
   bounded and unhandled PR actions no longer reach the push path)
+- Host lifecycle tasks: POST /admin/api/agents/<id>/task enqueues a
+  signed agent-task job (service.start/stop/restart, packages.refresh,
+  packages.apply with a securityOnly flag, host.reboot). jobs.not_before
+  schedules tasks up to 7 days out, and a reboot sets agents.muted_until
+  so the expected offline gap does not page. The agent revalidates the
+  spec, builds fixed argv through the resolved-binary runner (systemd
+  and OpenRC for services; apt/dnf/apk/pacman/zypper for packages), and
+  closes the job before signalling pid1 to reboot
+- Package posture collector: the agent reports pending/security update
+  counts and the distro reboot-required flag (cached ~30min so index
+  queries never run per sample); the fleet list chips hosts with
+  pending security updates or a required reboot and ranks them toward
+  the top
 
 ### Fixed
 

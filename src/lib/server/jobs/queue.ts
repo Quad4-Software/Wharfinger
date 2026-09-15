@@ -15,6 +15,7 @@ interface JobRow {
 	log: string | null;
 	lease_owner: string | null;
 	lease_until: number | null;
+	not_before: number | null;
 	attempts: number;
 	max_attempts: number;
 	created_at: number;
@@ -33,6 +34,7 @@ function toJob(r: JobRow): Job {
 		log: r.log,
 		leaseOwner: r.lease_owner,
 		leaseUntil: r.lease_until,
+		notBefore: r.not_before,
 		attempts: r.attempts,
 		maxAttempts: r.max_attempts,
 		createdAt: r.created_at,
@@ -69,6 +71,7 @@ export class JobQueue {
 		spec: unknown;
 		jobKey?: string;
 		maxAttempts?: number;
+		notBefore?: number;
 	}): Promise<{ job: Job; created: boolean }> {
 		const spec = JSON.stringify(opts.spec);
 		if (spec.length > MAX_SPEC_BYTES) throw new Error('job spec too large');
@@ -76,10 +79,19 @@ export class JobQueue {
 		const now = Date.now();
 		await this.db
 			.prepare(
-				`INSERT OR IGNORE INTO jobs (job_key, kind, target, status, spec, attempts, max_attempts, created_at, updated_at)
-				 VALUES (?, ?, ?, 'queued', ?, 0, ?, ?, ?)`
+				`INSERT OR IGNORE INTO jobs (job_key, kind, target, status, spec, attempts, max_attempts, not_before, created_at, updated_at)
+				 VALUES (?, ?, ?, 'queued', ?, 0, ?, ?, ?, ?)`
 			)
-			.run(jobKey, opts.kind, opts.target ?? null, spec, opts.maxAttempts ?? 3, now, now);
+			.run(
+				jobKey,
+				opts.kind,
+				opts.target ?? null,
+				spec,
+				opts.maxAttempts ?? 3,
+				opts.notBefore ?? null,
+				now,
+				now
+			);
 		const row = (await this.db
 			.prepare('SELECT * FROM jobs WHERE job_key = ?')
 			.get(jobKey)) as unknown as JobRow;
@@ -106,9 +118,10 @@ export class JobQueue {
 				.prepare(
 					`SELECT id FROM jobs
 					 WHERE status = 'queued' AND kind = ? AND (target = ? OR target IS NULL)
+					   AND (not_before IS NULL OR not_before <= ?)
 					 ORDER BY id LIMIT 1`
 				)
-				.get(kind, target)) as { id: number } | undefined;
+				.get(kind, target, now)) as { id: number } | undefined;
 			if (!cand) return null;
 			const row = (await tx
 				.prepare(

@@ -101,6 +101,9 @@ export class AgentAlerter {
 				continue;
 			}
 			if (agent.lastSeenAt === null || 'offline' in alerts) continue;
+			// A queued host.reboot mutes the offline alert through the
+			// expected drain window; threshold alerts still evaluate.
+			if (agent.mutedUntil !== null && now < agent.mutedUntil) continue;
 			const silentMs = now - agent.lastSeenAt;
 			if (silentMs <= offMin * 60_000) continue;
 			alerts.offline = now;

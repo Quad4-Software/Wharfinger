@@ -11,12 +11,16 @@
 		LogIn,
 		Network,
 		Pencil,
+		Play,
 		RefreshCw,
+		RotateCw,
+		Square,
 		ShieldCheck,
 		Trash,
 		Waypoints
 	} from '@lucide/svelte';
 	import PageHeader from '$lib/components/admin/PageHeader.svelte';
+	import AgentOps from '$lib/components/admin/AgentOps.svelte';
 	import Modal from '$lib/components/admin/Modal.svelte';
 	import Field from '$lib/components/admin/Field.svelte';
 	import ConfirmDialog from '$lib/components/admin/ConfirmDialog.svelte';
@@ -61,6 +65,7 @@
 	let rotated = $state<{ token: string; pubkey: string } | null>(null);
 	let busy = $state(false);
 	let svcFilter = $state<'all' | 'failed' | 'inactive'>('all');
+	let svcBusy = $state<string | null>(null);
 	let edge = $state<EdgeReportView | null>(null);
 	let edgeSamples = $state<EdgeSampleView[]>([]);
 	let portFilter = $state('');
@@ -175,6 +180,21 @@
 			toast('error', errMessage(err));
 		} finally {
 			busy = false;
+		}
+	}
+
+	async function queueSvc(verb: string, unit: string): Promise<void> {
+		svcBusy = `${verb}:${unit}`;
+		try {
+			await api(`/agents/${id}/task`, {
+				method: 'POST',
+				body: { action: `service.${verb}`, unit }
+			});
+			toast('success', `${verb} queued for ${unit}`);
+		} catch (err) {
+			toast('error', errMessage(err));
+		} finally {
+			svcBusy = null;
 		}
 	}
 
@@ -302,7 +322,14 @@
 			key {agent.keyBound ? 'bound' : 'legacy'}
 		</span>
 		{#if payload}<span>uptime {fmtUptime(payload.agent.uptimeSec)}</span>{/if}
+		{#if agent.mutedUntil && agent.mutedUntil > Date.now()}
+			<span class="text-degraded"
+				>alerts muted until {new Date(agent.mutedUntil).toLocaleTimeString()}</span
+			>
+		{/if}
 	</div>
+
+	<AgentOps {agent} canManage={isAdmin && !agent.revoked} onqueued={() => void load()} />
 
 	{#if payload}
 		<div class="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
@@ -824,7 +851,8 @@
 							label: 'Boot',
 							sort: (s: AgentService) =>
 								s.enabled === undefined ? '' : s.enabled ? 'enabled' : 'disabled'
-						}
+						},
+						...(isAdmin && !agent.revoked ? [{ label: '' }] : [])
 					]}
 					rows={filteredServices}
 					rowKey={(s: AgentService) => s.manager + s.name}
@@ -849,6 +877,43 @@
 						<td class="py-1.5 text-faint"
 							>{s.enabled === undefined ? '' : s.enabled ? 'enabled' : 'disabled'}</td
 						>
+						{#if isAdmin && agent && !agent.revoked}
+							<td class="py-1.5">
+								<div class="flex justify-end gap-0.5">
+									{#if s.state !== 'active'}
+										<button
+											class="btn btn-ghost !p-1 text-up"
+											title="Start"
+											aria-label="Start {s.name}"
+											disabled={svcBusy !== null}
+											onclick={() => queueSvc('start', s.name)}
+										>
+											<Play class="size-3.5" />
+										</button>
+									{/if}
+									{#if s.state === 'active'}
+										<button
+											class="btn btn-ghost !p-1 text-faint"
+											title="Restart"
+											aria-label="Restart {s.name}"
+											disabled={svcBusy !== null}
+											onclick={() => queueSvc('restart', s.name)}
+										>
+											<RotateCw class="size-3.5" />
+										</button>
+										<button
+											class="btn btn-ghost !p-1 text-down"
+											title="Stop"
+											aria-label="Stop {s.name}"
+											disabled={svcBusy !== null}
+											onclick={() => queueSvc('stop', s.name)}
+										>
+											<Square class="size-3.5" />
+										</button>
+									{/if}
+								</div>
+							</td>
+						{/if}
 					{/snippet}
 				</DataTable>
 			</div>

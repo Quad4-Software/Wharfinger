@@ -190,6 +190,7 @@ CREATE TABLE IF NOT EXISTS agents (
 	last_payload TEXT,
 	meta         TEXT,
 	alerts       TEXT,
+	muted_until  INTEGER,
 	revoked_at   INTEGER
 );
 
@@ -452,6 +453,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 	lease_until  INTEGER,
 	attempts     INTEGER NOT NULL DEFAULT 0,
 	max_attempts INTEGER NOT NULL DEFAULT 3,
+	not_before   INTEGER,
 	created_at   INTEGER NOT NULL,
 	updated_at   INTEGER NOT NULL
 );
@@ -674,6 +676,20 @@ function migrate(db: DatabaseSync): void {
 		db.exec(
 			'CREATE INDEX IF NOT EXISTS idx_deploy_apps_preview ON deploy_apps (preview_of, preview_pr)'
 		);
+	}
+	const jobCols = (
+		db.prepare("SELECT name FROM pragma_table_info('jobs')").all() as { name: string }[]
+	).map((c) => c.name);
+	if (!jobCols.includes('not_before')) {
+		// Scheduled tasks (patch windows, reboots): the claim query
+		// skips queued jobs whose not_before is still in the future.
+		db.exec('ALTER TABLE jobs ADD COLUMN not_before INTEGER');
+	}
+	if (!agentCols.includes('muted_until')) {
+		// Hub-set silence window: a scheduled reboot mutes the
+		// offline alert until this timestamp so the expected gap
+		// does not fire a notification.
+		db.exec('ALTER TABLE agents ADD COLUMN muted_until INTEGER');
 	}
 	// Tamper-evident audit chain: each row hashes its canonical fields
 	// plus the previous row's hash. Nullable so pre-chain rows migrate.

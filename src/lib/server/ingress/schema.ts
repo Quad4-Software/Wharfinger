@@ -320,6 +320,17 @@ export const AgentPayload = v.object({
 			),
 			v.maxLength(256)
 		)
+	),
+	// OS package posture: pending/security update counts plus the
+	// reboot-required flag when the distro exposes one. Absent when no
+	// supported package manager was found.
+	updates: v.optional(
+		v.object({
+			manager: ShortStr,
+			pending: Int,
+			security: Int,
+			rebootRequired: v.optional(v.boolean())
+		})
 	)
 });
 

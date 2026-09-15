@@ -30,6 +30,14 @@ export function agentView(
 			containers: p.docker ? { running: p.docker.running, total: p.docker.total } : null,
 			servicesFailed: p.services
 				? p.services.filter((s) => s.manager === 'systemd' && s.state === 'failed').length
+				: null,
+			updates: p.updates
+				? {
+						manager: p.updates.manager,
+						pending: p.updates.pending,
+						security: p.updates.security,
+						rebootRequired: p.updates.rebootRequired ?? null
+					}
 				: null
 		};
 	}
@@ -44,6 +52,7 @@ export function agentView(
 		online,
 		revoked: row.revokedAt !== null,
 		alerts: Object.keys(row.alerts),
+		mutedUntil: row.mutedUntil ?? null,
 		meta: row.meta,
 		summary
 	};

@@ -187,4 +187,20 @@ describe('AgentAlerter offline detection', () => {
 		await alerter.tick();
 		expect(sent).toHaveLength(0);
 	});
+
+	it('mutes the offline alert during a scheduled reboot window', async () => {
+		const { db, agents, sent, alerter } = setup({ alert_offline_minutes: 10 });
+		const { id } = await agents.create('rebooting', null);
+		db.prepare('UPDATE agents SET last_seen_at = ? WHERE id = ?').run(Date.now() - 20 * 60_000, id);
+		await agents.setMutedUntil(id, Date.now() + 10 * 60_000);
+		await alerter.tick();
+		expect(sent).toHaveLength(0);
+		expect((await agents.get(id))!.alerts.offline).toBeUndefined();
+
+		// An expired mute lets the alert fire again.
+		await agents.setMutedUntil(id, Date.now() - 1000);
+		await alerter.tick();
+		expect(sent).toHaveLength(1);
+		expect(sent[0].event).toBe('down');
+	});
 });

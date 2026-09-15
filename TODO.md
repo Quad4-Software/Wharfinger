@@ -164,14 +164,14 @@ channel. No SSH anywhere; the agent already proves possession.
 
 ## Phase 4: Server lifecycle
 
-- [ ] Agent-driven host patching: package-manager update dry-run,
+- [x] Agent-driven host patching: package-manager update dry-run,
       report pending security updates, scheduled apply windows
-- [ ] Reboot scheduling: drain -> reboot -> verify -> report, with
+- [x] Reboot scheduling: drain -> reboot -> verify -> report, with
       maintenance-window integration so monitors stay quiet
-- [ ] Service manager actions: restart/stop/start for systemd +
+- [x] Service manager actions: restart/stop/start for systemd +
       OpenRC units from the panel (already inventoried; add control
       verbs with audit + confirm)
-- [ ] Fleet view: pending updates, reboot-needed flags, agent
+- [x] Fleet view: pending updates, reboot-needed flags, agent
       versions, drift
 
 ## Phase 5: AI and MCP (opt-in, default off)

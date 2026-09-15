@@ -38,6 +38,9 @@ type Payload struct {
 	// when the -edge server runs. Mirrors edge.CertInfo; kept as a
 	// local struct so collect stays a leaf package.
 	EdgeCerts []EdgeCert `json:"edgeCerts,omitempty"`
+	// Updates is the package posture, cached ~30min; nil when no
+	// supported package manager was detected.
+	Updates *Updates `json:"updates,omitempty"`
 }
 
 // EdgeCert reports one managed certificate; wire-compatible with

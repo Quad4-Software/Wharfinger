@@ -230,6 +230,55 @@ func ParseTeardownSpec(raw string) (*TeardownSpec, error) {
 	return &s, nil
 }
 
+// TaskSpec is the frozen spec for an agent-task job: operator verbs
+// like service control, package refresh/apply, and reboot. Every
+// field lands in a fixed argv position; the agent revalidates even
+// though the hub validated at enqueue, because the spec only proves
+// what the queue stored.
+type TaskSpec struct {
+	Action       string `json:"action"`
+	Unit         string `json:"unit,omitempty"`
+	SecurityOnly bool   `json:"securityOnly,omitempty"`
+}
+
+// taskActions is the allowlist mirrored from the hub's shared
+// AGENT_TASK_ACTIONS.
+var taskActions = map[string]bool{
+	"service.start":    true,
+	"service.stop":     true,
+	"service.restart":  true,
+	"packages.refresh": true,
+	"packages.apply":   true,
+	"host.reboot":      true,
+}
+
+// unitRE accepts systemd unit names and OpenRC service names while
+// rejecting anything path-shaped or space-bearing, so a unit is
+// always exactly one argv element.
+var unitRE = regexp.MustCompile(`^[a-zA-Z0-9@:._-]{1,128}$`)
+
+// ParseTaskSpec decodes and validates an agent-task job spec.
+func ParseTaskSpec(raw string) (*TaskSpec, error) {
+	var s TaskSpec
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		return nil, fmt.Errorf("task spec json: %w", err)
+	}
+	if !taskActions[s.Action] {
+		return nil, fmt.Errorf("task action %q unsupported", s.Action)
+	}
+	if strings.HasPrefix(s.Action, "service.") {
+		if !unitRE.MatchString(s.Unit) {
+			return nil, fmt.Errorf("unit %q is not a valid service name", s.Unit)
+		}
+	} else if s.Unit != "" {
+		return nil, fmt.Errorf("unit only applies to service actions")
+	}
+	if s.SecurityOnly && s.Action != "packages.apply" {
+		return nil, fmt.Errorf("securityOnly only applies to packages.apply")
+	}
+	return &s, nil
+}
+
 // nameRE restricts names that land in container names and image
 // tags. argv is already injection-safe (fixed slices); this keeps
 // the resulting runtime objects addressable.
