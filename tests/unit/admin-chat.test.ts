@@ -16,9 +16,9 @@ function stores(): { db: DatabaseSync; users: UserStore; chat: ChatStore } {
 	return { db, users, chat: new ChatStore(db, users) };
 }
 
-function expectChatError(fn: () => unknown, status: number): void {
+async function expectChatError(fn: () => unknown, status: number): Promise<void> {
 	try {
-		fn();
+		await fn();
 	} catch (err) {
 		expect(err).toBeInstanceOf(ChatError);
 		expect((err as ChatError).status).toBe(status);
@@ -28,67 +28,65 @@ function expectChatError(fn: () => unknown, status: number): void {
 }
 
 describe('ChatStore dms', () => {
-	it('canonicalizes the pair key and reuses the room', () => {
+	it('canonicalizes the pair key and reuses the room', async () => {
 		const { users, chat } = stores();
-		const a = users.create('alice', 'a-very-long-password', 'operator');
-		const b = users.create('bob', 'a-very-long-password', 'viewer');
+		const a = await users.create('alice', 'a-very-long-password', 'operator');
+		const b = await users.create('bob', 'a-very-long-password', 'viewer');
 
-		const ab = chat.openDm(a.id, b.id);
-		const ba = chat.openDm(b.id, a.id);
+		const ab = await chat.openDm(a.id, b.id);
+		const ba = await chat.openDm(b.id, a.id);
 		expect(ab.id).toBe(ba.id);
 		expect(ab.kind).toBe('dm');
 		expect(ab.members.map((m) => m.id).sort()).toEqual([a.id, b.id].sort());
 
 		// Repeat opens are idempotent (the concurrent-create path).
-		expect(chat.openDm(a.id, b.id).id).toBe(ab.id);
+		expect((await chat.openDm(a.id, b.id)).id).toBe(ab.id);
 	});
 
-	it('rejects self dms and unknown users', () => {
+	it('rejects self dms and unknown users', async () => {
 		const { users, chat } = stores();
-		const a = users.create('alice', 'a-very-long-password', 'operator');
-		expectChatError(() => chat.openDm(a.id, a.id), 422);
-		expectChatError(() => chat.openDm(a.id, 99999), 422);
+		const a = await users.create('alice', 'a-very-long-password', 'operator');
+		await expectChatError(() => chat.openDm(a.id, a.id), 422);
+		await expectChatError(() => chat.openDm(a.id, 99999), 422);
 	});
 });
 
 describe('ChatStore messages', () => {
-	it('enforces membership on send and read', () => {
+	it('enforces membership on send and read', async () => {
 		const { users, chat } = stores();
-		const a = users.create('alice', 'a-very-long-password', 'operator');
-		const b = users.create('bob', 'a-very-long-password', 'viewer');
-		const c = users.create('carol', 'a-very-long-password', 'viewer');
-		const room = chat.openDm(a.id, b.id);
+		const a = await users.create('alice', 'a-very-long-password', 'operator');
+		const b = await users.create('bob', 'a-very-long-password', 'viewer');
+		const c = await users.create('carol', 'a-very-long-password', 'viewer');
+		const room = await chat.openDm(a.id, b.id);
 
-		expectChatError(() => chat.send(room.id, c.id, 'hi'), 403);
-		expectChatError(() => chat.list(room.id, c.id), 403);
-		expectChatError(() => {
-			chat.markRead(room.id, c.id, 1);
-		}, 403);
-		expect(chat.send(room.id, a.id, 'hi').body).toBe('hi');
+		await expectChatError(() => chat.send(room.id, c.id, 'hi'), 403);
+		await expectChatError(() => chat.list(room.id, c.id), 403);
+		await expectChatError(() => chat.markRead(room.id, c.id, 1), 403);
+		expect((await chat.send(room.id, a.id, 'hi')).body).toBe('hi');
 	});
 
-	it('strips control chars, trims, caps length, rejects empty', () => {
+	it('strips control chars, trims, caps length, rejects empty', async () => {
 		const { users, chat } = stores();
-		const a = users.create('alice', 'a-very-long-password', 'operator');
-		const b = users.create('bob', 'a-very-long-password', 'viewer');
-		const room = chat.openDm(a.id, b.id);
+		const a = await users.create('alice', 'a-very-long-password', 'operator');
+		const b = await users.create('bob', 'a-very-long-password', 'viewer');
+		const room = await chat.openDm(a.id, b.id);
 
-		expectChatError(() => chat.send(room.id, a.id, '   \n\n  '), 422);
-		expectChatError(() => chat.send(room.id, a.id, '\x07\x08'), 422);
+		await expectChatError(() => chat.send(room.id, a.id, '   \n\n  '), 422);
+		await expectChatError(() => chat.send(room.id, a.id, '\x07\x08'), 422);
 
-		const stripped = chat.send(room.id, a.id, 'a\x07b\tc\nd');
+		const stripped = await chat.send(room.id, a.id, 'a\x07b\tc\nd');
 		expect(stripped.body).toBe('abc\nd');
 
-		const long = chat.send(room.id, a.id, 'x'.repeat(5000));
+		const long = await chat.send(room.id, a.id, 'x'.repeat(5000));
 		expect(long.body).toHaveLength(4000);
 	});
 
-	it('seals bodies at rest and unseals on read', () => {
+	it('seals bodies at rest and unseals on read', async () => {
 		const { db, users, chat } = stores();
-		const a = users.create('alice', 'a-very-long-password', 'operator');
-		const b = users.create('bob', 'a-very-long-password', 'viewer');
-		const room = chat.openDm(a.id, b.id);
-		const sent = chat.send(room.id, a.id, 'sensitive ops detail');
+		const a = await users.create('alice', 'a-very-long-password', 'operator');
+		const b = await users.create('bob', 'a-very-long-password', 'viewer');
+		const room = await chat.openDm(a.id, b.id);
+		const sent = await chat.send(room.id, a.id, 'sensitive ops detail');
 
 		const raw = db.prepare('SELECT body FROM chat_messages WHERE id = ?').get(sent.id) as {
 			body: string;
@@ -97,83 +95,83 @@ describe('ChatStore messages', () => {
 		expect(raw.body).not.toContain('sensitive');
 		expect(openSecret(raw.body)).toBe('sensitive ops detail');
 
-		const page = chat.list(room.id, b.id);
+		const page = await chat.list(room.id, b.id);
 		expect(page.messages[0].body).toBe('sensitive ops detail');
 	});
 
-	it('counts unread and advances the read cursor', () => {
+	it('counts unread and advances the read cursor', async () => {
 		const { users, chat } = stores();
-		const a = users.create('alice', 'a-very-long-password', 'operator');
-		const b = users.create('bob', 'a-very-long-password', 'viewer');
-		const room = chat.openDm(a.id, b.id);
-		const m1 = chat.send(room.id, a.id, 'one');
-		const m2 = chat.send(room.id, a.id, 'two');
+		const a = await users.create('alice', 'a-very-long-password', 'operator');
+		const b = await users.create('bob', 'a-very-long-password', 'viewer');
+		const room = await chat.openDm(a.id, b.id);
+		const m1 = await chat.send(room.id, a.id, 'one');
+		const m2 = await chat.send(room.id, a.id, 'two');
 
-		const view = chat.listRoomsFor(b.id).find((r) => r.id === room.id);
+		const view = (await chat.listRoomsFor(b.id)).find((r) => r.id === room.id);
 		expect(view?.unread).toBe(2);
 		expect(view?.preview?.body).toBe('two');
 
-		chat.markRead(room.id, b.id, m1.id);
-		expect(chat.listRoomsFor(b.id)[0].unread).toBe(1);
-		chat.markRead(room.id, b.id, m2.id);
-		expect(chat.listRoomsFor(b.id)[0].unread).toBe(0);
+		await chat.markRead(room.id, b.id, m1.id);
+		expect((await chat.listRoomsFor(b.id))[0].unread).toBe(1);
+		await chat.markRead(room.id, b.id, m2.id);
+		expect((await chat.listRoomsFor(b.id))[0].unread).toBe(0);
 		// The cursor never rewinds.
-		chat.markRead(room.id, b.id, m1.id);
-		expect(chat.listRoomsFor(b.id)[0].unread).toBe(0);
+		await chat.markRead(room.id, b.id, m1.id);
+		expect((await chat.listRoomsFor(b.id))[0].unread).toBe(0);
 	});
 
-	it('edits inside the window, rejects strangers and stale edits', () => {
+	it('edits inside the window, rejects strangers and stale edits', async () => {
 		const { db, users, chat } = stores();
-		const a = users.create('alice', 'a-very-long-password', 'operator');
-		const b = users.create('bob', 'a-very-long-password', 'viewer');
-		const room = chat.openDm(a.id, b.id);
-		const m = chat.send(room.id, a.id, 'typo');
+		const a = await users.create('alice', 'a-very-long-password', 'operator');
+		const b = await users.create('bob', 'a-very-long-password', 'viewer');
+		const room = await chat.openDm(a.id, b.id);
+		const m = await chat.send(room.id, a.id, 'typo');
 
-		expectChatError(() => chat.edit(m.id, b.id, 'fixed'), 403);
-		const edited = chat.edit(m.id, a.id, 'fixed');
+		await expectChatError(() => chat.edit(m.id, b.id, 'fixed'), 403);
+		const edited = await chat.edit(m.id, a.id, 'fixed');
 		expect(edited.body).toBe('fixed');
 		expect(edited.editedAt).not.toBeNull();
 
 		// Age the row past the 10 minute window.
 		db.prepare('UPDATE chat_messages SET at = ? WHERE id = ?').run(Date.now() - 11 * 60_000, m.id);
-		expectChatError(() => chat.edit(m.id, a.id, 'late'), 403);
+		await expectChatError(() => chat.edit(m.id, a.id, 'late'), 403);
 	});
 
-	it('soft deletes for the author or a moderator, tombstones reads', () => {
+	it('soft deletes for the author or a moderator, tombstones reads', async () => {
 		const { users, chat } = stores();
-		const a = users.create('alice', 'a-very-long-password', 'operator');
-		const b = users.create('bob', 'a-very-long-password', 'viewer');
-		const room = chat.openDm(a.id, b.id);
-		const m1 = chat.send(room.id, a.id, 'one');
-		const m2 = chat.send(room.id, a.id, 'two');
+		const a = await users.create('alice', 'a-very-long-password', 'operator');
+		const b = await users.create('bob', 'a-very-long-password', 'viewer');
+		const room = await chat.openDm(a.id, b.id);
+		const m1 = await chat.send(room.id, a.id, 'one');
+		const m2 = await chat.send(room.id, a.id, 'two');
 
-		expectChatError(() => chat.remove(m1.id, b.id, false), 403);
-		const gone = chat.remove(m1.id, a.id, false);
+		await expectChatError(() => chat.remove(m1.id, b.id, false), 403);
+		const gone = await chat.remove(m1.id, a.id, false);
 		expect(gone.deletedAt).not.toBeNull();
 		expect(gone.body).toBe('');
 
 		// Moderator path (users.manage holder) deletes others' messages.
-		const mod = chat.remove(m2.id, b.id, true);
+		const mod = await chat.remove(m2.id, b.id, true);
 		expect(mod.deletedAt).not.toBeNull();
 
-		const page = chat.list(room.id, b.id);
+		const page = await chat.list(room.id, b.id);
 		expect(page.messages.every((m) => m.deletedAt !== null && m.body === '')).toBe(true);
 	});
 
-	it('paginates backwards with stable ordering', () => {
+	it('paginates backwards with stable ordering', async () => {
 		const { users, chat } = stores();
-		const a = users.create('alice', 'a-very-long-password', 'operator');
-		const b = users.create('bob', 'a-very-long-password', 'viewer');
-		const room = chat.openDm(a.id, b.id);
-		for (let i = 1; i <= 60; i++) chat.send(room.id, a.id, `m${i}`);
+		const a = await users.create('alice', 'a-very-long-password', 'operator');
+		const b = await users.create('bob', 'a-very-long-password', 'viewer');
+		const room = await chat.openDm(a.id, b.id);
+		for (let i = 1; i <= 60; i++) await chat.send(room.id, a.id, `m${i}`);
 
-		const first = chat.list(room.id, b.id);
+		const first = await chat.list(room.id, b.id);
 		expect(first.messages).toHaveLength(50);
 		expect(first.hasMore).toBe(true);
 		expect(first.messages[49].body).toBe('m60');
 		expect(first.messages[0].body).toBe('m11');
 
-		const second = chat.list(room.id, b.id, first.messages[0].id);
+		const second = await chat.list(room.id, b.id, first.messages[0].id);
 		expect(second.messages).toHaveLength(10);
 		expect(second.hasMore).toBe(false);
 		expect(second.messages.map((m) => m.body)).toEqual(
@@ -186,57 +184,51 @@ describe('ChatStore messages', () => {
 });
 
 describe('ChatStore rooms', () => {
-	it('validates name and members, lists with previews', () => {
+	it('validates name and members, lists with previews', async () => {
 		const { users, chat } = stores();
-		const a = users.create('alice', 'a-very-long-password', 'operator');
-		const b = users.create('bob', 'a-very-long-password', 'viewer');
-		const c = users.create('carol', 'a-very-long-password', 'viewer');
+		const a = await users.create('alice', 'a-very-long-password', 'operator');
+		const b = await users.create('bob', 'a-very-long-password', 'viewer');
+		const c = await users.create('carol', 'a-very-long-password', 'viewer');
 
-		expectChatError(() => chat.createRoom('  ', [b.id], a.id), 422);
-		expectChatError(() => chat.createRoom('r', [99999], a.id), 422);
-		expectChatError(() => chat.createRoom('r', [], a.id), 422);
+		await expectChatError(() => chat.createRoom('  ', [b.id], a.id), 422);
+		await expectChatError(() => chat.createRoom('r', [99999], a.id), 422);
+		await expectChatError(() => chat.createRoom('r', [], a.id), 422);
 
-		const room = chat.createRoom('ops', [b.id, c.id], a.id);
+		const room = await chat.createRoom('ops', [b.id, c.id], a.id);
 		expect(room.members).toHaveLength(3);
-		chat.send(room.id, b.id, 'hello room');
-		const view = chat.listRoomsFor(a.id)[0];
+		await chat.send(room.id, b.id, 'hello room');
+		const view = (await chat.listRoomsFor(a.id))[0];
 		expect(view.preview?.body).toBe('hello room');
 		expect(view.unread).toBe(1);
 	});
 
-	it('manages membership with creator and admin rules', () => {
+	it('manages membership with creator and admin rules', async () => {
 		const { users, chat } = stores();
-		const a = users.create('alice', 'a-very-long-password', 'operator');
-		const b = users.create('bob', 'a-very-long-password', 'viewer');
-		const c = users.create('carol', 'a-very-long-password', 'viewer');
-		const d = users.create('dave', 'a-very-long-password', 'viewer');
-		const room = chat.createRoom('ops', [b.id], a.id);
+		const a = await users.create('alice', 'a-very-long-password', 'operator');
+		const b = await users.create('bob', 'a-very-long-password', 'viewer');
+		const c = await users.create('carol', 'a-very-long-password', 'viewer');
+		const d = await users.create('dave', 'a-very-long-password', 'viewer');
+		const room = await chat.createRoom('ops', [b.id], a.id);
 
 		// Any member may add.
-		chat.addMember(room.id, b.id, c.id);
-		expect(chat.memberIds(room.id).sort()).toEqual([a.id, b.id, c.id].sort());
+		await chat.addMember(room.id, b.id, c.id);
+		expect((await chat.memberIds(room.id)).sort()).toEqual([a.id, b.id, c.id].sort());
 
 		// Non-creator non-admin cannot remove others, but can leave.
-		expectChatError(() => {
-			chat.removeMember(room.id, b.id, c.id, false);
-		}, 403);
-		chat.removeMember(room.id, c.id, c.id, false);
-		expect(chat.memberIds(room.id).sort()).toEqual([a.id, b.id].sort());
+		await expectChatError(() => chat.removeMember(room.id, b.id, c.id, false), 403);
+		await chat.removeMember(room.id, c.id, c.id, false);
+		expect((await chat.memberIds(room.id)).sort()).toEqual([a.id, b.id].sort());
 
 		// Creator and admin removals.
-		chat.addMember(room.id, a.id, c.id);
-		chat.removeMember(room.id, a.id, c.id, false);
-		chat.addMember(room.id, a.id, d.id);
-		chat.removeMember(room.id, b.id, d.id, true);
-		expect(chat.memberIds(room.id).sort()).toEqual([a.id, b.id].sort());
+		await chat.addMember(room.id, a.id, c.id);
+		await chat.removeMember(room.id, a.id, c.id, false);
+		await chat.addMember(room.id, a.id, d.id);
+		await chat.removeMember(room.id, b.id, d.id, true);
+		expect((await chat.memberIds(room.id)).sort()).toEqual([a.id, b.id].sort());
 
 		// Dm membership is fixed.
-		const dm = chat.openDm(a.id, b.id);
-		expectChatError(() => {
-			chat.addMember(dm.id, a.id, c.id);
-		}, 422);
-		expectChatError(() => {
-			chat.removeMember(dm.id, a.id, b.id, true);
-		}, 422);
+		const dm = await chat.openDm(a.id, b.id);
+		await expectChatError(() => chat.addMember(dm.id, a.id, c.id), 422);
+		await expectChatError(() => chat.removeMember(dm.id, a.id, b.id, true), 422);
 	});
 });

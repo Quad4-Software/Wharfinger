@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { asDb, type Db } from '$lib/server/store/driver';
 
 // Local error-tracking store: the hub's Bugsink/GlitchTip side.
 // Projects own a public DSN key; events group into issues by
@@ -10,6 +11,8 @@ const TELEMETRY_MAX_EVENTS_TOTAL = 100_000;
 const TELEMETRY_MAX_TRACES_PER_PROJECT = 2000;
 const TELEMETRY_MAX_TRACES_TOTAL = 20_000;
 const STATS_WINDOW = 5000;
+// Positional params per statement; chunk id-list deletes under it.
+const DELETE_CHUNK = 500;
 
 export interface TelemetryProject {
 	id: number;
@@ -121,70 +124,91 @@ interface StoredEvent {
 	raw: string;
 }
 
-export class TelemetryStore {
-	constructor(private readonly db: DatabaseSync) {}
+const ISSUE_COLS = `project_id AS projectId, fingerprint, title, culprit, level, first_seen AS firstSeen, last_seen AS lastSeen, count, resolved_at AS resolvedAt`;
+const EVENT_COLS = `id, project_id AS projectId, issue_fp AS issueFp, event_id AS eventId, ts, level, platform, message, exc_type AS excType, exc_value AS excValue, release, environment, tags, request, stack, raw`;
+const TRACE_COLS = `id, project_id AS projectId, trace_id AS traceId, span_id AS spanId, name, op, ts, duration_ms AS durationMs, span_count AS spanCount, status, release, environment`;
 
-	createProject(name: string, platform?: string | null): TelemetryProject {
+/** Chunked DELETE ... WHERE col IN (?, ...): dynamic lists, no arrays. */
+async function deleteWhereIn(
+	tx: Db,
+	table: string,
+	col: string,
+	ids: (number | string)[]
+): Promise<void> {
+	for (let i = 0; i < ids.length; i += DELETE_CHUNK) {
+		const part = ids.slice(i, i + DELETE_CHUNK);
+		const marks = part.map(() => '?').join(',');
+		await tx.prepare(`DELETE FROM ${table} WHERE ${col} IN (${marks})`).run(...part);
+	}
+}
+
+export class TelemetryStore {
+	private readonly db: Db;
+
+	constructor(db: Db | DatabaseSync) {
+		this.db = asDb(db);
+	}
+
+	async createProject(name: string, platform?: string | null): Promise<TelemetryProject> {
 		const key = randomBytes(16).toString('hex');
-		const r = this.db
+		const r = await this.db
 			.prepare(
 				'INSERT INTO telemetry_projects (name, public_key, platform, created_at) VALUES (?, ?, ?, ?)'
 			)
 			.run(name, key, platform ?? null, Date.now());
-		const p = this.project(Number(r.lastInsertRowid));
+		const p = await this.project(Number(r.lastInsertRowid));
 		if (!p) throw new Error('telemetry project insert failed');
 		return p;
 	}
 
-	project(id: number): TelemetryProject | null {
-		const r = this.db
+	async project(id: number): Promise<TelemetryProject | null> {
+		const r = (await this.db
 			.prepare(
 				'SELECT id, name, public_key AS publicKey, platform, created_at AS createdAt, disabled_at AS disabledAt FROM telemetry_projects WHERE id = ?'
 			)
-			.get(id) as TelemetryProject | undefined;
+			.get(id)) as TelemetryProject | undefined;
 		return r ?? null;
 	}
 
-	projectByKey(key: string): TelemetryProject | null {
-		const r = this.db
+	async projectByKey(key: string): Promise<TelemetryProject | null> {
+		const r = (await this.db
 			.prepare(
 				'SELECT id, name, public_key AS publicKey, platform, created_at AS createdAt, disabled_at AS disabledAt FROM telemetry_projects WHERE public_key = ?'
 			)
-			.get(key) as TelemetryProject | undefined;
+			.get(key)) as TelemetryProject | undefined;
 		return r ?? null;
 	}
 
-	projects(): TelemetryProject[] {
-		return this.db
+	async projects(): Promise<TelemetryProject[]> {
+		return (await this.db
 			.prepare(
 				'SELECT id, name, public_key AS publicKey, platform, created_at AS createdAt, disabled_at AS disabledAt FROM telemetry_projects ORDER BY id'
 			)
-			.all() as unknown as TelemetryProject[];
+			.all()) as unknown as TelemetryProject[];
 	}
 
-	setProjectDisabled(id: number, disabled: boolean): void {
-		this.db
+	async setProjectDisabled(id: number, disabled: boolean): Promise<void> {
+		await this.db
 			.prepare('UPDATE telemetry_projects SET disabled_at = ? WHERE id = ?')
 			.run(disabled ? Date.now() : null, id);
 	}
 
-	deleteProject(id: number): void {
-		this.db.exec('BEGIN IMMEDIATE');
-		try {
-			this.db.prepare('DELETE FROM telemetry_events WHERE project_id = ?').run(id);
-			this.db.prepare('DELETE FROM telemetry_issues WHERE project_id = ?').run(id);
-			this.db
-				.prepare(
-					'DELETE FROM telemetry_spans WHERE trace_row_id IN (SELECT id FROM telemetry_traces WHERE project_id = ?)'
-				)
-				.run(id);
-			this.db.prepare('DELETE FROM telemetry_traces WHERE project_id = ?').run(id);
-			this.db.prepare('DELETE FROM telemetry_projects WHERE id = ?').run(id);
-			this.db.exec('COMMIT');
-		} catch (err) {
-			this.db.exec('ROLLBACK');
-			throw err;
-		}
+	async deleteProject(id: number): Promise<void> {
+		await this.db.tx(async (tx) => {
+			await tx.prepare('DELETE FROM telemetry_events WHERE project_id = ?').run(id);
+			await tx.prepare('DELETE FROM telemetry_issues WHERE project_id = ?').run(id);
+			// trace_row_id is a plain int FK, not a record id: the
+			// subquery form would compare numbers to record ids on
+			// surreal, so the span delete goes through a param list.
+			const traceIds = (
+				(await tx.prepare('SELECT id FROM telemetry_traces WHERE project_id = ?').all(id)) as {
+					id: number;
+				}[]
+			).map((r) => r.id);
+			await deleteWhereIn(tx, 'telemetry_spans', 'trace_row_id', traceIds);
+			await tx.prepare('DELETE FROM telemetry_traces WHERE project_id = ?').run(id);
+			await tx.prepare('DELETE FROM telemetry_projects WHERE id = ?').run(id);
+		});
 	}
 
 	/**
@@ -192,10 +216,9 @@ export class TelemetryStore {
 	 * A resolved issue that recurs reopens automatically (count keeps
 	 * climbing, resolved_at clears).
 	 */
-	record(e: StoredEvent): void {
-		this.db.exec('BEGIN IMMEDIATE');
-		try {
-			this.db
+	async record(e: StoredEvent): Promise<void> {
+		await this.db.tx(async (tx) => {
+			await tx
 				.prepare(
 					`INSERT INTO telemetry_events
 					(project_id, issue_fp, event_id, ts, level, platform, message, exc_type, exc_value, release, environment, tags, request, stack, raw)
@@ -218,7 +241,9 @@ export class TelemetryStore {
 					e.stack,
 					e.raw
 				);
-			this.db
+			// (project_id, fingerprint) is the record key, so the
+			// upsert translates on both drivers.
+			await tx
 				.prepare(
 					`INSERT INTO telemetry_issues (project_id, fingerprint, title, culprit, level, first_seen, last_seen, count, resolved_at)
 					VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL)
@@ -231,17 +256,13 @@ export class TelemetryStore {
 						resolved_at = NULL`
 				)
 				.run(e.projectId, e.fingerprint, e.title, e.culprit, e.level, e.ts, e.ts);
-			this.db.exec('COMMIT');
-		} catch (err) {
-			this.db.exec('ROLLBACK');
-			throw err;
-		}
+		});
 	}
 
-	issues(
+	async issues(
 		projectId: number | null,
 		opts: { limit: number; offset?: number; unresolved?: boolean; q?: string }
-	): { entries: TelemetryIssue[]; total: number } {
+	): Promise<{ entries: TelemetryIssue[]; total: number }> {
 		const where: string[] = [];
 		const args: (string | number)[] = [];
 		if (projectId !== null) {
@@ -249,78 +270,89 @@ export class TelemetryStore {
 			args.push(projectId);
 		}
 		if (opts.unresolved) where.push('resolved_at IS NULL');
+		const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
+		if (opts.q && this.db.kind === 'surreal') {
+			// LIKE is not portable: on surreal the contains-match runs
+			// in JS over the already-bounded issue set.
+			const rows = (await this.db
+				.prepare(`SELECT ${ISSUE_COLS} FROM telemetry_issues ${w} ORDER BY last_seen DESC`)
+				.all(...args)) as unknown as TelemetryIssue[];
+			const q = opts.q.toLowerCase();
+			const hits = rows.filter(
+				(r) => r.title.toLowerCase().includes(q) || (r.culprit ?? '').toLowerCase().includes(q)
+			);
+			const off = opts.offset ?? 0;
+			return { entries: hits.slice(off, off + opts.limit), total: hits.length };
+		}
 		if (opts.q) {
 			const like = `%${opts.q.replaceAll('%', '').replaceAll('_', '')}%`;
 			where.push('(title LIKE ? OR culprit LIKE ?)');
 			args.push(like, like);
 		}
-		const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
+		const wq = where.length ? `WHERE ${where.join(' AND ')}` : '';
 		const total = (
-			this.db.prepare(`SELECT COUNT(*) AS n FROM telemetry_issues ${w}`).get(...args) as {
-				n: number;
-			}
-		).n;
-		const entries = this.db
+			(await this.db.prepare(`SELECT COUNT(*) AS n FROM telemetry_issues ${wq}`).get(...args)) as
+				{ n: number } | undefined
+		)?.n;
+		const entries = (await this.db
 			.prepare(
-				`SELECT project_id AS projectId, fingerprint, title, culprit, level, first_seen AS firstSeen, last_seen AS lastSeen, count, resolved_at AS resolvedAt
-				FROM telemetry_issues ${w} ORDER BY last_seen DESC LIMIT ? OFFSET ?`
+				`SELECT ${ISSUE_COLS} FROM telemetry_issues ${wq} ORDER BY last_seen DESC LIMIT ? OFFSET ?`
 			)
-			.all(...args, opts.limit, opts.offset ?? 0) as unknown as TelemetryIssue[];
-		return { entries, total };
+			.all(...args, opts.limit, opts.offset ?? 0)) as unknown as TelemetryIssue[];
+		return { entries, total: total ?? 0 };
 	}
 
-	issue(projectId: number, fingerprint: string): TelemetryIssue | null {
-		const r = this.db
+	async issue(projectId: number, fingerprint: string): Promise<TelemetryIssue | null> {
+		const r = (await this.db
 			.prepare(
-				`SELECT project_id AS projectId, fingerprint, title, culprit, level, first_seen AS firstSeen, last_seen AS lastSeen, count, resolved_at AS resolvedAt
+				`SELECT ${ISSUE_COLS}
 				FROM telemetry_issues WHERE project_id = ? AND fingerprint = ?`
 			)
-			.get(projectId, fingerprint) as TelemetryIssue | undefined;
+			.get(projectId, fingerprint)) as TelemetryIssue | undefined;
 		return r ?? null;
 	}
 
-	setIssueResolved(projectId: number, fingerprint: string, resolved: boolean): void {
-		this.db
+	async setIssueResolved(projectId: number, fingerprint: string, resolved: boolean): Promise<void> {
+		await this.db
 			.prepare(
 				'UPDATE telemetry_issues SET resolved_at = ? WHERE project_id = ? AND fingerprint = ?'
 			)
 			.run(resolved ? Date.now() : null, projectId, fingerprint);
 	}
 
-	events(
+	async events(
 		projectId: number,
 		fingerprint: string,
 		opts: { limit: number; offset?: number }
-	): { entries: TelemetryEventRow[]; total: number } {
+	): Promise<{ entries: TelemetryEventRow[]; total: number }> {
 		const total = (
-			this.db
+			(await this.db
 				.prepare('SELECT COUNT(*) AS n FROM telemetry_events WHERE project_id = ? AND issue_fp = ?')
-				.get(projectId, fingerprint) as { n: number }
-		).n;
-		const entries = this.db
+				.get(projectId, fingerprint)) as { n: number } | undefined
+		)?.n;
+		const entries = (await this.db
 			.prepare(
-				`SELECT id, project_id AS projectId, issue_fp AS issueFp, event_id AS eventId, ts, level, platform, message, exc_type AS excType, exc_value AS excValue, release, environment, tags, request, stack, raw
+				`SELECT ${EVENT_COLS}
 				FROM telemetry_events WHERE project_id = ? AND issue_fp = ? ORDER BY ts DESC LIMIT ? OFFSET ?`
 			)
-			.all(projectId, fingerprint, opts.limit, opts.offset ?? 0) as unknown as TelemetryEventRow[];
-		return { entries, total };
+			.all(projectId, fingerprint, opts.limit, opts.offset ?? 0)) as unknown as TelemetryEventRow[];
+		return { entries, total: total ?? 0 };
 	}
 
-	eventById(id: number): TelemetryEventRow | null {
-		const r = this.db
+	async eventById(id: number): Promise<TelemetryEventRow | null> {
+		const r = (await this.db
 			.prepare(
-				`SELECT id, project_id AS projectId, issue_fp AS issueFp, event_id AS eventId, ts, level, platform, message, exc_type AS excType, exc_value AS excValue, release, environment, tags, request, stack, raw
+				`SELECT ${EVENT_COLS}
 				FROM telemetry_events WHERE id = ?`
 			)
-			.get(id) as TelemetryEventRow | undefined;
+			.get(id)) as TelemetryEventRow | undefined;
 		return r ?? null;
 	}
 
 	/** Store one transaction and its spans in a single transaction. */
-	recordTrace(t: StoredTrace): void {
-		this.db.exec('BEGIN IMMEDIATE');
-		try {
-			const r = this.db
+	async recordTrace(t: StoredTrace): Promise<void> {
+		await this.db.tx(async (tx) => {
+			const r = await tx
 				.prepare(
 					`INSERT INTO telemetry_traces
 					(project_id, trace_id, span_id, name, op, ts, duration_ms, span_count, status, release, environment)
@@ -340,13 +372,13 @@ export class TelemetryStore {
 					t.environment
 				);
 			const rowId = Number(r.lastInsertRowid);
-			const ins = this.db.prepare(
+			const ins = tx.prepare(
 				`INSERT INTO telemetry_spans
 				(trace_row_id, span_id, parent_span_id, op, description, start_ms, end_ms, status, data)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 			);
 			for (const s of t.spans) {
-				ins.run(
+				await ins.run(
 					rowId,
 					s.spanId,
 					s.parentSpanId,
@@ -358,72 +390,77 @@ export class TelemetryStore {
 					s.data
 				);
 			}
-			this.db.exec('COMMIT');
-		} catch (err) {
-			this.db.exec('ROLLBACK');
-			throw err;
-		}
+		});
 	}
 
-	traces(
+	async traces(
 		projectId: number,
 		opts: { limit: number; offset?: number; q?: string; name?: string }
-	): { entries: TelemetryTrace[]; total: number } {
+	): Promise<{ entries: TelemetryTrace[]; total: number }> {
 		const where = ['project_id = ?'];
 		const args: (string | number)[] = [projectId];
 		if (opts.name) {
 			where.push('name = ?');
 			args.push(opts.name);
 		}
+		const w = `WHERE ${where.join(' AND ')}`;
+		if (opts.q && this.db.kind === 'surreal') {
+			// Same as issues(): contains-match in JS on surreal.
+			const rows = (await this.db
+				.prepare(`SELECT ${TRACE_COLS} FROM telemetry_traces ${w} ORDER BY ts DESC`)
+				.all(...args)) as unknown as TelemetryTrace[];
+			const q = opts.q.toLowerCase();
+			const hits = rows.filter(
+				(r) => r.name.toLowerCase().includes(q) || r.traceId.toLowerCase().includes(q)
+			);
+			const off = opts.offset ?? 0;
+			return { entries: hits.slice(off, off + opts.limit), total: hits.length };
+		}
 		if (opts.q) {
 			const like = `%${opts.q.replaceAll('%', '').replaceAll('_', '')}%`;
 			where.push('(name LIKE ? OR trace_id LIKE ?)');
 			args.push(like, like);
 		}
-		const w = `WHERE ${where.join(' AND ')}`;
+		const wq = `WHERE ${where.join(' AND ')}`;
 		const total = (
-			this.db.prepare(`SELECT COUNT(*) AS n FROM telemetry_traces ${w}`).get(...args) as {
-				n: number;
-			}
-		).n;
-		const entries = this.db
-			.prepare(
-				`SELECT id, project_id AS projectId, trace_id AS traceId, span_id AS spanId, name, op, ts, duration_ms AS durationMs, span_count AS spanCount, status, release, environment
-				FROM telemetry_traces ${w} ORDER BY ts DESC LIMIT ? OFFSET ?`
-			)
-			.all(...args, opts.limit, opts.offset ?? 0) as unknown as TelemetryTrace[];
-		return { entries, total };
+			(await this.db.prepare(`SELECT COUNT(*) AS n FROM telemetry_traces ${wq}`).get(...args)) as
+				{ n: number } | undefined
+		)?.n;
+		const entries = (await this.db
+			.prepare(`SELECT ${TRACE_COLS} FROM telemetry_traces ${wq} ORDER BY ts DESC LIMIT ? OFFSET ?`)
+			.all(...args, opts.limit, opts.offset ?? 0)) as unknown as TelemetryTrace[];
+		return { entries, total: total ?? 0 };
 	}
 
 	/** Newest trace row for a Sentry trace_id plus its ordered spans. */
-	trace(
+	async trace(
 		projectId: number,
 		traceId: string
-	): { trace: TelemetryTrace; spans: TelemetrySpan[] } | null {
-		const t = this.db
+	): Promise<{ trace: TelemetryTrace; spans: TelemetrySpan[] } | null> {
+		const t = (await this.db
 			.prepare(
-				`SELECT id, project_id AS projectId, trace_id AS traceId, span_id AS spanId, name, op, ts, duration_ms AS durationMs, span_count AS spanCount, status, release, environment
+				`SELECT ${TRACE_COLS}
 				FROM telemetry_traces WHERE project_id = ? AND trace_id = ? ORDER BY ts DESC LIMIT 1`
 			)
-			.get(projectId, traceId) as TelemetryTrace | undefined;
+			.get(projectId, traceId)) as TelemetryTrace | undefined;
 		if (!t) return null;
-		const spans = this.db
+		const spans = (await this.db
 			.prepare(
 				`SELECT span_id AS spanId, parent_span_id AS parentSpanId, op, description, start_ms AS startMs, end_ms AS endMs, status, data
 				FROM telemetry_spans WHERE trace_row_id = ? ORDER BY start_ms`
 			)
-			.all(t.id) as unknown as TelemetrySpan[];
+			.all(t.id)) as unknown as TelemetrySpan[];
 		return { trace: t, spans };
 	}
 
 	/** Per-transaction-name latency stats over the most recent rows. */
-	transactionStats(projectId: number): TransactionStat[] {
-		const rows = this.db
+	async transactionStats(projectId: number): Promise<TransactionStat[]> {
+		const rows = (await this.db
 			.prepare(
 				`SELECT name, duration_ms AS d, ts FROM telemetry_traces
 				WHERE project_id = ? ORDER BY ts DESC LIMIT ${STATS_WINDOW}`
 			)
-			.all(projectId) as { name: string; d: number; ts: number }[];
+			.all(projectId)) as { name: string; d: number; ts: number }[];
 		const byName = new Map<string, { durs: number[]; lastSeen: number }>();
 		for (const r of rows) {
 			let g = byName.get(r.name);
@@ -451,58 +488,60 @@ export class TelemetryStore {
 			.sort((a, b) => b.count - a.count);
 	}
 
-	/** Per-project and global caps; cheap row-count maintenance. */
-	prune(): void {
-		this.db.exec(
-			`DELETE FROM telemetry_events WHERE id IN (
-				SELECT id FROM (
-					SELECT id, ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY ts DESC) AS rn
-					FROM telemetry_events
-				) WHERE rn > ${TELEMETRY_MAX_EVENTS_PER_PROJECT}
-			)`
-		);
-		this.db.exec(
-			`DELETE FROM telemetry_events WHERE id NOT IN (
-				SELECT id FROM telemetry_events ORDER BY ts DESC LIMIT ${TELEMETRY_MAX_EVENTS_TOTAL}
-			)`
-		);
-		// Span rows must go with their trace; one transaction keeps the
-		// waterfall consistent even if the prune is interrupted.
-		this.db.exec('BEGIN IMMEDIATE');
-		try {
-			this.db.exec(
-				`DELETE FROM telemetry_spans WHERE trace_row_id IN (
-					SELECT id FROM (
-						SELECT id, ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY ts DESC) AS rn
-						FROM telemetry_traces
-					) WHERE rn > ${TELEMETRY_MAX_TRACES_PER_PROJECT}
-				)`
-			);
-			this.db.exec(
-				`DELETE FROM telemetry_traces WHERE id IN (
-					SELECT id FROM (
-						SELECT id, ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY ts DESC) AS rn
-						FROM telemetry_traces
-					) WHERE rn > ${TELEMETRY_MAX_TRACES_PER_PROJECT}
-				)`
-			);
-			this.db.exec(
-				`DELETE FROM telemetry_spans WHERE trace_row_id IN (
-					SELECT id FROM telemetry_traces WHERE id NOT IN (
-						SELECT id FROM telemetry_traces ORDER BY ts DESC LIMIT ${TELEMETRY_MAX_TRACES_TOTAL}
-					)
-				)`
-			);
-			this.db.exec(
-				`DELETE FROM telemetry_traces WHERE id NOT IN (
-					SELECT id FROM telemetry_traces ORDER BY ts DESC LIMIT ${TELEMETRY_MAX_TRACES_TOTAL}
-				)`
-			);
-			this.db.exec('COMMIT');
-		} catch (err) {
-			this.db.exec('ROLLBACK');
-			throw err;
-		}
+	/**
+	 * Per-project and global caps; cheap row-count maintenance.
+	 * Window functions and id IN (SELECT) are not portable, so the
+	 * rows past each cap are picked by an ordered id scan and deleted
+	 * by id list inside one transaction.
+	 */
+	async prune(): Promise<void> {
+		await this.db.tx(async (tx) => {
+			const projects = (await tx.prepare('SELECT id FROM telemetry_projects').all()) as {
+				id: number;
+			}[];
+
+			// Per-project event cap: ids sorted newest first, drop the tail.
+			for (const p of projects) {
+				const ids = (
+					(await tx
+						.prepare('SELECT id FROM telemetry_events WHERE project_id = ? ORDER BY ts DESC')
+						.all(p.id)) as { id: number }[]
+				).map((r) => r.id);
+				await deleteWhereIn(
+					tx,
+					'telemetry_events',
+					'id',
+					ids.slice(TELEMETRY_MAX_EVENTS_PER_PROJECT)
+				);
+			}
+			// Global event cap across every project.
+			const eventIds = (
+				(await tx.prepare('SELECT id FROM telemetry_events ORDER BY ts DESC').all()) as {
+					id: number;
+				}[]
+			).map((r) => r.id);
+			await deleteWhereIn(tx, 'telemetry_events', 'id', eventIds.slice(TELEMETRY_MAX_EVENTS_TOTAL));
+
+			// Trace caps collect the doomed row ids; their spans must go
+			// with them so a waterfall never outlives its trace.
+			const doomedTraces: number[] = [];
+			for (const p of projects) {
+				const ids = (
+					(await tx
+						.prepare('SELECT id FROM telemetry_traces WHERE project_id = ? ORDER BY ts DESC')
+						.all(p.id)) as { id: number }[]
+				).map((r) => r.id);
+				doomedTraces.push(...ids.slice(TELEMETRY_MAX_TRACES_PER_PROJECT));
+			}
+			const traceIds = (
+				(await tx.prepare('SELECT id FROM telemetry_traces ORDER BY ts DESC').all()) as {
+					id: number;
+				}[]
+			).map((r) => r.id);
+			doomedTraces.push(...traceIds.slice(TELEMETRY_MAX_TRACES_TOTAL));
+			await deleteWhereIn(tx, 'telemetry_spans', 'trace_row_id', doomedTraces);
+			await deleteWhereIn(tx, 'telemetry_traces', 'id', doomedTraces);
+		});
 	}
 }
 

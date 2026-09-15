@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { asDb, rawSqlite, type Db } from '$lib/server/store/driver';
 import type { DeploySpec } from '$lib/shared/deploy';
 import {
 	EDGE_MAX_ROUTES,
@@ -27,38 +28,32 @@ interface LiveRow {
  * deploy_apps edit or release transition plus the row counts. The
  * counts keep deletions visible (a removed row can leave MAX
  * untouched). Polled on every agent request; the expensive spec
- * parsing only reruns when it moves.
+ * parsing only reruns when it moves. UNION and IN (SELECT) are not
+ * portable, so the stamp is assembled from two indexed queries and
+ * the MAX/SUM run in code.
  */
-function tableStamp(db: DatabaseSync, agentId: string): string {
-	const row = db
-		.prepare(
-			`SELECT
-				(SELECT COUNT(*) FROM deploy_apps WHERE agent_id = ?) AS apps,
-				(SELECT COUNT(*) FROM deploy_releases
-					WHERE app_id IN (SELECT id FROM deploy_apps WHERE agent_id = ?)) AS rels,
-				(SELECT MAX(stamp) FROM (
-					SELECT updated_at AS stamp FROM deploy_apps WHERE agent_id = ?
-					UNION ALL
-					SELECT COALESCE(live_at, created_at) AS stamp FROM deploy_releases
-					WHERE app_id IN (SELECT id FROM deploy_apps WHERE agent_id = ?)
-				)) AS s,
-				(SELECT SUM(stamp) FROM (
-					SELECT updated_at AS stamp FROM deploy_apps WHERE agent_id = ?
-					UNION ALL
-					SELECT COALESCE(live_at, created_at) AS stamp FROM deploy_releases
-					WHERE app_id IN (SELECT id FROM deploy_apps WHERE agent_id = ?)
-				)) AS total`
-		)
-		.get(agentId, agentId, agentId, agentId, agentId, agentId) as {
-		apps: number;
-		rels: number;
-		s: number | null;
-		total: number | null;
-	};
+async function tableStamp(db: Db, agentId: string): Promise<string> {
+	const apps = (await db
+		.prepare('SELECT id, updated_at FROM deploy_apps WHERE agent_id = ?')
+		.all(agentId)) as { id: string; updated_at: number }[];
+	const stamps: number[] = apps.map((a) => a.updated_at);
+	let rels = 0;
+	if (apps.length > 0) {
+		const marks = apps.map(() => '?').join(',');
+		const relRows = (await db
+			.prepare(
+				`SELECT COALESCE(live_at, created_at) AS stamp FROM deploy_releases WHERE app_id IN (${marks})`
+			)
+			.all(...apps.map((a) => a.id))) as { stamp: number }[];
+		rels = relRows.length;
+		for (const r of relRows) stamps.push(r.stamp);
+	}
 	// The sum catches edits that land inside the same millisecond as
 	// a newer row: MAX alone cannot see an updated_at that moved to a
 	// value already present in the set.
-	return `${row.apps}:${row.rels}:${row.s ?? 0}:${row.total ?? 0}`;
+	const s = stamps.length ? Math.max(...stamps) : 0;
+	const total = stamps.reduce((a, b) => a + b, 0);
+	return `${apps.length}:${rels}:${s}:${total}`;
 }
 
 // TLS mode emitted for every route until the app model carries a
@@ -143,10 +138,14 @@ function upstreamFor(spec: DeploySpec): string | null {
  * live release; static-source apps serve files (staticRoot, relative
  * to the agent state dir) instead of a container upstream.
  */
-export function buildRouteTable(db: DatabaseSync, agentId: string): EdgeRouteTable {
-	const apps = db
+export async function buildRouteTable(
+	db: Db | DatabaseSync,
+	agentId: string
+): Promise<EdgeRouteTable> {
+	const d = asDb(db);
+	const apps = (await d
 		.prepare('SELECT id, domains, updated_at FROM deploy_apps WHERE agent_id = ? ORDER BY id')
-		.all(agentId) as unknown as AppRow[];
+		.all(agentId)) as unknown as AppRow[];
 
 	// Exact-host conflicts resolve to the lowest app id so two apps
 	// claiming one host route deterministically instead of depending
@@ -163,12 +162,12 @@ export function buildRouteTable(db: DatabaseSync, agentId: string): EdgeRouteTab
 		const hosts = domains.filter(isEdgeHost);
 		if (!hosts.length) continue;
 
-		const live = db
+		const live = (await d
 			.prepare(
 				`SELECT id, spec, live_at, created_at FROM deploy_releases
 				 WHERE app_id = ? AND status = 'live' ORDER BY live_at DESC LIMIT 1`
 			)
-			.get(app.id) as LiveRow | undefined;
+			.get(app.id)) as LiveRow | undefined;
 		if (!live) continue;
 
 		let spec: DeploySpec;
@@ -204,24 +203,28 @@ export function buildRouteTable(db: DatabaseSync, agentId: string): EdgeRouteTab
 }
 
 // Per-db lazy cache: rebuild only when tableStamp moves. WeakMap so
-// test dbs and the dev db never leak through this module.
-const cache = new WeakMap<DatabaseSync, Map<string, { stamp: string; table: EdgeRouteTable }>>();
+// test dbs and the dev db never leak through this module. Callers may
+// pass a Db driver or a raw DatabaseSync; the key normalizes to the
+// underlying handle so both views share one cache.
+const cache = new WeakMap<object, Map<string, { stamp: string; table: EdgeRouteTable }>>();
 
 /**
  * Route table for an agent, memoized on the db handle. The stamp
- * query is one indexed MAX scan; the full build (spec JSON parsing)
+ * query is one indexed scan; the full build (spec JSON parsing)
  * runs only when app or release rows changed since the last call.
  */
-export function routeTable(db: DatabaseSync, agentId: string): EdgeRouteTable {
-	let byAgent = cache.get(db);
+export async function routeTable(db: Db | DatabaseSync, agentId: string): Promise<EdgeRouteTable> {
+	const d = asDb(db);
+	const key = rawSqlite(db) ?? d;
+	let byAgent = cache.get(key);
 	if (!byAgent) {
 		byAgent = new Map();
-		cache.set(db, byAgent);
+		cache.set(key, byAgent);
 	}
-	const stamp = tableStamp(db, agentId);
+	const stamp = await tableStamp(d, agentId);
 	const hit = byAgent.get(agentId);
 	if (hit?.stamp === stamp) return hit.table;
-	const table = buildRouteTable(db, agentId);
+	const table = await buildRouteTable(d, agentId);
 	byAgent.set(agentId, { stamp, table });
 	return table;
 }

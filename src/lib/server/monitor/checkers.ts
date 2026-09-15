@@ -33,7 +33,7 @@ export interface CheckContext {
 	/** Outbound connection policy shared with notification senders. */
 	egress: Egress;
 	/** Last check-in ms for push services, null when never beaten. */
-	lastBeat?: (serviceId: string) => number | null;
+	lastBeat?: (serviceId: string) => Promise<number | null>;
 }
 
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -46,7 +46,7 @@ export async function runCheck(service: ServiceConfig, ctx: CheckContext): Promi
 			case 'tcp':
 				return await checkTcp(service, ctx);
 			case 'push':
-				return checkPush(service, ctx);
+				return await checkPush(service, ctx);
 			case 'ping':
 				return await checkPing(service, ctx);
 			case 'dns':
@@ -1257,11 +1257,11 @@ async function checkIrc(
 // Push services never connect anywhere; the "check" is whether a beat
 // arrived inside expected_interval + grace. A never-beaten service is
 // degraded (unverified), not a hard outage.
-function checkPush(
+async function checkPush(
 	service: Extract<ServiceConfig, { type: 'push' }>,
 	ctx: CheckContext
-): CheckOutcome {
-	const last = ctx.lastBeat?.(service.id) ?? null;
+): Promise<CheckOutcome> {
+	const last = (await ctx.lastBeat?.(service.id)) ?? null;
 	if (last === null) {
 		return { ok: true, degraded: true, latencyMs: 0, detail: 'awaiting first check-in' };
 	}

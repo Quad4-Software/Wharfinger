@@ -410,13 +410,13 @@ export function normalizeTransaction(raw: Record<string, unknown>): ParsedTransa
 }
 
 /** Does this DSN key resolve to a live project? */
-export function resolveProject(
-	store: { projectByKey(key: string): TelemetryProject | null },
+export async function resolveProject(
+	store: { projectByKey(key: string): Promise<TelemetryProject | null> },
 	projectId: string,
 	key: string | null
-): TelemetryProject | null {
+): Promise<TelemetryProject | null> {
 	if (!key || !/^\d+$/.test(projectId)) return null;
-	const p = store.projectByKey(key);
+	const p = await store.projectByKey(key);
 	if (p === null) return null;
 	if (p.disabledAt !== null || String(p.id) !== projectId) return null;
 	return p;

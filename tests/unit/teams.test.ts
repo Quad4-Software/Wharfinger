@@ -89,68 +89,68 @@ async function json(res: Response): Promise<Record<string, unknown>> {
 	return (await res.json()) as Record<string, unknown>;
 }
 
-function seedUser(username: string): number {
-	return ref.rt.users.create(username, 'a-very-long-password', 'viewer').id;
+async function seedUser(username: string): Promise<number> {
+	return (await ref.rt.users.create(username, 'a-very-long-password', 'viewer')).id;
 }
 
 describe('TeamStore', () => {
-	it('creates, lists, updates, and removes teams', () => {
+	it('creates, lists, updates, and removes teams', async () => {
 		const store = getTeamStore(ref.db);
-		const t = store.create('On Call');
+		const t = await store.create('On Call');
 		expect(t.id).toMatch(/^team_/);
-		expect(store.get(t.id)?.name).toBe('On Call');
-		expect(store.list().map((x) => x.name)).toContain('On Call');
+		expect((await store.get(t.id))?.name).toBe('On Call');
+		expect((await store.list()).map((x) => x.name)).toContain('On Call');
 
-		expect(store.update(t.id, 'Oncall')?.name).toBe('Oncall');
-		expect(store.update('team_none', 'x')).toBeNull();
-		expect(store.remove(t.id)).toBe(true);
-		expect(store.remove(t.id)).toBe(false);
+		expect((await store.update(t.id, 'Oncall'))?.name).toBe('Oncall');
+		expect(await store.update('team_none', 'x')).toBeNull();
+		expect(await store.remove(t.id)).toBe(true);
+		expect(await store.remove(t.id)).toBe(false);
 	});
 
-	it('rejects bad names and duplicate names', () => {
+	it('rejects bad names and duplicate names', async () => {
 		const store = getTeamStore(ref.db);
-		expect(() => store.create('')).toThrow(TeamError);
-		expect(() => store.create('x'.repeat(65))).toThrow(TeamError);
-		store.create('dup');
+		await expect(store.create('')).rejects.toThrow(TeamError);
+		await expect(store.create('x'.repeat(65))).rejects.toThrow(TeamError);
+		await store.create('dup');
 		try {
-			store.create('dup');
+			await store.create('dup');
 			expect.unreachable();
 		} catch (e) {
 			expect((e as TeamError).status).toBe(409);
 		}
 	});
 
-	it('dedupes members and requires existing users', () => {
+	it('dedupes members and requires existing users', async () => {
 		const store = getTeamStore(ref.db);
-		const uid = seedUser('eve');
-		const t = store.create('members');
-		const once = store.setMembers(t.id, [uid], []);
+		const uid = await seedUser('eve');
+		const t = await store.create('members');
+		const once = await store.setMembers(t.id, [uid], []);
 		expect(once.members).toHaveLength(1);
 		expect(once.members[0].username).toBe('eve');
-		const twice = store.setMembers(t.id, [uid, uid], []);
+		const twice = await store.setMembers(t.id, [uid, uid], []);
 		expect(twice.members).toHaveLength(1);
-		expect(() => store.setMembers(t.id, [99999], [])).toThrow(TeamError);
-		const after = store.setMembers(t.id, [], [uid]);
+		await expect(store.setMembers(t.id, [99999], [])).rejects.toThrow(TeamError);
+		const after = await store.setMembers(t.id, [], [uid]);
 		expect(after.members).toHaveLength(0);
 	});
 
-	it('assigns groups that must exist', () => {
+	it('assigns groups that must exist', async () => {
 		const store = getTeamStore(ref.db);
 		const groupStore = getGroupStore(ref.db);
-		const g = groupStore.create('team-scope');
-		const t = store.create('scoped');
-		const withGroup = store.setGroups(t.id, [g.id]);
+		const g = await groupStore.create('team-scope');
+		const t = await store.create('scoped');
+		const withGroup = await store.setGroups(t.id, [g.id]);
 		expect(withGroup.groups.map((x) => x.id)).toEqual([g.id]);
-		expect(() => store.setGroups(t.id, ['grp_missing'])).toThrow(TeamError);
-		expect(store.setGroups(t.id, []).groups).toHaveLength(0);
+		await expect(store.setGroups(t.id, ['grp_missing'])).rejects.toThrow(TeamError);
+		expect((await store.setGroups(t.id, [])).groups).toHaveLength(0);
 	});
 
-	it('cascades member and group rows on delete', () => {
+	it('deletes member and group rows on delete', async () => {
 		const store = getTeamStore(ref.db);
-		const uid = seedUser('fred');
-		const t = store.create('cascade');
-		store.setMembers(t.id, [uid], []);
-		store.remove(t.id);
+		const uid = await seedUser('fred');
+		const t = await store.create('cascade');
+		await store.setMembers(t.id, [uid], []);
+		await store.remove(t.id);
 		const members = ref.db
 			.prepare('SELECT COUNT(*) AS n FROM team_members WHERE team_id = ?')
 			.get(t.id) as { n: number };
@@ -159,10 +159,10 @@ describe('TeamStore', () => {
 
 	it('returns only the caller teams for the mine endpoint', async () => {
 		const store = getTeamStore(ref.db);
-		const uid = seedUser('gina');
-		const mine = store.create('mine-team');
-		const other = store.create('other-team');
-		store.setMembers(mine.id, [uid], []);
+		const uid = await seedUser('gina');
+		const mine = await store.create('mine-team');
+		const other = await store.create('other-team');
+		await store.setMembers(mine.id, [uid], []);
 
 		const caller = { ...admin, id: uid };
 		const res = await json(await mineTeams(event({ user: caller }) as never));
@@ -200,8 +200,8 @@ describe('team routes', () => {
 	});
 
 	it('supports the members and groups routes end to end', async () => {
-		const uid = seedUser('hank');
-		const g = getGroupStore(ref.db).create('route-scope');
+		const uid = await seedUser('hank');
+		const g = await getGroupStore(ref.db).create('route-scope');
 		const created = await json(
 			await createTeam(event({ method: 'POST', body: { name: 'route-team' } }) as never)
 		);

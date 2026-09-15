@@ -17,8 +17,8 @@ const STATUS_VALUE: Record<string, number> = {
 	unknown: -1
 };
 
-export const GET: RequestHandler = () => {
-	const snap = getRuntime().snapshot.current().snapshot;
+export const GET: RequestHandler = async () => {
+	const snap = (await getRuntime().snapshot.current()).snapshot;
 
 	const lines: string[] = [];
 	const metric = (

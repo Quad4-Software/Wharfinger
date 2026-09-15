@@ -13,15 +13,15 @@ const RANGES: Record<string, number> = {
 
 // Downsampled metric history for graphs. Samples are stored at the
 // agent's own interval; range selection is a simple ts cutoff.
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	requirePerm(event, 'agents.manage');
 	const rt = getRuntime();
-	const agent = rt.agents.get(event.params.id);
+	const agent = await rt.agents.get(event.params.id);
 	if (!agent) return apiError(404, 'agent not found');
 	const range = event.url.searchParams.get('range') ?? '1h';
 	const ms = RANGES[range] ?? RANGES['1h'];
 	return apiJson({
 		range,
-		samples: rt.agents.history(agent.id, Date.now() - ms)
+		samples: await rt.agents.history(agent.id, Date.now() - ms)
 	});
 };

@@ -11,10 +11,10 @@ import {
 } from '$lib/server/admin/http';
 import { USERNAME_RE, checkPassword } from '$lib/server/admin/policy';
 
-function issueSession(event: RequestEvent, userId: number): void {
+async function issueSession(event: RequestEvent, userId: number): Promise<void> {
 	const rt = getRuntime();
 	const ip = clientIp(event);
-	const token = rt.sessions.create(
+	const token = await rt.sessions.create(
 		userId,
 		rt.sessionTtlMs(),
 		ip,
@@ -23,11 +23,11 @@ function issueSession(event: RequestEvent, userId: number): void {
 	setSessionCookie(event.cookies, token, rt.sessionTtlMs(), isSecureRequest(event));
 }
 
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	const rt = getRuntime();
-	const inv = rt.invites.lookup(event.params.token);
+	const inv = await rt.invites.lookup(event.params.token);
 	if (!inv || !rt.invites.isUsable(inv)) return apiJson({ valid: false });
-	const target = inv.userId !== null ? rt.users.byId(inv.userId) : null;
+	const target = inv.userId !== null ? await rt.users.byId(inv.userId) : null;
 	return apiJson({
 		valid: true,
 		kind: inv.kind,
@@ -40,7 +40,7 @@ export const GET: RequestHandler = (event) => {
 export const POST: RequestHandler = async (event) => {
 	const rt = getRuntime();
 	const ip = clientIp(event);
-	const inv = rt.invites.lookup(event.params.token);
+	const inv = await rt.invites.lookup(event.params.token);
 	if (!inv || !rt.invites.isUsable(inv)) {
 		return apiError(410, 'this link is invalid, expired, or already used');
 	}
@@ -49,21 +49,21 @@ export const POST: RequestHandler = async (event) => {
 	const password = typeof body.password === 'string' ? body.password : '';
 
 	if (inv.kind === 'reset') {
-		const target = inv.userId !== null ? rt.users.byId(inv.userId) : null;
+		const target = inv.userId !== null ? await rt.users.byId(inv.userId) : null;
 		if (target?.disabledAt !== null) return apiError(410, 'this link is no longer valid');
 		const pwError = checkPassword(password, target.username, rt.config.admin.password_min_length);
 		if (pwError) return apiError(422, pwError);
 		// Claim before mutating: a concurrent accept on the same token
 		// loses the conditional update and gets a 410 instead of a
 		// second working session.
-		if (!rt.invites.tryClaim(inv.tokenHash)) {
+		if (!(await rt.invites.tryClaim(inv.tokenHash))) {
 			return apiError(410, 'this link is invalid, expired, or already used');
 		}
-		rt.users.setPassword(target.id, password);
-		rt.sessions.revokeUserSessions(target.id);
-		rt.invites.revokeForUser(target.id);
-		issueSession(event, target.id);
-		rt.audit.log({
+		await rt.users.setPassword(target.id, password);
+		await rt.sessions.revokeUserSessions(target.id);
+		await rt.invites.revokeForUser(target.id);
+		await issueSession(event, target.id);
+		await rt.audit.log({
 			userId: target.id,
 			username: target.username,
 			action: 'auth.password_reset',
@@ -80,22 +80,22 @@ export const POST: RequestHandler = async (event) => {
 	}
 	const pwError = checkPassword(password, username, rt.config.admin.password_min_length);
 	if (pwError) return apiError(422, pwError);
-	if (rt.users.rowByName(username)) return apiError(409, 'that username is taken');
-	if (!rt.roles.exists(inv.role)) {
+	if (await rt.users.rowByName(username)) return apiError(409, 'that username is taken');
+	if (!(await rt.roles.exists(inv.role))) {
 		return apiError(422, `the role "${inv.role}" no longer exists; ask for a new invite`);
 	}
 
-	if (!rt.invites.tryClaim(inv.tokenHash)) {
+	if (!(await rt.invites.tryClaim(inv.tokenHash))) {
 		return apiError(410, 'this link is invalid, expired, or already used');
 	}
 	let user;
 	try {
-		user = rt.users.create(username, password, inv.role, displayName);
+		user = await rt.users.create(username, password, inv.role, displayName);
 	} catch {
 		return apiError(409, 'that username is taken');
 	}
-	issueSession(event, user.id);
-	rt.audit.log({
+	await issueSession(event, user.id);
+	await rt.audit.log({
 		userId: user.id,
 		username,
 		action: 'auth.invite_accept',

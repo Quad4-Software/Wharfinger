@@ -36,37 +36,37 @@ function rawOf(toml = MINIMAL): Record<string, unknown> {
 }
 
 describe('ConfigStore', () => {
-	it('round-trips section overrides with metadata', () => {
+	it('round-trips section overrides with metadata', async () => {
 		const store = new ConfigStore(freshDb());
-		expect(store.all()).toHaveLength(0);
-		store.set('site', { name: 'Override Co' }, 'alice', 1000);
-		const o = store.get('site');
+		expect(await store.all()).toHaveLength(0);
+		await store.set('site', { name: 'Override Co' }, 'alice', 1000);
+		const o = await store.get('site');
 		expect(o?.raw).toEqual({ name: 'Override Co' });
 		expect(o?.updatedBy).toBe('alice');
 		expect(o?.updatedAt).toBe(1000);
-		expect(store.all()).toHaveLength(1);
+		expect(await store.all()).toHaveLength(1);
 	});
 
-	it('preserves unresolved env placeholders in stored raw values', () => {
+	it('preserves unresolved env placeholders in stored raw values', async () => {
 		const store = new ConfigStore(freshDb());
-		store.set(
+		await store.set(
 			'services',
 			[{ id: 'x', name: 'X', type: 'http', url: '${API_URL:-https://a.b}' }],
 			null
 		);
-		const o = store.get('services') as { raw: { url: string }[] } | null;
+		const o = (await store.get('services')) as { raw: { url: string }[] } | null;
 		expect(o?.raw[0].url).toBe('${API_URL:-https://a.b}');
 	});
 
-	it('clears single sections and all sections', () => {
+	it('clears single sections and all sections', async () => {
 		const store = new ConfigStore(freshDb());
-		store.set('site', {}, null);
-		store.set('links', [], null);
-		store.clear('site');
-		expect(store.get('site')).toBeNull();
-		expect(store.get('links')).not.toBeNull();
-		store.clearAll();
-		expect(store.all()).toHaveLength(0);
+		await store.set('site', {}, null);
+		await store.set('links', [], null);
+		await store.clear('site');
+		expect(await store.get('site')).toBeNull();
+		expect(await store.get('links')).not.toBeNull();
+		await store.clearAll();
+		expect(await store.all()).toHaveLength(0);
 	});
 });
 
@@ -78,38 +78,38 @@ describe('sectionsEqual', () => {
 });
 
 describe('resolveEffective', () => {
-	it('returns the file config untouched when no overrides exist', () => {
-		const eff = resolveEffective(rawOf(), new ConfigStore(freshDb()));
+	it('returns the file config untouched when no overrides exist', async () => {
+		const eff = await resolveEffective(rawOf(), new ConfigStore(freshDb()));
 		expect(eff.config.site.name).toBe('Test Co');
 		expect(eff.overrides.size).toBe(0);
 	});
 
-	it('merges a section override over the file base', () => {
+	it('merges a section override over the file base', async () => {
 		const store = new ConfigStore(freshDb());
-		store.set('site', { name: 'Runtime Co', description: 'live' }, 'alice');
-		const eff = resolveEffective(rawOf(), store);
+		await store.set('site', { name: 'Runtime Co', description: 'live' }, 'alice');
+		const eff = await resolveEffective(rawOf(), store);
 		expect(eff.config.site.name).toBe('Runtime Co');
 		expect(eff.config.site.description).toBe('live');
 		// other sections still come from the file
 		expect(eff.config.services).toHaveLength(1);
 	});
 
-	it('replaces whole sections, including explicit empty overrides', () => {
+	it('replaces whole sections, including explicit empty overrides', async () => {
 		const fileRaw = rawOf(
 			`${MINIMAL}\n[[links]]\nlabel = "Docs"\nurl = "https://docs.example.com"\n`
 		);
 		const store = new ConfigStore(freshDb());
-		store.set('links', [], 'alice');
-		const eff = resolveEffective(fileRaw, store);
+		await store.set('links', [], 'alice');
+		const eff = await resolveEffective(fileRaw, store);
 		expect(eff.config.links).toHaveLength(0);
 		// services still come from the file
 		expect(eff.config.services).toHaveLength(1);
 	});
 
-	it('throws ConfigError when merged config is invalid', () => {
+	it('throws ConfigError when merged config is invalid', async () => {
 		const store = new ConfigStore(freshDb());
-		store.set('site', { name: 42 }, 'alice');
-		expect(() => resolveEffective(rawOf(), store)).toThrow(ConfigError);
+		await store.set('site', { name: 42 }, 'alice');
+		await expect(resolveEffective(rawOf(), store)).rejects.toThrow(ConfigError);
 	});
 });
 

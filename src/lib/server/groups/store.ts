@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { openDb } from '$lib/server/store/db';
+import { asDb, isUniqueViolation, rawSqlite, type Db } from '$lib/server/store/driver';
 import type { GroupMember, GroupRef, ServiceGroup } from '$lib/shared/groups';
 
 export class GroupError extends Error {
@@ -48,8 +48,13 @@ function validColor(color: string | null): string | null {
 }
 
 export class GroupStore {
-	constructor(private readonly db: DatabaseSync) {
-		this.db.exec(`
+	private readonly db: Db;
+
+	constructor(db: Db | DatabaseSync) {
+		this.db = asDb(db);
+		// Lazy DDL is sqlite-only; surreal gets these tables from
+		// store/schema.ts.
+		rawSqlite(this.db)?.exec(`
 			CREATE TABLE IF NOT EXISTS service_groups (
 				id         TEXT PRIMARY KEY,
 				name       TEXT NOT NULL UNIQUE,
@@ -66,15 +71,15 @@ export class GroupStore {
 		`);
 	}
 
-	private membersFor(groupIds: string[]): Map<string, GroupMember[]> {
+	private async membersFor(groupIds: string[]): Promise<Map<string, GroupMember[]>> {
 		const map = new Map<string, GroupMember[]>();
 		if (groupIds.length === 0) return map;
 		const marks = groupIds.map(() => '?').join(',');
-		const rows = this.db
+		const rows = (await this.db
 			.prepare(
 				`SELECT group_id, member_kind, member_id FROM service_group_members WHERE group_id IN (${marks}) ORDER BY member_kind, member_id`
 			)
-			.all(...groupIds) as unknown as MemberRow[];
+			.all(...groupIds)) as unknown as MemberRow[];
 		for (const r of rows) {
 			const list = map.get(r.group_id) ?? [];
 			list.push({ memberKind: r.member_kind as GroupMember['memberKind'], memberId: r.member_id });
@@ -94,17 +99,17 @@ export class GroupStore {
 		};
 	}
 
-	create(name: string, color: string | null = null): ServiceGroup {
+	async create(name: string, color: string | null = null): Promise<ServiceGroup> {
 		const n = validName(name);
 		const c = validColor(color);
 		const id = `grp_${randomBytes(9).toString('base64url')}`;
 		const now = Date.now();
 		try {
-			this.db
+			await this.db
 				.prepare('INSERT INTO service_groups (id, name, color, created_at) VALUES (?, ?, ?, ?)')
 				.run(id, n, c, now);
 		} catch (err) {
-			if (String(err).includes('UNIQUE')) {
+			if (isUniqueViolation(err)) {
 				throw new GroupError(409, 'a group with that name exists');
 			}
 			throw err;
@@ -112,33 +117,37 @@ export class GroupStore {
 		return { id, name: n, color: c, createdAt: now, memberCount: 0, members: [] };
 	}
 
-	get(id: string): ServiceGroup | null {
-		const r = this.db
+	async get(id: string): Promise<ServiceGroup | null> {
+		const r = (await this.db
 			.prepare('SELECT id, name, color, created_at FROM service_groups WHERE id = ?')
-			.get(id) as GroupRow | undefined;
+			.get(id)) as GroupRow | undefined;
 		if (!r) return null;
-		return this.toGroup(r, this.membersFor([r.id]).get(r.id) ?? []);
+		return this.toGroup(r, (await this.membersFor([r.id])).get(r.id) ?? []);
 	}
 
-	list(): ServiceGroup[] {
-		const rows = this.db
+	async list(): Promise<ServiceGroup[]> {
+		const rows = (await this.db
 			.prepare('SELECT id, name, color, created_at FROM service_groups ORDER BY name')
-			.all() as unknown as GroupRow[];
-		const members = this.membersFor(rows.map((r) => r.id));
+			.all()) as unknown as GroupRow[];
+		const members = await this.membersFor(rows.map((r) => r.id));
 		return rows.map((r) => this.toGroup(r, members.get(r.id) ?? []));
 	}
 
 	/** Names and colors for chips; members are not needed by filters. */
-	listRefs(): GroupRef[] {
-		const rows = this.db
+	async listRefs(): Promise<GroupRef[]> {
+		const rows = (await this.db
 			.prepare('SELECT id, name, color FROM service_groups ORDER BY name')
-			.all() as unknown as Pick<GroupRow, 'id' | 'name' | 'color'>[];
+			.all()) as unknown as Pick<GroupRow, 'id' | 'name' | 'color'>[];
 		return rows.map((r) => ({ id: r.id, name: r.name, color: r.color }));
 	}
 
-	update(id: string, patch: { name?: string; color?: string | null }): ServiceGroup | null {
-		const existing = this.db.prepare('SELECT id FROM service_groups WHERE id = ?').get(id) as
-			{ id: string } | undefined;
+	async update(
+		id: string,
+		patch: { name?: string; color?: string | null }
+	): Promise<ServiceGroup | null> {
+		const existing = (await this.db
+			.prepare('SELECT id FROM service_groups WHERE id = ?')
+			.get(id)) as { id: string } | undefined;
 		if (!existing) return null;
 		const sets: string[] = [];
 		const args: (string | null)[] = [];
@@ -153,9 +162,11 @@ export class GroupStore {
 		if (sets.length > 0) {
 			args.push(id);
 			try {
-				this.db.prepare(`UPDATE service_groups SET ${sets.join(', ')} WHERE id = ?`).run(...args);
+				await this.db
+					.prepare(`UPDATE service_groups SET ${sets.join(', ')} WHERE id = ?`)
+					.run(...args);
 			} catch (err) {
-				if (String(err).includes('UNIQUE')) {
+				if (isUniqueViolation(err)) {
 					throw new GroupError(409, 'a group with that name exists');
 				}
 				throw err;
@@ -165,32 +176,29 @@ export class GroupStore {
 	}
 
 	/** Removes the group and every membership row in one transaction. */
-	remove(id: string): boolean {
-		this.db.exec('BEGIN IMMEDIATE');
-		try {
-			this.db.prepare('DELETE FROM service_group_members WHERE group_id = ?').run(id);
-			const n = this.db.prepare('DELETE FROM service_groups WHERE id = ?').run(id).changes;
-			this.db.prepare('DELETE FROM team_groups WHERE group_id = ?').run(id);
-			this.db.exec('COMMIT');
-			return Number(n) === 1;
-		} catch (err) {
-			this.db.exec('ROLLBACK');
-			throw err;
-		}
+	async remove(id: string): Promise<boolean> {
+		return this.db.tx(async (tx) => {
+			await tx.prepare('DELETE FROM service_group_members WHERE group_id = ?').run(id);
+			const res = await tx.prepare('DELETE FROM service_groups WHERE id = ?').run(id);
+			await tx.prepare('DELETE FROM team_groups WHERE group_id = ?').run(id);
+			return Number(res.changes) === 1;
+		});
 	}
 
-	private appExists(id: string): boolean {
-		return this.db.prepare('SELECT 1 AS x FROM deploy_apps WHERE id = ?').get(id) !== undefined;
+	private async appExists(id: string): Promise<boolean> {
+		return (
+			(await this.db.prepare('SELECT 1 AS x FROM deploy_apps WHERE id = ?').get(id)) !== undefined
+		);
 	}
 
-	private validMember(m: GroupMember): void {
+	private async validMember(m: GroupMember): Promise<void> {
 		if (!(MEMBER_KINDS as readonly string[]).includes(m.memberKind)) {
 			throw new GroupError(422, 'member kind must be service or app');
 		}
 		if (!MEMBER_ID_RE.test(m.memberId)) {
 			throw new GroupError(422, 'member id must be 1-128 chars: letters, digits, _ . : -');
 		}
-		if (m.memberKind === 'app' && !this.appExists(m.memberId)) {
+		if (m.memberKind === 'app' && !(await this.appExists(m.memberId))) {
 			throw new GroupError(422, `app not found: ${m.memberId}`);
 		}
 	}
@@ -199,36 +207,41 @@ export class GroupStore {
 	 * Add and remove members atomically. Adds dedupe on the composite
 	 * primary key; removes ignore members that are not present.
 	 */
-	setMembers(id: string, add: GroupMember[], remove: GroupMember[]): ServiceGroup {
-		if (!this.get(id)) throw new GroupError(404, 'group not found');
-		for (const m of [...add, ...remove]) this.validMember(m);
-		this.db.exec('BEGIN IMMEDIATE');
-		try {
-			const ins = this.db.prepare(
-				'INSERT OR IGNORE INTO service_group_members (group_id, member_kind, member_id) VALUES (?, ?, ?)'
+	async setMembers(id: string, add: GroupMember[], remove: GroupMember[]): Promise<ServiceGroup> {
+		if (!(await this.get(id))) throw new GroupError(404, 'group not found');
+		for (const m of [...add, ...remove]) await this.validMember(m);
+		await this.db.tx(async (tx) => {
+			const present = tx.prepare(
+				`SELECT 1 AS x FROM service_group_members
+				 WHERE group_id = ? AND member_kind = ? AND member_id = ?`
 			);
-			for (const m of add) ins.run(id, m.memberKind, m.memberId);
-			const del = this.db.prepare(
+			const ins = tx.prepare(
+				'INSERT INTO service_group_members (group_id, member_kind, member_id) VALUES (?, ?, ?)'
+			);
+			// INSERT OR IGNORE is not portable; the composite key maps to
+			// a record id under surreal, so the dedupe is a pre-check.
+			for (const m of add) {
+				if (!(await present.get(id, m.memberKind, m.memberId))) {
+					await ins.run(id, m.memberKind, m.memberId);
+				}
+			}
+			const del = tx.prepare(
 				'DELETE FROM service_group_members WHERE group_id = ? AND member_kind = ? AND member_id = ?'
 			);
-			for (const m of remove) del.run(id, m.memberKind, m.memberId);
-			this.db.exec('COMMIT');
-		} catch (err) {
-			this.db.exec('ROLLBACK');
-			throw err;
-		}
-		const group = this.get(id);
+			for (const m of remove) await del.run(id, m.memberKind, m.memberId);
+		});
+		const group = await this.get(id);
 		if (!group) throw new GroupError(500, 'group missing after update');
 		return group;
 	}
 
 	/** Config service id -> group ids, one pass for the snapshot builder. */
-	serviceGroupIndex(): Map<string, string[]> {
-		const rows = this.db
+	async serviceGroupIndex(): Promise<Map<string, string[]>> {
+		const rows = (await this.db
 			.prepare(
 				"SELECT group_id, member_id FROM service_group_members WHERE member_kind = 'service'"
 			)
-			.all() as unknown as Pick<MemberRow, 'group_id' | 'member_id'>[];
+			.all()) as unknown as Pick<MemberRow, 'group_id' | 'member_id'>[];
 		const map = new Map<string, string[]>();
 		for (const r of rows) {
 			const list = map.get(r.member_id) ?? [];
@@ -239,34 +252,30 @@ export class GroupStore {
 	}
 
 	/** Both lookups the snapshot needs in one call. */
-	snapshotData(): { groups: GroupRef[]; byService: Map<string, string[]> } {
-		return { groups: this.listRefs(), byService: this.serviceGroupIndex() };
+	async snapshotData(): Promise<{ groups: GroupRef[]; byService: Map<string, string[]> }> {
+		return { groups: await this.listRefs(), byService: await this.serviceGroupIndex() };
 	}
 }
 
-// Lazy singleton per the runtime-frozen store pattern: routes call
-// getGroupStore(getRuntime().db). The snapshot builder has no db handle,
-// so groupSnapshotData falls back to its own connection to the same
-// database file when no route has primed the singleton yet.
-const stores = new WeakMap<DatabaseSync, GroupStore>();
-let snapshotStore: GroupStore | null = null;
+// Lazy singleton per the runtime-frozen store pattern: routes and the
+// snapshot builder call getGroupStore(getRuntime().db). The runtime
+// hands over a Db, so the snapshot path no longer opens its own
+// connection.
+const stores = new WeakMap<Db | DatabaseSync, GroupStore>();
 
-export function getGroupStore(db: DatabaseSync): GroupStore {
+export function getGroupStore(db: Db | DatabaseSync): GroupStore {
 	const existing = stores.get(db);
-	if (existing) {
-		snapshotStore = existing;
-		return existing;
-	}
+	if (existing) return existing;
 	const created = new GroupStore(db);
 	stores.set(db, created);
-	snapshotStore = created;
 	return created;
 }
 
-export function groupSnapshotData(): { groups: GroupRef[]; byService: Map<string, string[]> } {
+export async function groupSnapshotData(
+	db: Db | DatabaseSync
+): Promise<{ groups: GroupRef[]; byService: Map<string, string[]> }> {
 	try {
-		snapshotStore ??= new GroupStore(openDb());
-		return snapshotStore.snapshotData();
+		return await getGroupStore(db).snapshotData();
 	} catch {
 		return { groups: [], byService: new Map() };
 	}

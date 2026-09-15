@@ -119,6 +119,15 @@ function cfgWith(maintenance: StatusConfig['maintenance']): StatusConfig {
 			environment: 'test',
 			client_reports: true,
 			max_per_minute: 60
+		},
+		storage: {
+			driver: 'sqlite',
+			url: '',
+			ns: 'wharfinger',
+			db: 'wharfinger',
+			user: '',
+			pass: '',
+			timeout_ms: 30_000
 		}
 	};
 }

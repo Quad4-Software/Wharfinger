@@ -46,9 +46,9 @@ function wildcardCovers(wild: string, host: string): boolean {
 }
 
 /** Other apps claiming the same literal host; wildcard layering is legal. */
-function conflictsFor(rt: Runtime, app: DeployApp, host: string): DomainConflict[] {
+function conflictsForApps(apps: DeployApp[], app: DeployApp, host: string): DomainConflict[] {
 	const out: DomainConflict[] = [];
-	for (const other of rt.deploys.listApps()) {
+	for (const other of apps) {
 		if (other.id === app.id) continue;
 		for (const d of other.domains) {
 			const clash = d === host || (!host.startsWith('*.') && wildcardCovers(d, host));
@@ -62,8 +62,8 @@ function conflictsFor(rt: Runtime, app: DeployApp, host: string): DomainConflict
 }
 
 /** Global-scope addresses the agent last reported, if any. */
-function agentAddresses(rt: Runtime, app: DeployApp): string[] | null {
-	const payload = rt.agents.get(app.agentId)?.lastPayload;
+async function agentAddresses(rt: Runtime, app: DeployApp): Promise<string[] | null> {
+	const payload = (await rt.agents.get(app.agentId))?.lastPayload;
 	const net = (payload as { net?: { addresses?: unknown } } | null)?.net;
 	if (!Array.isArray(net?.addresses)) return null;
 	return net.addresses.filter((a): a is string => typeof a === 'string');
@@ -97,7 +97,8 @@ export async function domainCheck(
 	opts: { resolver?: DnsResolver } = {}
 ): Promise<DomainReport[]> {
 	const resolver = opts.resolver ?? new Resolver({ timeout: 3000, tries: 1 });
-	const agentAddrs = agentAddresses(rt, app);
+	const agentAddrs = await agentAddresses(rt, app);
+	const apps = await rt.deploys.listApps();
 	const reports: DomainReport[] = [];
 
 	for (const host of app.domains) {
@@ -109,7 +110,7 @@ export async function domainCheck(
 			addresses: [],
 			pointsAtAgent: null,
 			privateOnly: false,
-			conflicts: conflictsFor(rt, app, host),
+			conflicts: conflictsForApps(apps, app, host),
 			suggestions: []
 		};
 		const valid = isEdgeHost(host);

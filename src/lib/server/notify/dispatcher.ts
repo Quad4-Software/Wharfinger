@@ -47,6 +47,9 @@ export class NotifyDispatcher {
 	private lastSent = new Map<string, number>();
 	private activeWindows = new Set<string>();
 	private maintTimer: NodeJS.Timeout | null = null;
+	// Transition handling is async once the log and subscriber stores
+	// became async; queueing each notify keeps ordering deterministic.
+	private queue: Promise<unknown> = Promise.resolve();
 
 	constructor(
 		private readonly config: () => StatusConfig,
@@ -54,6 +57,14 @@ export class NotifyDispatcher {
 		private readonly egress: Egress,
 		private readonly subscribers?: SubscriberStore
 	) {}
+
+	private enqueue(p: Promise<void>): void {
+		this.queue = this.queue
+			.then(() => p)
+			.catch((err: unknown) => {
+				console.warn('[notify] dispatch failed:', err);
+			});
+	}
 
 	attach(monitor: Monitor): void {
 		monitor.on('transition', (t: Transition) => {
@@ -64,13 +75,15 @@ export class NotifyDispatcher {
 			if ((event === 'down' || event === 'degraded') && this.inMaintenance(t.service.id)) {
 				return;
 			}
-			void this.notify({
-				event,
-				serviceId: t.service.id,
-				serviceName: t.service.name,
-				status: t.next,
-				detail: null
-			});
+			this.enqueue(
+				this.notify({
+					event,
+					serviceId: t.service.id,
+					serviceName: t.service.name,
+					status: t.next,
+					detail: null
+				})
+			);
 		});
 		this.maintTimer = setInterval(() => {
 			this.checkMaintenance();
@@ -113,7 +126,7 @@ export class NotifyDispatcher {
 		for (const key of active) {
 			if (this.activeWindows.has(key)) continue;
 			const title = key.slice(0, key.lastIndexOf('|'));
-			void this.notify({ event: 'maintenance', serviceName: `Maintenance: ${title}` });
+			this.enqueue(this.notify({ event: 'maintenance', serviceName: `Maintenance: ${title}` }));
 		}
 		this.activeWindows = active;
 	}
@@ -164,7 +177,7 @@ export class NotifyDispatcher {
 			.map(async (target) => {
 				const msg = renderMessage({ ...ctx, siteName, siteUrl });
 				const result = await this.sendWithRetry(target, msg, cfg.notifications);
-				this.log.record({
+				await this.log.record({
 					target: target.name,
 					kind: target.type,
 					event: ctx.event,
@@ -175,14 +188,17 @@ export class NotifyDispatcher {
 				});
 			});
 		await Promise.allSettled(jobs);
-		this.fanOutSubscribers(ctx, siteName);
+		await this.fanOutSubscribers(ctx, siteName);
 	}
 
 	/** Public webhook subscribers get the same transitions, HMAC-signed. */
-	private fanOutSubscribers(ctx: Omit<NotifyContext, 'siteName' | 'siteUrl'>, site: string): void {
+	private async fanOutSubscribers(
+		ctx: Omit<NotifyContext, 'siteName' | 'siteUrl'>,
+		site: string
+	): Promise<void> {
 		if (!this.subscribers || ctx.event === 'test') return;
 		const origin = this.config().site.url;
-		for (const sub of this.subscribers.active(ctx.serviceId ?? null)) {
+		for (const sub of await this.subscribers.active(ctx.serviceId ?? null)) {
 			const payload = JSON.stringify({
 				type: 'status.event',
 				site,
@@ -235,7 +251,7 @@ export class NotifyDispatcher {
 			siteUrl: cfg.site.url ?? null
 		});
 		const result = await this.sendWithRetry(target, msg, cfg.notifications);
-		this.log.record({
+		await this.log.record({
 			target: target.name,
 			kind: target.type,
 			event: 'test',

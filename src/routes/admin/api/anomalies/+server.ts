@@ -8,7 +8,7 @@ import {
 	type AnomalySeverity
 } from '$lib/server/anomaly/engine';
 
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	requirePerm(event, 'anomaly.view');
 	const rt = getRuntime();
 	const url = event.url;
@@ -24,7 +24,7 @@ export const GET: RequestHandler = (event) => {
 		ANOMALY_LIST_MAX
 	);
 	const engine = getEngine(rt.db);
-	const { entries, nextCursor } = engine.list({
+	const { entries, nextCursor } = await engine.list({
 		status: status === 'open' || status === 'acked' ? status : undefined,
 		since: Number.isFinite(since) && since > 0 ? since : undefined,
 		severity,
@@ -32,5 +32,5 @@ export const GET: RequestHandler = (event) => {
 		limit,
 		cursor: Number.isFinite(cursor) && cursor > 0 ? cursor : undefined
 	});
-	return apiJson({ entries, nextCursor, summary: engine.summary() });
+	return apiJson({ entries, nextCursor, summary: await engine.summary() });
 };

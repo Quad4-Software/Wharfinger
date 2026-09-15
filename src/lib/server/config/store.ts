@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { asDb, type Db } from '$lib/server/store/driver';
 import type { SectionKey } from './schema';
 
 export interface SectionOverride {
@@ -14,14 +15,18 @@ export interface SectionOverride {
  * placeholders are preserved and secrets never persist resolved.
  */
 export class ConfigStore {
-	constructor(private readonly db: DatabaseSync) {}
+	private readonly db: Db;
 
-	all(): SectionOverride[] {
-		const rows = this.db
+	constructor(db: Db | DatabaseSync) {
+		this.db = asDb(db);
+	}
+
+	async all(): Promise<SectionOverride[]> {
+		const rows = (await this.db
 			.prepare(
 				'SELECT section, raw_json, updated_by AS updatedBy, updated_at AS updatedAt FROM config_sections'
 			)
-			.all() as unknown as {
+			.all()) as unknown as {
 			section: string;
 			raw_json: string;
 			updatedBy: string | null;
@@ -35,12 +40,12 @@ export class ConfigStore {
 		}));
 	}
 
-	get(section: SectionKey): SectionOverride | null {
-		const r = this.db
+	async get(section: SectionKey): Promise<SectionOverride | null> {
+		const r = (await this.db
 			.prepare(
 				'SELECT section, raw_json, updated_by AS updatedBy, updated_at AS updatedAt FROM config_sections WHERE section = ?'
 			)
-			.get(section) as
+			.get(section)) as
 			| { section: string; raw_json: string; updatedBy: string | null; updatedAt: number }
 			| undefined;
 		if (!r) return null;
@@ -52,8 +57,14 @@ export class ConfigStore {
 		};
 	}
 
-	set(section: SectionKey, raw: unknown, updatedBy: string | null, now = Date.now()): void {
-		this.db
+	async set(
+		section: SectionKey,
+		raw: unknown,
+		updatedBy: string | null,
+		now = Date.now()
+	): Promise<void> {
+		// section is the record key, so ON CONFLICT upsert is portable.
+		await this.db
 			.prepare(
 				`INSERT INTO config_sections (section, raw_json, updated_by, updated_at)
 				 VALUES (?, ?, ?, ?)
@@ -63,11 +74,11 @@ export class ConfigStore {
 			.run(section, JSON.stringify(raw), updatedBy, now);
 	}
 
-	clear(section: SectionKey): void {
-		this.db.prepare('DELETE FROM config_sections WHERE section = ?').run(section);
+	async clear(section: SectionKey): Promise<void> {
+		await this.db.prepare('DELETE FROM config_sections WHERE section = ?').run(section);
 	}
 
-	clearAll(): void {
-		this.db.exec('DELETE FROM config_sections');
+	async clearAll(): Promise<void> {
+		await this.db.exec('DELETE FROM config_sections');
 	}
 }

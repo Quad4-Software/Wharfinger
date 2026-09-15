@@ -21,8 +21,8 @@ export const PUT: RequestHandler = async (event) => {
 		return apiError(422, 'groupIds must be an array of group id strings');
 	}
 	try {
-		const team = getTeamStore(rt.db).setGroups(id, groupIds);
-		audit(rt, event, 'team.groups', `id=${id} groups=${groupIds.length}`);
+		const team = await getTeamStore(rt.db).setGroups(id, groupIds);
+		await audit(rt, event, 'team.groups', `id=${id} groups=${groupIds.length}`);
 		return apiJson({ ok: true, team });
 	} catch (err) {
 		if (err instanceof TeamError) return apiError(err.status, err.message);

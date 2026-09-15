@@ -104,6 +104,15 @@ function cfgWith(notifications: Partial<StatusConfig['notifications']> = {}): St
 			environment: 'test',
 			client_reports: true,
 			max_per_minute: 60
+		},
+		storage: {
+			driver: 'sqlite',
+			url: '',
+			ns: 'wharfinger',
+			db: 'wharfinger',
+			user: '',
+			pass: '',
+			timeout_ms: 30_000
 		}
 	};
 }
@@ -448,7 +457,7 @@ describe('NotifyDispatcher', () => {
 		const { log, d } = setup(cfgWith({ targets: [target()] }));
 		await d.notify({ event: 'down', serviceId: 'web', serviceName: 'Web', status: 'major_outage' });
 		expect(calls).toHaveLength(1);
-		const entries = log.recent();
+		const entries = await log.recent();
 		expect(entries).toHaveLength(1);
 		expect(entries[0].event).toBe('down');
 		expect(entries[0].ok).toBeTruthy();

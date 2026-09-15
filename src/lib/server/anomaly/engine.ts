@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { asDb, rawSqlite, type Db } from '../store/driver';
 import type { Runtime } from '../runtime';
 import { DAY_MS } from '../constants';
 
@@ -154,18 +155,29 @@ function toRow(r: Record<string, unknown>): AnomalyRow {
 	};
 }
 
+// LIKE is not portable, so audit_log prefix scans run as range
+// predicates and the finer patterns are filtered in memory. '.' is
+// 0x2e, so the upper bound is the prefix with '.' bumped to '/'.
+function prefixRange(prefix: string): [string, string] {
+	return [prefix, prefix.slice(0, -1) + '/'];
+}
+
 export class AnomalyEngine {
 	/** Wired by start(): receives alert-severity rows after cooldown. */
 	alerter: ((a: AnomalyRow) => void) | null = null;
 
+	private readonly db: Db;
 	private readonly lastAlert = new Map<string, number>();
 	private timer: ReturnType<typeof setInterval> | null = null;
 	private lastTick = 0;
 	private lastPrune = 0;
 	private baselineCount = -1;
 
-	constructor(private readonly db: DatabaseSync) {
-		db.exec(SCHEMA);
+	constructor(db: Db | DatabaseSync) {
+		this.db = asDb(db);
+		// Lazy DDL is sqlite-only; surreal gets these tables from
+		// store/schema.ts.
+		rawSqlite(this.db)?.exec(SCHEMA);
 	}
 
 	/**
@@ -173,17 +185,17 @@ export class AnomalyEngine {
 	 * deviates beyond the warn threshold, else null. The baseline is
 	 * updated either way so slow drift stays normal.
 	 */
-	observe(
+	async observe(
 		metric: string,
 		value: number,
 		ts = Date.now(),
 		detail?: Record<string, unknown>
-	): AnomalyRow | null {
+	): Promise<AnomalyRow | null> {
 		if (!METRIC_RE.test(metric) || !Number.isFinite(value)) return null;
-		const prev = this.db
+		const prev = (await this.db
 			.prepare('SELECT ewma, ewmvar, n FROM anomaly_baselines WHERE metric = ?')
-			.get(metric) as { ewma: number; ewmvar: number; n: number } | undefined;
-		if (!prev && !this.admitBaseline()) return null;
+			.get(metric)) as { ewma: number; ewmvar: number; n: number } | undefined;
+		if (!prev && !(await this.admitBaseline())) return null;
 
 		const expected = prev?.ewma ?? value;
 		const z = prev ? zScore(value, expected, prev.ewmvar) : 0;
@@ -193,7 +205,8 @@ export class AnomalyEngine {
 			prev ? { mean: prev.ewma, variance: prev.ewmvar, n: prev.n } : null,
 			value
 		);
-		this.db
+		// metric is the record key, so the ON CONFLICT upsert is portable.
+		await this.db
 			.prepare(
 				`INSERT INTO anomaly_baselines (metric, window_n, ewma, ewmvar, n, updated_at)
 				VALUES (?, ?, ?, ?, ?, ?)
@@ -207,7 +220,7 @@ export class AnomalyEngine {
 			.run(metric, Math.min(next.n, WINDOW_N_CAP), next.mean, next.variance, next.n, ts);
 
 		if (!severity) return null;
-		const r = this.db
+		const r = await this.db
 			.prepare(
 				`INSERT INTO anomalies (metric, value, expected, z, severity, detail, created_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?)`
@@ -231,10 +244,12 @@ export class AnomalyEngine {
 
 	// A runaway source cannot mint unbounded metric keys: past the cap,
 	// new names are dropped while existing ones keep updating.
-	private admitBaseline(): boolean {
+	private async admitBaseline(): Promise<boolean> {
 		if (this.baselineCount < 0) {
 			this.baselineCount = (
-				this.db.prepare('SELECT COUNT(*) AS n FROM anomaly_baselines').get() as { n: number }
+				(await this.db.prepare('SELECT COUNT(*) AS n FROM anomaly_baselines').get()) as {
+					n: number;
+				}
 			).n;
 		}
 		if (this.baselineCount >= BASELINE_MAX) return false;
@@ -259,7 +274,7 @@ export class AnomalyEngine {
 		}
 	}
 
-	list(
+	async list(
 		opts: {
 			status?: 'open' | 'acked';
 			since?: number;
@@ -268,7 +283,7 @@ export class AnomalyEngine {
 			limit?: number;
 			cursor?: number;
 		} = {}
-	): { entries: AnomalyRow[]; nextCursor: number | null } {
+	): Promise<{ entries: AnomalyRow[]; nextCursor: number | null }> {
 		const limit = Math.min(Math.max(Math.floor(opts.limit ?? 100) || 100, 1), ANOMALY_LIST_MAX);
 		const where: string[] = [];
 		const args: (string | number)[] = [];
@@ -290,13 +305,13 @@ export class AnomalyEngine {
 			where.push('id < ?');
 			args.push(Math.floor(opts.cursor));
 		}
-		const rows = this.db
+		const rows = (await this.db
 			.prepare(
 				`SELECT id, metric, value, expected, z, severity, detail, created_at, acked_at, acked_by
 				FROM anomalies ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
 				ORDER BY id DESC LIMIT ?`
 			)
-			.all(...args, limit + 1) as unknown as Record<string, unknown>[];
+			.all(...args, limit + 1)) as unknown as Record<string, unknown>[];
 		const entries = rows.slice(0, limit).map(toRow);
 		return {
 			entries,
@@ -305,47 +320,59 @@ export class AnomalyEngine {
 	}
 
 	/** Idempotent: returns the row whether this call acked it or a prior one did. */
-	ack(id: number, user: string, now = Date.now()): AnomalyRow | null {
+	async ack(id: number, user: string, now = Date.now()): Promise<AnomalyRow | null> {
 		if (!Number.isInteger(id) || id <= 0) return null;
-		this.db
+		await this.db
 			.prepare('UPDATE anomalies SET acked_at = ?, acked_by = ? WHERE id = ? AND acked_at IS NULL')
 			.run(now, user.slice(0, 100), id);
-		const row = this.db
+		const row = await this.db
 			.prepare(
 				'SELECT id, metric, value, expected, z, severity, detail, created_at, acked_at, acked_by FROM anomalies WHERE id = ?'
 			)
-			.get(id) as Record<string, unknown> | undefined;
+			.get(id);
 		return row ? toRow(row) : null;
 	}
 
-	/** KPI numbers for the panel strip: one bounded pass over anomalies. */
-	summary(now = Date.now()): AnomalySummary {
-		const row = this.db
-			.prepare(
-				`SELECT
-					COALESCE(SUM(CASE WHEN severity = 'alert' AND acked_at IS NULL THEN 1 ELSE 0 END), 0) AS openAlerts,
-					COALESCE(SUM(CASE WHEN severity = 'warn' AND created_at >= ? THEN 1 ELSE 0 END), 0) AS warns24h,
-					MAX(created_at) AS lastAnomalyAt
-				FROM anomalies`
-			)
-			.get(now - DAY_MS) as {
-			openAlerts: number;
-			warns24h: number;
-			lastAnomalyAt: number | null;
-		};
-		const metricsTracked = (
-			this.db.prepare('SELECT COUNT(*) AS n FROM anomaly_baselines').get() as { n: number }
+	/**
+	 * KPI numbers for the panel strip. CASE aggregates are not
+	 * portable, so each count is its own bounded query.
+	 */
+	async summary(now = Date.now()): Promise<AnomalySummary> {
+		const openAlerts = (
+			(await this.db
+				.prepare(
+					"SELECT COUNT(*) AS n FROM anomalies WHERE severity = 'alert' AND acked_at IS NULL"
+				)
+				.get()) as { n: number }
 		).n;
-		return { ...row, metricsTracked };
+		const warns24h = (
+			(await this.db
+				.prepare("SELECT COUNT(*) AS n FROM anomalies WHERE severity = 'warn' AND created_at >= ?")
+				.get(now - DAY_MS)) as { n: number }
+		).n;
+		const last = (await this.db
+			.prepare('SELECT MAX(created_at) AS lastAnomalyAt FROM anomalies')
+			.get()) as { lastAnomalyAt: number | null };
+		const metricsTracked = (
+			(await this.db.prepare('SELECT COUNT(*) AS n FROM anomaly_baselines').get()) as {
+				n: number;
+			}
+		).n;
+		return {
+			openAlerts,
+			warns24h,
+			metricsTracked,
+			lastAnomalyAt: last.lastAnomalyAt ?? null
+		};
 	}
 
 	/** Every tracked metric with its baseline stats, for the panel filter. */
-	metrics(): BaselineRow[] {
-		const rows = this.db
+	async metrics(): Promise<BaselineRow[]> {
+		const rows = (await this.db
 			.prepare(
 				'SELECT metric, n, window_n, ewma, ewmvar, updated_at FROM anomaly_baselines ORDER BY metric'
 			)
-			.all() as unknown as {
+			.all()) as unknown as {
 			metric: string;
 			n: number;
 			window_n: number;
@@ -364,9 +391,9 @@ export class AnomalyEngine {
 	}
 
 	/** Delete anomalies older than days. Returns rows removed. */
-	prune(days: number, now = Date.now()): number {
+	async prune(days: number, now = Date.now()): Promise<number> {
 		if (!Number.isFinite(days) || days <= 0) return 0;
-		const r = this.db
+		const r = await this.db
 			.prepare('DELETE FROM anomalies WHERE created_at < ?')
 			.run(now - days * DAY_MS);
 		return Number(r.changes);
@@ -377,26 +404,20 @@ export class AnomalyEngine {
 	 * each bounded by a time window; a failing source does not stop
 	 * the others.
 	 */
-	collect(now = Date.now()): void {
+	async collect(now = Date.now()): Promise<void> {
 		const since = this.lastTick > 0 ? this.lastTick : now - ANOMALY_TICK_MS;
 		this.lastTick = now;
 		if (now - this.lastPrune >= HOUR_MS) {
-			this.prune(ANOMALY_RETENTION_DAYS, now);
+			await this.prune(ANOMALY_RETENTION_DAYS, now);
 			this.lastPrune = now;
 		}
 		for (const fn of [
-			() => {
-				this.collectAuthFailures(since, now);
-			},
-			() => {
-				this.collectRates(now);
-			},
-			() => {
-				this.collectAgentDrift(now);
-			}
+			() => this.collectAuthFailures(since, now),
+			() => this.collectRates(now),
+			() => this.collectAgentDrift(now)
 		]) {
 			try {
-				fn();
+				await fn();
 			} catch (err) {
 				console.warn('[anomaly] collector failed:', err);
 			}
@@ -404,73 +425,87 @@ export class AnomalyEngine {
 	}
 
 	// Failed or denied sign-ins in the last tick, matching the audit
-	// summary's failedAuth definition plus lockouts.
-	private collectAuthFailures(since: number, now: number): void {
-		const n = (
-			this.db
-				.prepare(
-					`SELECT COUNT(*) AS n FROM audit_log
-					WHERE action LIKE 'auth.%'
-						AND (action LIKE '%.fail' OR action LIKE '%.denied'
-							OR action LIKE '%.disabled' OR action LIKE '%lockout%')
-						AND at > ? AND at <= ?`
-				)
-				.get(since, now) as { n: number }
-		).n;
-		this.observe('auth.failures_per_min', n, now);
+	// summary's failedAuth definition plus lockouts. LIKE patterns are
+	// not portable, so the auth.* prefix runs as a range scan and the
+	// suffix patterns are filtered here.
+	private async collectAuthFailures(since: number, now: number): Promise<void> {
+		const [lo, hi] = prefixRange('auth.');
+		const rows = (await this.db
+			.prepare(
+				'SELECT action FROM audit_log WHERE action >= ? AND action < ? AND at > ? AND at <= ?'
+			)
+			.all(lo, hi, since, now)) as unknown as { action: string }[];
+		const n = rows.filter(
+			(r) =>
+				r.action.length > lo.length &&
+				(r.action.endsWith('.fail') ||
+					r.action.endsWith('.denied') ||
+					r.action.endsWith('.disabled') ||
+					r.action.includes('lockout'))
+		).length;
+		await this.observe('auth.failures_per_min', n, now);
 	}
 
-	private collectRates(now: number): void {
+	private async collectRates(now: number): Promise<void> {
 		const deploys = (
-			this.db
+			(await this.db
 				.prepare("SELECT COUNT(*) AS n FROM jobs WHERE kind = 'deploy' AND created_at > ?")
-				.get(now - HOUR_MS) as { n: number }
+				.get(now - HOUR_MS)) as { n: number }
 		).n;
-		this.observe('deploy.per_hour', deploys, now);
+		await this.observe('deploy.per_hour', deploys, now);
 
 		// checks.ok flips vs the previous check of the same service. The
-		// lookback gives LAG a row before the window edge so a flap that
-		// started just outside still counts.
-		const flaps = (
-			this.db
-				.prepare(
-					`SELECT COUNT(*) AS n FROM (
-						SELECT ts, ok, LAG(ok) OVER (PARTITION BY service_id ORDER BY ts) AS prev_ok
-						FROM checks WHERE ts > ?
-					) WHERE ts > ? AND prev_ok IS NOT NULL AND ok <> prev_ok`
-				)
-				.get(now - HOUR_MS - FLAP_LOOKBACK_MS, now - HOUR_MS) as { n: number }
-		).n;
-		this.observe('service.flaps_per_hour', flaps, now);
+		// lookback gives the in-memory comparison a row before the
+		// window edge so a flap that started just outside still counts;
+		// the LAG window function it replaces is not portable.
+		const checkRows = (await this.db
+			.prepare('SELECT service_id, ts, ok FROM checks WHERE ts > ? ORDER BY service_id, ts')
+			.all(now - HOUR_MS - FLAP_LOOKBACK_MS)) as unknown as {
+			service_id: string;
+			ts: number;
+			ok: number;
+		}[];
+		const prevOk = new Map<string, number>();
+		let flaps = 0;
+		for (const r of checkRows) {
+			const prev = prevOk.get(r.service_id);
+			if (r.ts > now - HOUR_MS && prev !== undefined && r.ok !== prev) flaps += 1;
+			prevOk.set(r.service_id, r.ok);
+		}
+		await this.observe('service.flaps_per_hour', flaps, now);
 
-		const churn = (
-			this.db
-				.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE action LIKE 'config.%' AND at > ?")
-				.get(now - HOUR_MS) as { n: number }
-		).n;
-		this.observe('config.changes_per_hour', churn, now);
+		const [lo, hi] = prefixRange('config.');
+		const churnRows = (await this.db
+			.prepare('SELECT action FROM audit_log WHERE action >= ? AND action < ? AND at > ?')
+			.all(lo, hi, now - HOUR_MS)) as unknown as { action: string }[];
+		const churn = churnRows.filter((r) => r.action.length > lo.length).length;
+		await this.observe('config.changes_per_hour', churn, now);
 	}
 
 	// Latest agent_samples row per agent, scored against that agent's
-	// own baseline only. ids come from the agents pipeline and are
+	// own baseline only. The ROW_NUMBER window is not portable, so
+	// rows arrive ordered by agent and newest-first and the first row
+	// per agent wins. ids come from the agents pipeline and are
 	// validated again by the metric-name regex in observe().
-	private collectAgentDrift(now: number): void {
-		const rows = this.db
+	private async collectAgentDrift(now: number): Promise<void> {
+		const rows = (await this.db
 			.prepare(
-				`SELECT agent_id, cpu, load1 FROM (
-					SELECT agent_id, cpu, load1,
-						ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY ts DESC) AS rn
-					FROM agent_samples WHERE ts > ?
-				) WHERE rn = 1 LIMIT ?`
+				'SELECT agent_id, cpu, load1, ts FROM agent_samples WHERE ts > ? ORDER BY agent_id, ts DESC'
 			)
-			.all(now - AGENT_SAMPLE_WINDOW_MS, AGENT_SAMPLE_MAX) as unknown as {
+			.all(now - AGENT_SAMPLE_WINDOW_MS)) as unknown as {
 			agent_id: string;
 			cpu: number | null;
 			load1: number | null;
+			ts: number;
 		}[];
+		const latest = new Map<string, { cpu: number | null; load1: number | null }>();
 		for (const r of rows) {
-			if (r.cpu !== null) this.observe(`agent.${r.agent_id}.cpu`, r.cpu, now);
-			if (r.load1 !== null) this.observe(`agent.${r.agent_id}.load1`, r.load1, now);
+			if (latest.size >= AGENT_SAMPLE_MAX && !latest.has(r.agent_id)) continue;
+			if (!latest.has(r.agent_id)) latest.set(r.agent_id, { cpu: r.cpu, load1: r.load1 });
+		}
+		for (const [agentId, r] of latest) {
+			if (r.cpu !== null) await this.observe(`agent.${agentId}.cpu`, r.cpu, now);
+			if (r.load1 !== null) await this.observe(`agent.${agentId}.load1`, r.load1, now);
 		}
 	}
 
@@ -478,11 +513,9 @@ export class AnomalyEngine {
 	start(): void {
 		if (this.timer) return;
 		this.timer = setInterval(() => {
-			try {
-				this.collect();
-			} catch (err) {
+			this.collect().catch((err: unknown) => {
 				console.error('[anomaly] tick failed:', err);
-			}
+			});
 		}, ANOMALY_TICK_MS);
 		this.timer.unref();
 	}
@@ -493,10 +526,10 @@ export class AnomalyEngine {
 	}
 }
 
-const engines = new WeakMap<DatabaseSync, AnomalyEngine>();
+const engines = new WeakMap<Db | DatabaseSync, AnomalyEngine>();
 
 /** One engine per db handle; routes share the instance start() wired. */
-export function getEngine(db: DatabaseSync): AnomalyEngine {
+export function getEngine(db: Db | DatabaseSync): AnomalyEngine {
 	let e = engines.get(db);
 	if (!e) {
 		e = new AnomalyEngine(db);

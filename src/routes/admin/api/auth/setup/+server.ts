@@ -11,14 +11,14 @@ import {
 } from '$lib/server/admin/http';
 import { USERNAME_RE, checkPassword } from '$lib/server/admin/policy';
 
-export const GET: RequestHandler = () => {
+export const GET: RequestHandler = async () => {
 	const rt = getRuntime();
-	return apiJson({ needed: rt.config.admin.allow_setup && rt.users.count() === 0 });
+	return apiJson({ needed: rt.config.admin.allow_setup && (await rt.users.count()) === 0 });
 };
 
 export const POST: RequestHandler = async (event) => {
 	const rt = getRuntime();
-	if (!rt.config.admin.allow_setup || rt.users.count() > 0) {
+	if (!rt.config.admin.allow_setup || (await rt.users.count()) > 0) {
 		return apiError(404, 'setup is no longer available');
 	}
 	const body = await readJson(event.request, 8192);
@@ -37,15 +37,15 @@ export const POST: RequestHandler = async (event) => {
 	const ip = clientIp(event);
 	// Check-then-insert is one transaction: a second concurrent setup
 	// post loses the race instead of minting a stealth admin.
-	const user = rt.users.createFirstUser(username, password, 'admin', displayName);
+	const user = await rt.users.createFirstUser(username, password, 'admin', displayName);
 	if (!user) return apiError(404, 'setup is no longer available');
-	const token = rt.sessions.create(
+	const token = await rt.sessions.create(
 		user.id,
 		rt.sessionTtlMs(),
 		ip,
 		event.request.headers.get('user-agent')
 	);
 	setSessionCookie(event.cookies, token, rt.sessionTtlMs(), isSecureRequest(event));
-	rt.audit.log({ userId: user.id, username, action: 'admin.setup', ip });
+	await rt.audit.log({ userId: user.id, username, action: 'admin.setup', ip });
 	return apiJson({ ok: true, user });
 };

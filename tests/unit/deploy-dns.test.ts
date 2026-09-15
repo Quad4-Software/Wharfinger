@@ -60,14 +60,14 @@ function stores(agentAddrs: string[] | null = ['203.0.113.10', '2001:db8::10']) 
 
 const GIT = { kind: 'git' as const, url: 'git@github.com:org/repo.git', ref: 'main' };
 
-function makeApp(deploys: DeployStore, domains: string[], name = 'site'): DeployApp {
-	return deploys.createApp({ name, agentId: 'agent-1', source: GIT, domains }).app;
+async function makeApp(deploys: DeployStore, domains: string[], name = 'site'): Promise<DeployApp> {
+	return (await deploys.createApp({ name, agentId: 'agent-1', source: GIT, domains })).app;
 }
 
 describe('domainCheck', () => {
 	it('reports an apex host pointing at the agent', async () => {
 		const { deploys, rt } = stores();
-		const app = makeApp(deploys, ['app.example.com']);
+		const app = await makeApp(deploys, ['app.example.com']);
 		const reports = await domainCheck(rt, app, {
 			resolver: fakeResolver({ a: { 'app.example.com': ['203.0.113.10'] } })
 		});
@@ -82,7 +82,7 @@ describe('domainCheck', () => {
 
 	it('suggests an A record with the agent public address on NXDOMAIN', async () => {
 		const { deploys, rt } = stores();
-		const app = makeApp(deploys, ['missing.example.com']);
+		const app = await makeApp(deploys, ['missing.example.com']);
 		const reports = await domainCheck(rt, app, { resolver: fakeResolver({}) });
 		const r = reports[0];
 		expect(r.dns).toBe('unresolved');
@@ -91,7 +91,7 @@ describe('domainCheck', () => {
 
 	it('flags answers that do not match any agent address', async () => {
 		const { deploys, rt } = stores();
-		const app = makeApp(deploys, ['app.example.com']);
+		const app = await makeApp(deploys, ['app.example.com']);
 		const reports = await domainCheck(rt, app, {
 			resolver: fakeResolver({ a: { 'app.example.com': ['198.51.100.9'] } })
 		});
@@ -102,7 +102,7 @@ describe('domainCheck', () => {
 
 	it('follows a cname chain to its target', async () => {
 		const { deploys, rt } = stores();
-		const app = makeApp(deploys, ['www.example.com']);
+		const app = await makeApp(deploys, ['www.example.com']);
 		const reports = await domainCheck(rt, app, {
 			resolver: fakeResolver({
 				cname: { 'www.example.com': ['edge.example.net'] },
@@ -116,7 +116,7 @@ describe('domainCheck', () => {
 
 	it('marks malformed stored hosts as skipped', async () => {
 		const { deploys, rt } = stores();
-		const app = makeApp(deploys, ['ok.example.com']);
+		const app = await makeApp(deploys, ['ok.example.com']);
 		// Simulate a legacy row whose stored value predates validation.
 		app.domains.push('not a host!');
 		const reports = await domainCheck(rt, app, {
@@ -128,7 +128,7 @@ describe('domainCheck', () => {
 
 	it('probes a wildcard with an unlikely label under the base', async () => {
 		const { deploys, rt } = stores();
-		const app = makeApp(deploys, ['*.example.com']);
+		const app = await makeApp(deploys, ['*.example.com']);
 		const reports = await domainCheck(rt, app, {
 			resolver: fakeResolver({ a: { '_wf-check.example.com': ['203.0.113.10'] } })
 		});
@@ -140,7 +140,7 @@ describe('domainCheck', () => {
 
 	it('warns when a wildcard record is absent', async () => {
 		const { deploys, rt } = stores();
-		const app = makeApp(deploys, ['*.example.com']);
+		const app = await makeApp(deploys, ['*.example.com']);
 		const reports = await domainCheck(rt, app, { resolver: fakeResolver({}) });
 		expect(reports[0].dns).toBe('unresolved');
 		expect(reports[0].suggestions.join(' ')).toContain('A/AAAA');
@@ -148,7 +148,7 @@ describe('domainCheck', () => {
 
 	it('warns on private-only answers', async () => {
 		const { deploys, rt } = stores(['10.0.0.5']);
-		const app = makeApp(deploys, ['internal.lan']);
+		const app = await makeApp(deploys, ['internal.lan']);
 		const reports = await domainCheck(rt, app, {
 			resolver: fakeResolver({ a: { 'internal.lan': ['10.0.0.5'] } })
 		});
@@ -160,8 +160,8 @@ describe('domainCheck', () => {
 
 	it('reports exact-host and covering-wildcard conflicts', async () => {
 		const { deploys, rt } = stores();
-		makeApp(deploys, ['app.example.com'], 'first');
-		const app = makeApp(deploys, ['app.example.com'], 'second');
+		await makeApp(deploys, ['app.example.com'], 'first');
+		const app = await makeApp(deploys, ['app.example.com'], 'second');
 		const reports = await domainCheck(rt, app, {
 			resolver: fakeResolver({ a: { 'app.example.com': ['203.0.113.10'] } })
 		});
@@ -170,8 +170,8 @@ describe('domainCheck', () => {
 		expect(reports[0].suggestions.join(' ')).toContain('first claim wins');
 
 		// A wildcard on another app covers an exact host claim.
-		makeApp(deploys, ['*.svc.example.com'], 'wild');
-		const sub = makeApp(deploys, ['api.svc.example.com'], 'api');
+		await makeApp(deploys, ['*.svc.example.com'], 'wild');
+		const sub = await makeApp(deploys, ['api.svc.example.com'], 'api');
 		const r2 = await domainCheck(rt, sub, {
 			resolver: fakeResolver({ a: { 'api.svc.example.com': ['203.0.113.10'] } })
 		});
@@ -180,7 +180,7 @@ describe('domainCheck', () => {
 
 	it('treats null agent payload as unknown rather than wrong', async () => {
 		const { deploys, rt } = stores(null);
-		const app = makeApp(deploys, ['app.example.com']);
+		const app = await makeApp(deploys, ['app.example.com']);
 		const reports = await domainCheck(rt, app, {
 			resolver: fakeResolver({ a: { 'app.example.com': ['198.51.100.9'] } })
 		});
@@ -220,7 +220,7 @@ describe('domain-check route', () => {
 	it('denies without deploy.view, 404s a missing app, and checks a real one', async () => {
 		const { deploys, rt } = stores();
 		routeRt.rt = rt;
-		const app = makeApp(deploys, ['edge.example.com']);
+		const app = await makeApp(deploys, ['edge.example.com']);
 		routeZone.zone = { a: { 'edge.example.com': ['203.0.113.10'] } };
 
 		await expect(domainCheckRoute(routeEvent(app.id, []) as never)).rejects.toMatchObject({

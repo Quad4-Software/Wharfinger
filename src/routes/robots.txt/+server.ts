@@ -1,9 +1,9 @@
 import type { RequestHandler } from './$types';
 import { getRuntime } from '$lib/server/runtime';
 
-export const GET: RequestHandler = () => {
+export const GET: RequestHandler = async () => {
 	const rt = getRuntime();
-	const { snapshot } = rt.snapshot.current();
+	const { snapshot } = await rt.snapshot.current();
 	const base = snapshot.site.url?.replace(/\/$/, '');
 	const lines = ['User-agent: *', 'Allow: /', 'Disallow: /api/stream'];
 	// Only advertise the admin mount when it sits on the default path; a

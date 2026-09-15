@@ -5,11 +5,10 @@ import type { ChatPeer } from '$lib/shared/chat';
 
 // Lightweight user list for dm/room addressing; the full /users
 // endpoint sits behind users.manage which chat must not require.
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	const rt = getRuntime();
 	const user = requireUser(event);
-	const peers: ChatPeer[] = rt.users
-		.all()
+	const peers: ChatPeer[] = (await rt.users.all())
 		.filter((u) => u.disabledAt === null && u.id !== user.id)
 		.map((u) => ({
 			id: u.id,

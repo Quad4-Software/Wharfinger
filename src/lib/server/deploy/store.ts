@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
+import { asDb, isUniqueViolation, type Db } from '$lib/server/store/driver';
 import { sealSecret, openSecret, hashToken, randomToken } from '$lib/server/admin/crypto';
 import type {
 	AppSource,
@@ -111,9 +112,13 @@ function appQuery(hasKey = true): string {
 }
 
 export class DeployStore {
-	constructor(private readonly db: DatabaseSync) {}
+	private readonly db: Db;
 
-	createApp(opts: {
+	constructor(db: Db | DatabaseSync) {
+		this.db = asDb(db);
+	}
+
+	async createApp(opts: {
 		name: string;
 		agentId: string;
 		source: AppSource;
@@ -123,7 +128,7 @@ export class DeployStore {
 		ports?: PortMap[];
 		namespace?: string | null;
 		replicas?: number | null;
-	}): { app: DeployApp; webhook: string; deployKeyPub: string } {
+	}): Promise<{ app: DeployApp; webhook: string; deployKeyPub: string }> {
 		const name = opts.name.trim().toLowerCase();
 		if (!NAME_RE.test(name)) throw new DeployError(422, 'name must be lowercase dns-label style');
 		const source = this.validateSource(opts.source);
@@ -144,39 +149,37 @@ export class DeployStore {
 		const pubRaw = Buffer.from(pubJwk.x, 'base64url');
 		const privRaw = Buffer.concat([Buffer.from(privJwk.d, 'base64url'), pubRaw]);
 
-		this.db.exec('BEGIN IMMEDIATE');
 		try {
-			this.db
-				.prepare(
-					`INSERT INTO deploy_apps (id, name, agent_id, source, runtime, domains, healthcheck, ports, namespace, replicas, webhook_hash, created_at, updated_at)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-				)
-				.run(
-					id,
-					name,
-					opts.agentId,
-					JSON.stringify(source),
-					runtime,
-					JSON.stringify(domains),
-					JSON.stringify(healthcheck),
-					JSON.stringify(ports),
-					kube.namespace,
-					kube.replicas,
-					hashToken(webhook),
-					now,
-					now
-				);
-			this.db
-				.prepare('INSERT INTO deploy_keys (app_id, pub, priv) VALUES (?, ?, ?)')
-				.run(id, pubRaw.toString('base64'), sealSecret(privRaw.toString('base64')));
-			this.db.exec('COMMIT');
+			await this.db.tx(async (tx) => {
+				await tx
+					.prepare(
+						`INSERT INTO deploy_apps (id, name, agent_id, source, runtime, domains, healthcheck, ports, namespace, replicas, webhook_hash, created_at, updated_at)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					)
+					.run(
+						id,
+						name,
+						opts.agentId,
+						JSON.stringify(source),
+						runtime,
+						JSON.stringify(domains),
+						JSON.stringify(healthcheck),
+						JSON.stringify(ports),
+						kube.namespace,
+						kube.replicas,
+						hashToken(webhook),
+						now,
+						now
+					);
+				await tx
+					.prepare('INSERT INTO deploy_keys (app_id, pub, priv) VALUES (?, ?, ?)')
+					.run(id, pubRaw.toString('base64'), sealSecret(privRaw.toString('base64')));
+			});
 		} catch (err) {
-			this.db.exec('ROLLBACK');
-			if (String(err).includes('UNIQUE'))
-				throw new DeployError(409, 'an app with that name exists');
+			if (isUniqueViolation(err)) throw new DeployError(409, 'an app with that name exists');
 			throw err;
 		}
-		const app = this.getApp(id);
+		const app = await this.getApp(id);
 		if (!app) throw new DeployError(500, 'app missing after create');
 		return { app, webhook, deployKeyPub: opensshPub(pubRaw, `wharfinger-${name}`) };
 	}
@@ -301,32 +304,35 @@ export class DeployStore {
 		return { namespace: ns, replicas: rep };
 	}
 
-	getApp(id: string): DeployApp | null {
-		const row = this.db.prepare(`${appQuery()} WHERE a.id = ?`).get(id) as AppRow | undefined;
-		return row ? toApp(row) : null;
-	}
-
-	byName(name: string): DeployApp | null {
-		const row = this.db.prepare(`${appQuery()} WHERE a.name = ?`).get(name) as AppRow | undefined;
-		return row ? toApp(row) : null;
-	}
-
-	byWebhook(token: string): DeployApp | null {
-		const row = this.db.prepare(`${appQuery()} WHERE a.webhook_hash = ?`).get(hashToken(token)) as
+	async getApp(id: string): Promise<DeployApp | null> {
+		const row = (await this.db.prepare(`${appQuery()} WHERE a.id = ?`).get(id)) as
 			AppRow | undefined;
 		return row ? toApp(row) : null;
 	}
 
-	listApps(agentId?: string): DeployApp[] {
+	async byName(name: string): Promise<DeployApp | null> {
+		const row = (await this.db.prepare(`${appQuery()} WHERE a.name = ?`).get(name)) as
+			AppRow | undefined;
+		return row ? toApp(row) : null;
+	}
+
+	async byWebhook(token: string): Promise<DeployApp | null> {
+		const row = (await this.db
+			.prepare(`${appQuery()} WHERE a.webhook_hash = ?`)
+			.get(hashToken(token))) as AppRow | undefined;
+		return row ? toApp(row) : null;
+	}
+
+	async listApps(agentId?: string): Promise<DeployApp[]> {
 		const rows = agentId
-			? (this.db
+			? ((await this.db
 					.prepare(`${appQuery()} WHERE a.agent_id = ? ORDER BY a.name`)
-					.all(agentId) as unknown as AppRow[])
-			: (this.db.prepare(`${appQuery()} ORDER BY a.name`).all() as unknown as AppRow[]);
+					.all(agentId)) as unknown as AppRow[])
+			: ((await this.db.prepare(`${appQuery()} ORDER BY a.name`).all()) as unknown as AppRow[]);
 		return rows.map(toApp);
 	}
 
-	updateApp(
+	async updateApp(
 		id: string,
 		patch: Partial<{
 			name: string;
@@ -340,8 +346,8 @@ export class DeployStore {
 			replicas: number | null;
 			expectedUpdatedAt: number;
 		}>
-	): DeployApp {
-		const app = this.getApp(id);
+	): Promise<DeployApp> {
+		const app = await this.getApp(id);
 		if (!app) throw new DeployError(404, 'app not found');
 		const sets: string[] = [];
 		const args: (string | number | null)[] = [];
@@ -405,29 +411,33 @@ export class DeployStore {
 			args.push(patch.expectedUpdatedAt);
 		}
 		try {
-			const n = this.db
+			const n = await this.db
 				.prepare(`UPDATE deploy_apps SET ${sets.join(', ')} WHERE id = ?${guard}`)
-				.run(...args).changes;
-			if (!Number(n))
+				.run(...args);
+			if (!Number(n.changes))
 				throw new DeployError(409, 'app changed since it was loaded; reload and retry');
 		} catch (err) {
 			if (err instanceof DeployError) throw err;
-			if (String(err).includes('UNIQUE'))
-				throw new DeployError(409, 'an app with that name exists');
+			if (isUniqueViolation(err)) throw new DeployError(409, 'an app with that name exists');
 			throw err;
 		}
-		const updated = this.getApp(id);
+		const updated = await this.getApp(id);
 		if (!updated) throw new DeployError(500, 'app missing after update');
 		return updated;
 	}
 
-	deleteApp(id: string): boolean {
-		return Number(this.db.prepare('DELETE FROM deploy_apps WHERE id = ?').run(id).changes) === 1;
+	async deleteApp(id: string): Promise<boolean> {
+		return this.db.tx(async (tx) => {
+			await tx.prepare('DELETE FROM deploy_keys WHERE app_id = ?').run(id);
+			await tx.prepare('DELETE FROM deploy_releases WHERE app_id = ?').run(id);
+			const res = await tx.prepare('DELETE FROM deploy_apps WHERE id = ?').run(id);
+			return Number(res.changes) === 1;
+		});
 	}
 
 	/** Sealed env map; fetched by the bound agent through the secrets endpoint. */
-	setEnv(id: string, env: Record<string, string>, expectedUpdatedAt?: number): void {
-		if (!this.getApp(id)) throw new DeployError(404, 'app not found');
+	async setEnv(id: string, env: Record<string, string>, expectedUpdatedAt?: number): Promise<void> {
+		if (!(await this.getApp(id))) throw new DeployError(404, 'app not found');
 		const keys = Object.keys(env);
 		if (keys.length > MAX_ENV_KEYS) throw new DeployError(422, 'too many env keys');
 		for (const k of keys) {
@@ -440,14 +450,14 @@ export class DeployStore {
 			sql += ' AND updated_at = ?';
 			args.push(expectedUpdatedAt);
 		}
-		const n = this.db.prepare(sql).run(...args).changes;
-		if (!Number(n)) {
+		const res = await this.db.prepare(sql).run(...args);
+		if (!Number(res.changes)) {
 			throw new DeployError(409, 'app changed since it was loaded; reload and retry');
 		}
 	}
 
-	envFor(id: string): Record<string, string> {
-		const row = this.db.prepare('SELECT env FROM deploy_apps WHERE id = ?').get(id) as
+	async envFor(id: string): Promise<Record<string, string>> {
+		const row = (await this.db.prepare('SELECT env FROM deploy_apps WHERE id = ?').get(id)) as
 			{ env: string | null } | undefined;
 		if (!row?.env) return {};
 		const plain = openSecret(row.env);
@@ -455,139 +465,138 @@ export class DeployStore {
 		return JSON.parse(plain) as Record<string, string>;
 	}
 
-	setHookSecret(id: string, secret: string): void {
-		this.db
+	async setHookSecret(id: string, secret: string): Promise<void> {
+		await this.db
 			.prepare('UPDATE deploy_apps SET hook_secret = ?, updated_at = ? WHERE id = ?')
 			.run(sealSecret(secret), Date.now(), id);
 	}
 
-	hookSecret(id: string): string | null {
-		const row = this.db.prepare('SELECT hook_secret FROM deploy_apps WHERE id = ?').get(id) as
-			{ hook_secret: string | null } | undefined;
+	async hookSecret(id: string): Promise<string | null> {
+		const row = (await this.db
+			.prepare('SELECT hook_secret FROM deploy_apps WHERE id = ?')
+			.get(id)) as { hook_secret: string | null } | undefined;
 		return row?.hook_secret ? (openSecret(row.hook_secret) ?? null) : null;
 	}
 
-	rotateWebhook(id: string): string {
+	async rotateWebhook(id: string): Promise<string> {
 		const webhook = randomToken();
-		const n = this.db
+		const res = await this.db
 			.prepare('UPDATE deploy_apps SET webhook_hash = ?, updated_at = ? WHERE id = ?')
-			.run(hashToken(webhook), Date.now(), id).changes;
-		if (!Number(n)) throw new DeployError(404, 'app not found');
+			.run(hashToken(webhook), Date.now(), id);
+		if (!Number(res.changes)) throw new DeployError(404, 'app not found');
 		return webhook;
 	}
 
 	/** Raw 64-byte ed25519 deploy key, released only to the lease-holding agent. */
-	deployKeyFor(id: string): { priv: Buffer; pub: string } | null {
-		const row = this.db.prepare('SELECT pub, priv FROM deploy_keys WHERE app_id = ?').get(id) as
-			{ pub: string; priv: string } | undefined;
+	async deployKeyFor(id: string): Promise<{ priv: Buffer; pub: string } | null> {
+		const row = (await this.db
+			.prepare('SELECT pub, priv FROM deploy_keys WHERE app_id = ?')
+			.get(id)) as { pub: string; priv: string } | undefined;
 		if (!row) return null;
 		const priv = openSecret(row.priv);
 		if (priv === null) throw new DeployError(500, 'sealed deploy key is unreadable');
 		return { priv: Buffer.from(priv, 'base64'), pub: row.pub };
 	}
 
-	rotateDeployKey(id: string): string {
-		if (!this.getApp(id)) throw new DeployError(404, 'app not found');
+	async rotateDeployKey(id: string): Promise<string> {
+		if (!(await this.getApp(id))) throw new DeployError(404, 'app not found');
 		const kp = generateKeyPairSync('ed25519');
 		const pubJwk = kp.publicKey.export({ format: 'jwk' }) as { x: string };
 		const privJwk = kp.privateKey.export({ format: 'jwk' }) as { d: string };
 		const pubRaw = Buffer.from(pubJwk.x, 'base64url');
 		const privRaw = Buffer.concat([Buffer.from(privJwk.d, 'base64url'), pubRaw]);
-		this.db
+		await this.db
 			.prepare('UPDATE deploy_keys SET pub = ?, priv = ? WHERE app_id = ?')
 			.run(pubRaw.toString('base64'), sealSecret(privRaw.toString('base64')), id);
 		return opensshPub(pubRaw);
 	}
 
-	createRelease(appId: string, spec: string, jobId: number | null, id?: string): DeployRelease {
+	async createRelease(
+		appId: string,
+		spec: string,
+		jobId: number | null,
+		id?: string
+	): Promise<DeployRelease> {
 		id ??= `rel_${randomBytes(9).toString('base64url')}`;
-		this.db
+		await this.db
 			.prepare(
 				`INSERT INTO deploy_releases (id, app_id, job_id, spec, status, created_at)
 				 VALUES (?, ?, ?, ?, 'pending', ?)`
 			)
 			.run(id, appId, jobId, spec, Date.now());
-		const release = this.release(id);
+		const release = await this.release(id);
 		if (!release) throw new DeployError(500, 'release missing after create');
 		return release;
 	}
 
-	release(id: string): DeployRelease | null {
-		const row = this.db.prepare('SELECT * FROM deploy_releases WHERE id = ?').get(id) as
+	async release(id: string): Promise<DeployRelease | null> {
+		const row = (await this.db.prepare('SELECT * FROM deploy_releases WHERE id = ?').get(id)) as
 			ReleaseRow | undefined;
 		return row ? toRelease(row) : null;
 	}
 
-	releaseSpec(id: string): string | null {
-		const row = this.db.prepare('SELECT spec FROM deploy_releases WHERE id = ?').get(id) as
+	async releaseSpec(id: string): Promise<string | null> {
+		const row = (await this.db.prepare('SELECT spec FROM deploy_releases WHERE id = ?').get(id)) as
 			{ spec: string } | undefined;
 		return row?.spec ?? null;
 	}
 
-	releases(appId: string, limit = 50): DeployRelease[] {
+	async releases(appId: string, limit = 50): Promise<DeployRelease[]> {
 		return (
-			this.db
+			(await this.db
 				.prepare('SELECT * FROM deploy_releases WHERE app_id = ? ORDER BY created_at DESC LIMIT ?')
-				.all(appId, limit) as unknown as ReleaseRow[]
+				.all(appId, limit)) as unknown as ReleaseRow[]
 		).map(toRelease);
 	}
 
-	liveRelease(appId: string): DeployRelease | null {
-		const row = this.db
+	async liveRelease(appId: string): Promise<DeployRelease | null> {
+		const row = (await this.db
 			.prepare(
 				"SELECT * FROM deploy_releases WHERE app_id = ? AND status = 'live' ORDER BY live_at DESC LIMIT 1"
 			)
-			.get(appId) as ReleaseRow | undefined;
+			.get(appId)) as ReleaseRow | undefined;
 		return row ? toRelease(row) : null;
 	}
 
 	/** Mark a release live and supersede the previous live one atomically. */
-	markLive(id: string, meta: { commit?: string; image?: string } = {}): void {
-		this.db.exec('BEGIN IMMEDIATE');
-		try {
-			const row = this.db.prepare('SELECT app_id FROM deploy_releases WHERE id = ?').get(id) as
+	async markLive(id: string, meta: { commit?: string; image?: string } = {}): Promise<void> {
+		await this.db.tx(async (tx) => {
+			const row = (await tx.prepare('SELECT app_id FROM deploy_releases WHERE id = ?').get(id)) as
 				{ app_id: string } | undefined;
-			if (!row) {
-				this.db.exec('ROLLBACK');
-				return;
-			}
-			this.db
+			if (!row) return;
+			await tx
 				.prepare(
 					"UPDATE deploy_releases SET status = 'superseded' WHERE app_id = ? AND status = 'live'"
 				)
 				.run(row.app_id);
-			this.db
+			await tx
 				.prepare(
 					"UPDATE deploy_releases SET status = 'live', live_at = ?, commit_sha = COALESCE(?, commit_sha), image = COALESCE(?, image) WHERE id = ?"
 				)
 				.run(Date.now(), meta.commit ?? null, meta.image ?? null, id);
-			this.db.exec('COMMIT');
-		} catch (err) {
-			this.db.exec('ROLLBACK');
-			throw err;
-		}
+		});
 	}
 
 	/** Record the pushed commit sha on a pending release (webhook path). */
-	noteCommit(id: string, commitSha: string): void {
-		this.db
+	async noteCommit(id: string, commitSha: string): Promise<void> {
+		await this.db
 			.prepare("UPDATE deploy_releases SET commit_sha = ? WHERE id = ? AND status = 'pending'")
 			.run(commitSha.slice(0, 64), id);
 	}
 
-	markRelease(
+	async markRelease(
 		id: string,
 		status: 'failed' | 'rolled_back',
 		meta: { commit?: string; image?: string } = {}
-	): void {
-		this.db
+	): Promise<void> {
+		await this.db
 			.prepare(
 				'UPDATE deploy_releases SET status = ?, commit_sha = COALESCE(?, commit_sha), image = COALESCE(?, image) WHERE id = ?'
 			)
 			.run(status, meta.commit ?? null, meta.image ?? null, id);
 	}
 
-	linkJob(id: string, jobId: number): void {
-		this.db.prepare('UPDATE deploy_releases SET job_id = ? WHERE id = ?').run(jobId, id);
+	async linkJob(id: string, jobId: number): Promise<void> {
+		await this.db.prepare('UPDATE deploy_releases SET job_id = ? WHERE id = ?').run(jobId, id);
 	}
 }

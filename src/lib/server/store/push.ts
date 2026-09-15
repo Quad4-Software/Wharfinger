@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { hubSecret } from '$lib/server/ingress/keys';
+import { asDb, type Db } from './driver';
 
 // Dead-man's-switch beats: each push service owns a derived token URL.
 // Beats are one row per service, so the table cannot grow unbounded.
@@ -13,10 +14,14 @@ export interface PushBeat {
 }
 
 export class PushStore {
-	constructor(private readonly db: DatabaseSync) {}
+	private readonly db: Db;
 
-	beat(serviceId: string, msg: string | null): void {
-		this.db
+	constructor(db: Db | DatabaseSync) {
+		this.db = asDb(db);
+	}
+
+	async beat(serviceId: string, msg: string | null): Promise<void> {
+		await this.db
 			.prepare(
 				`INSERT INTO push_beats (service_id, last_beat, beats, last_msg)
 				VALUES (?, ?, 1, ?)
@@ -28,30 +33,32 @@ export class PushStore {
 			.run(serviceId, Date.now(), msg);
 	}
 
-	lastBeat(serviceId: string): number | null {
-		const r = this.db
+	async lastBeat(serviceId: string): Promise<number | null> {
+		const r = (await this.db
 			.prepare('SELECT last_beat AS lastBeat FROM push_beats WHERE service_id = ?')
-			.get(serviceId) as { lastBeat: number } | undefined;
+			.get(serviceId)) as { lastBeat: number } | undefined;
 		return r?.lastBeat ?? null;
 	}
 
-	info(serviceId: string): PushBeat | null {
-		const r = this.db
+	async info(serviceId: string): Promise<PushBeat | null> {
+		const r = (await this.db
 			.prepare(
 				'SELECT service_id AS serviceId, last_beat AS lastBeat, beats, last_msg AS lastMsg FROM push_beats WHERE service_id = ?'
 			)
-			.get(serviceId) as PushBeat | undefined;
+			.get(serviceId)) as PushBeat | undefined;
 		return r ?? null;
 	}
 
 	/** Beats for services that no longer exist. */
-	prune(validIds: string[]): void {
+	async prune(validIds: string[]): Promise<void> {
 		if (validIds.length === 0) {
-			this.db.exec('DELETE FROM push_beats');
+			await this.db.exec('DELETE FROM push_beats');
 			return;
 		}
 		const marks = validIds.map(() => '?').join(',');
-		this.db.prepare(`DELETE FROM push_beats WHERE service_id NOT IN (${marks})`).run(...validIds);
+		await this.db
+			.prepare(`DELETE FROM push_beats WHERE service_id NOT IN (${marks})`)
+			.run(...validIds);
 	}
 }
 
@@ -60,13 +67,20 @@ export class PushStore {
  * private key so URLs survive restarts but cannot be guessed from the
  * service id. 32 hex chars.
  */
-export function pushToken(db: DatabaseSync, serviceId: string): string {
-	return createHmac('sha256', hubSecret(db)).update(`push:${serviceId}`).digest('hex').slice(0, 32);
+export async function pushToken(db: Db | DatabaseSync, serviceId: string): Promise<string> {
+	return createHmac('sha256', await hubSecret(db))
+		.update(`push:${serviceId}`)
+		.digest('hex')
+		.slice(0, 32);
 }
 
 /** Constant-time token match against a candidate string. */
-export function tokenMatches(db: DatabaseSync, serviceId: string, candidate: string): boolean {
-	const want = Buffer.from(pushToken(db, serviceId), 'utf8');
+export async function tokenMatches(
+	db: Db | DatabaseSync,
+	serviceId: string,
+	candidate: string
+): Promise<boolean> {
+	const want = Buffer.from(await pushToken(db, serviceId), 'utf8');
 	const got = Buffer.from(candidate, 'utf8');
 	return want.length === got.length && timingSafeEqual(want, got);
 }

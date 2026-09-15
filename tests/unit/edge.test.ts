@@ -82,55 +82,55 @@ describe('EdgeReport schema', () => {
 });
 
 describe('EdgeStore', () => {
-	function agentId(db: DatabaseSync): string {
-		return new AgentStore(db).create('edge-1', null).id;
+	async function agentId(db: DatabaseSync): Promise<string> {
+		return (await new AgentStore(db).create('edge-1', null)).id;
 	}
 
-	it('records, reads latest, and prunes', () => {
+	it('records, reads latest, and prunes', async () => {
 		const db = freshDb();
-		const id = agentId(db);
+		const id = await agentId(db);
 		const store = new EdgeStore(db);
-		store.record(id, v.parse(EdgeReport, report({ ts: Date.now() - 10 * 86_400_000 })));
-		store.record(id, v.parse(EdgeReport, report()));
-		const latest = store.latest(id);
+		await store.record(id, v.parse(EdgeReport, report({ ts: Date.now() - 10 * 86_400_000 })));
+		await store.record(id, v.parse(EdgeReport, report()));
+		const latest = await store.latest(id);
 		expect(latest?.requests).toBe(100);
 		expect(latest?.clients?.[0].ip).toBe('203.0.113.7');
-		expect(store.history(id, 0)).toHaveLength(2);
+		expect(await store.history(id, 0)).toHaveLength(2);
 
-		store.prune(Date.now() - 5 * 86_400_000);
-		expect(store.history(id, 0)).toHaveLength(1);
+		await store.prune(Date.now() - 5 * 86_400_000);
+		expect(await store.history(id, 0)).toHaveLength(1);
 	});
 
-	it('dedupes replays on (agent_id, ts)', () => {
+	it('dedupes replays on (agent_id, ts)', async () => {
 		const db = freshDb();
-		const id = agentId(db);
+		const id = await agentId(db);
 		const store = new EdgeStore(db);
 		const r = v.parse(EdgeReport, report({ ts: Date.now() - 60_000 }));
-		store.record(id, r);
-		store.record(id, r); // plugin retry
-		expect(store.history(id, 0)).toHaveLength(1);
+		await store.record(id, r);
+		await store.record(id, r); // plugin retry
+		expect(await store.history(id, 0)).toHaveLength(1);
 	});
 
-	it('returns null latest for unknown agents and corrupt rows', () => {
+	it('returns null latest for unknown agents and corrupt rows', async () => {
 		const db = freshDb();
 		const store = new EdgeStore(db);
-		expect(store.latest('ag_none')).toBeNull();
-		const id = agentId(db);
+		expect(await store.latest('ag_none')).toBeNull();
+		const id = await agentId(db);
 		db.prepare(
 			'INSERT INTO edge_reports (agent_id, ts, window_s, requests, s2xx, s3xx, s4xx, s5xx, errs, report) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 		).run(id, Date.now(), 60, 0, 0, 0, 0, 0, 0, '{corrupt');
-		expect(store.latest(id)).toBeNull();
+		expect(await store.latest(id)).toBeNull();
 	});
 
-	it('buckets long history to a bounded point count', () => {
+	it('buckets long history to a bounded point count', async () => {
 		const db = freshDb();
-		const id = agentId(db);
+		const id = await agentId(db);
 		const store = new EdgeStore(db);
 		const base = Date.now() - 1000 * 60_000;
 		for (let i = 0; i < 1000; i++) {
-			store.record(id, v.parse(EdgeReport, report({ ts: base + i * 60_000 })));
+			await store.record(id, v.parse(EdgeReport, report({ ts: base + i * 60_000 })));
 		}
-		const samples = store.history(id, base);
+		const samples = await store.history(id, base);
 		expect(samples.length).toBeLessThanOrEqual(600);
 		expect(samples.length).toBeGreaterThan(400);
 		// Bucket averages preserve the totals, not raw row counts.

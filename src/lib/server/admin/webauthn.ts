@@ -2,6 +2,8 @@ import type { DatabaseSync } from 'node:sqlite';
 import { isoBase64URL } from '@simplewebauthn/server/helpers';
 import type { StatusConfig } from '$lib/server/config/schema';
 import type { PasskeyInfo } from '$lib/shared/auth';
+import { asDb, isUniqueViolation, type Db } from '$lib/server/store/driver';
+import { asBytes } from '$lib/server/bytes';
 import { hashToken } from './crypto';
 
 export type ChallengeKind = 'register' | 'login';
@@ -30,11 +32,13 @@ interface CredentialRow {
 	id: number;
 	user_id: number;
 	credential_id: string;
-	public_key: Uint8Array;
+	/** Uint8Array on sqlite, base64 text on surreal. */
+	public_key: unknown;
 	counter: number;
 	transports: string | null;
 	name: string;
-	backed_up: number;
+	/** 0/1 on sqlite, boolean on surreal. */
+	backed_up: number | boolean;
 	created_at: number;
 	last_used_at: number | null;
 }
@@ -61,11 +65,11 @@ function toCredential(r: CredentialRow): PasskeyCredential {
 		id: r.id,
 		userId: r.user_id,
 		credentialId: r.credential_id,
-		publicKey: r.public_key,
+		publicKey: asBytes(r.public_key) ?? new Uint8Array(),
 		counter: r.counter,
 		transports,
 		name: r.name,
-		backedUp: r.backed_up === 1,
+		backedUp: Boolean(r.backed_up),
 		createdAt: r.created_at,
 		lastUsedAt: r.last_used_at
 	};
@@ -123,23 +127,27 @@ export function clientDataChallenge(clientDataJSON: unknown): string | null {
 }
 
 export class WebAuthnStore {
-	constructor(private readonly db: DatabaseSync) {}
+	private readonly db: Db;
 
-	forUser(userId: number): PasskeyCredential[] {
-		const rows = this.db
+	constructor(db: Db | DatabaseSync) {
+		this.db = asDb(db);
+	}
+
+	async forUser(userId: number): Promise<PasskeyCredential[]> {
+		const rows = (await this.db
 			.prepare(`${SELECT} WHERE user_id = ? ORDER BY created_at`)
-			.all(userId) as unknown as CredentialRow[];
+			.all(userId)) as unknown as CredentialRow[];
 		return rows.map(toCredential);
 	}
 
-	byCredentialId(credentialId: string): PasskeyCredential | null {
-		const r = this.db.prepare(`${SELECT} WHERE credential_id = ?`).get(credentialId) as
+	async byCredentialId(credentialId: string): Promise<PasskeyCredential | null> {
+		const r = (await this.db.prepare(`${SELECT} WHERE credential_id = ?`).get(credentialId)) as
 			CredentialRow | undefined;
 		return r ? toCredential(r) : null;
 	}
 
 	/** Insert a verified credential; null when the credential id already exists. */
-	insert(opts: {
+	async insert(opts: {
 		userId: number;
 		credentialId: string;
 		publicKey: Uint8Array;
@@ -147,40 +155,50 @@ export class WebAuthnStore {
 		transports: string[];
 		name: string;
 		backedUp: boolean;
-	}): PasskeyCredential | null {
-		if (this.byCredentialId(opts.credentialId)) return null;
-		const r = this.db
-			.prepare(
-				'INSERT INTO webauthn_credentials (user_id, credential_id, public_key, counter, transports, name, backed_up, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-			)
-			.run(
-				opts.userId,
-				opts.credentialId,
-				opts.publicKey,
-				opts.counter,
-				JSON.stringify(opts.transports),
-				opts.name,
-				opts.backedUp ? 1 : 0,
-				Date.now()
-			);
-		const row = this.db.prepare(`${SELECT} WHERE id = ?`).get(Number(r.lastInsertRowid)) as
+	}): Promise<PasskeyCredential | null> {
+		if (await this.byCredentialId(opts.credentialId)) return null;
+		let id: number;
+		try {
+			const r = await this.db
+				.prepare(
+					'INSERT INTO webauthn_credentials (user_id, credential_id, public_key, counter, transports, name, backed_up, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+				)
+				.run(
+					opts.userId,
+					opts.credentialId,
+					opts.publicKey,
+					opts.counter,
+					JSON.stringify(opts.transports),
+					opts.name,
+					opts.backedUp ? 1 : 0,
+					Date.now()
+				);
+			id = Number(r.lastInsertRowid);
+		} catch (err) {
+			// A racing insert on the same credential id loses to the
+			// unique index; report it the same way as the pre-check.
+			if (isUniqueViolation(err)) return null;
+			throw err;
+		}
+		const row = (await this.db.prepare(`${SELECT} WHERE id = ?`).get(id)) as
 			CredentialRow | undefined;
 		return row ? toCredential(row) : null;
 	}
 
-	rename(id: number, userId: number, name: string): boolean {
-		const r = this.db
+	async rename(id: number, userId: number, name: string): Promise<boolean> {
+		const r = await this.db
 			.prepare('UPDATE webauthn_credentials SET name = ? WHERE id = ? AND user_id = ?')
 			.run(name, id, userId);
 		return Number(r.changes) === 1;
 	}
 
 	/** Owner-scoped delete; admins manage only their own passkeys in v1. */
-	remove(id: number, userId: number): PasskeyCredential | null {
-		const row = this.db.prepare(`${SELECT} WHERE id = ? AND user_id = ?`).get(id, userId) as
-			CredentialRow | undefined;
+	async remove(id: number, userId: number): Promise<PasskeyCredential | null> {
+		const row = (await this.db
+			.prepare(`${SELECT} WHERE id = ? AND user_id = ?`)
+			.get(id, userId)) as CredentialRow | undefined;
 		if (!row) return null;
-		this.db.prepare('DELETE FROM webauthn_credentials WHERE id = ?').run(id);
+		await this.db.prepare('DELETE FROM webauthn_credentials WHERE id = ?').run(id);
 		return toCredential(row);
 	}
 
@@ -190,20 +208,21 @@ export class WebAuthnStore {
 	 * the authenticator was cloned; the credential is deleted and the
 	 * caller must refuse the login.
 	 */
-	recordUse(
+	async recordUse(
 		id: number,
 		newCounter: number,
 		backedUp: boolean,
 		now = Date.now()
-	): 'ok' | 'cloned' | 'missing' {
-		const row = this.db.prepare('SELECT counter FROM webauthn_credentials WHERE id = ?').get(id) as
-			{ counter: number } | undefined;
+	): Promise<'ok' | 'cloned' | 'missing'> {
+		const row = (await this.db
+			.prepare('SELECT counter FROM webauthn_credentials WHERE id = ?')
+			.get(id)) as { counter: number } | undefined;
 		if (!row) return 'missing';
 		if (row.counter > 0 && newCounter > 0 && newCounter <= row.counter) {
-			this.db.prepare('DELETE FROM webauthn_credentials WHERE id = ?').run(id);
+			await this.db.prepare('DELETE FROM webauthn_credentials WHERE id = ?').run(id);
 			return 'cloned';
 		}
-		this.db
+		await this.db
 			.prepare(
 				'UPDATE webauthn_credentials SET counter = ?, last_used_at = ?, backed_up = ? WHERE id = ?'
 			)
@@ -216,14 +235,14 @@ export class WebAuthnStore {
 	 * only the sha256 hash is stored. The challenge the authenticator
 	 * echoes back in clientDataJSON is the lookup key at verify time.
 	 */
-	putChallenge(
+	async putChallenge(
 		token: string,
 		kind: ChallengeKind,
 		userId: number | null,
 		ttlMs: number,
 		now = Date.now()
-	): void {
-		this.db
+	): Promise<void> {
+		await this.db
 			.prepare(
 				'INSERT INTO webauthn_challenges (token_hash, kind, user_id, expires_at) VALUES (?, ?, ?, ?)'
 			)
@@ -231,12 +250,16 @@ export class WebAuthnStore {
 	}
 
 	/** Unexpired challenge lookup that leaves the row claimable. */
-	peekChallenge(token: string, kind: ChallengeKind, now = Date.now()): PendingChallenge | null {
-		const r = this.db
+	async peekChallenge(
+		token: string,
+		kind: ChallengeKind,
+		now = Date.now()
+	): Promise<PendingChallenge | null> {
+		const r = (await this.db
 			.prepare(
 				'SELECT user_id, expires_at FROM webauthn_challenges WHERE token_hash = ? AND kind = ?'
 			)
-			.get(hashToken(token), kind) as ChallengeRow | undefined;
+			.get(hashToken(token), kind)) as ChallengeRow | undefined;
 		if (!r || r.expires_at <= now) return null;
 		return { userId: r.user_id, expiresAt: r.expires_at };
 	}
@@ -246,18 +269,23 @@ export class WebAuthnStore {
 	 * single-use guarantee, same pattern as InviteStore.tryClaim: two
 	 * racing verifies both peek, but only the first delete wins.
 	 */
-	consumeChallenge(token: string, kind: ChallengeKind, now = Date.now()): PendingChallenge | null {
-		const pending = this.peekChallenge(token, kind, now);
+	async consumeChallenge(
+		token: string,
+		kind: ChallengeKind,
+		now = Date.now()
+	): Promise<PendingChallenge | null> {
+		const pending = await this.peekChallenge(token, kind, now);
 		if (!pending) return null;
-		const r = this.db
+		const r = await this.db
 			.prepare('DELETE FROM webauthn_challenges WHERE token_hash = ? AND expires_at > ?')
 			.run(hashToken(token), now);
 		return Number(r.changes) === 1 ? pending : null;
 	}
 
-	prune(now = Date.now()): number {
+	async prune(now = Date.now()): Promise<number> {
 		return Number(
-			this.db.prepare('DELETE FROM webauthn_challenges WHERE expires_at <= ?').run(now).changes
+			(await this.db.prepare('DELETE FROM webauthn_challenges WHERE expires_at <= ?').run(now))
+				.changes
 		);
 	}
 }

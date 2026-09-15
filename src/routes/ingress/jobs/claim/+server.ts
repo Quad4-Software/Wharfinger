@@ -12,11 +12,11 @@ import { JOB_KINDS, type JobKind } from '$lib/shared/jobs';
  */
 export const POST: RequestHandler = async (event) => {
 	const rt = getRuntime();
-	const g = gate(rt, rt.agents, bearerToken(event.request));
+	const g = await gate(rt, rt.agents, bearerToken(event.request));
 	if (g.err) return g.err;
 
 	const text = await readText(event.request, 8192);
-	const badProof = proofGate(rt, g.agent, event.request, Buffer.from(text, 'utf8'));
+	const badProof = await proofGate(rt, g.agent, event.request, Buffer.from(text, 'utf8'));
 	if (badProof) return badProof;
 
 	let kinds: JobKind[] = [...JOB_KINDS];
@@ -35,7 +35,7 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	for (const kind of kinds) {
-		const job = rt.jobs.claim(kind, g.agent.id);
+		const job = await rt.jobs.claim(kind, g.agent.id);
 		if (job) return apiJson({ ok: true, job });
 	}
 	return apiJson({ ok: true, job: null });

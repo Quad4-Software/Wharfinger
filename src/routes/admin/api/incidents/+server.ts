@@ -11,10 +11,10 @@ import {
 	requirePerm
 } from '$lib/server/admin/http';
 
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	const rt = getRuntime();
 	requirePerm(event, 'status.view');
-	return apiJson(rt.snapshot.current().snapshot.incidents);
+	return apiJson((await rt.snapshot.current()).snapshot.incidents);
 };
 
 /** Create a manual incident; stored in the incidents config section. */
@@ -52,7 +52,7 @@ export const POST: RequestHandler = async (event) => {
 	});
 
 	try {
-		saveSectionValue(
+		await saveSectionValue(
 			rt,
 			user,
 			clientIp(event),

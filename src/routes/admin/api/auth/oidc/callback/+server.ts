@@ -41,12 +41,12 @@ export const GET: RequestHandler = async (event) => {
 		const accessToken = await exchangeCode(cfg, redirectUri, code, jar.v, rt.egress);
 		const claims = await userinfo(cfg, accessToken, rt.egress);
 		const ident = mapClaims(cfg, claims);
-		const role = ident ? knownRole(rt.roles, ident.role) : null;
+		const role = ident ? await knownRole(rt.roles, ident.role) : null;
 		if (!ident || !role) {
-			rt.audit.log({ username: ident?.username ?? null, action: 'auth.oidc.denied', ip });
+			await rt.audit.log({ username: ident?.username ?? null, action: 'auth.oidc.denied', ip });
 			return back('oidc_denied');
 		}
-		const user = resolveExternalUser(
+		const user = await resolveExternalUser(
 			rt.users,
 			'oidc',
 			ident.externalId,
@@ -56,19 +56,19 @@ export const GET: RequestHandler = async (event) => {
 			cfg.sync_profile
 		);
 		if (!user) {
-			rt.audit.log({ username: ident.username, action: 'auth.oidc.disabled', ip });
+			await rt.audit.log({ username: ident.username, action: 'auth.oidc.disabled', ip });
 			return back('oidc_disabled');
 		}
 		const next = jar.n && (jar.n === base || jar.n.startsWith(`${base}/`)) ? jar.n : base;
-		const token = rt.sessions.create(
+		const token = await rt.sessions.create(
 			user.id,
 			rt.sessionTtlMs(),
 			ip,
 			event.request.headers.get('user-agent')
 		);
 		setSessionCookie(event.cookies, token, rt.sessionTtlMs(), isSecureRequest(event));
-		rt.users.touchLogin(user.id);
-		rt.audit.log({ userId: user.id, username: user.username, action: 'auth.oidc.login', ip });
+		await rt.users.touchLogin(user.id);
+		await rt.audit.log({ userId: user.id, username: user.username, action: 'auth.oidc.login', ip });
 		redirect(303, next);
 	} catch (err) {
 		if (err && typeof err === 'object' && 'status' in err) throw err;

@@ -17,14 +17,14 @@ const MAX_CHUNK = 64 * 1024;
  */
 export const POST: RequestHandler = async (event) => {
 	const rt = getRuntime();
-	const g = gate(rt, rt.agents, bearerToken(event.request));
+	const g = await gate(rt, rt.agents, bearerToken(event.request));
 	if (g.err) return g.err;
 
 	const jobId = Number(event.params.id);
 	if (!Number.isInteger(jobId) || jobId <= 0) return apiError(404, 'not found');
 
 	const text = await readText(event.request, 128 * 1024);
-	const badProof = proofGate(rt, g.agent, event.request, Buffer.from(text, 'utf8'));
+	const badProof = await proofGate(rt, g.agent, event.request, Buffer.from(text, 'utf8'));
 	if (badProof) return badProof;
 
 	let body: { lease?: unknown; action?: unknown; chunk?: unknown; result?: unknown };
@@ -41,37 +41,37 @@ export const POST: RequestHandler = async (event) => {
 
 	switch (action) {
 		case 'start': {
-			const ok = rt.jobs.start(jobId, lease);
-			if (ok) markScanJobRunning(rt, jobId);
+			const ok = await rt.jobs.start(jobId, lease);
+			if (ok) await markScanJobRunning(rt, jobId);
 			return apiJson({ ok });
 		}
 		case 'heartbeat':
-			return apiJson({ ok: rt.jobs.heartbeat(jobId, lease) });
+			return apiJson({ ok: await rt.jobs.heartbeat(jobId, lease) });
 		case 'progress': {
 			const chunk = typeof body.chunk === 'string' ? body.chunk.slice(0, MAX_CHUNK) : '';
-			return apiJson({ ok: rt.jobs.progress(jobId, lease, chunk) });
+			return apiJson({ ok: await rt.jobs.progress(jobId, lease, chunk) });
 		}
 		case 'succeed': {
-			const ok = rt.jobs.succeed(jobId, lease, body.result);
+			const ok = await rt.jobs.succeed(jobId, lease, body.result);
 			if (ok) {
-				settleDeployJob(rt, jobId);
-				settleScanJob(rt, jobId);
+				await settleDeployJob(rt, jobId);
+				await settleScanJob(rt, jobId);
 			}
 			return apiJson({ ok });
 		}
 		case 'fail': {
-			const r = rt.jobs.fail(jobId, lease, body.result);
+			const r = await rt.jobs.fail(jobId, lease, body.result);
 			if (r.status === 'failed') {
-				settleDeployJob(rt, jobId);
-				settleScanJob(rt, jobId);
+				await settleDeployJob(rt, jobId);
+				await settleScanJob(rt, jobId);
 			}
 			return apiJson(r);
 		}
 		case 'rolled_back': {
-			const r = rt.jobs.fail(jobId, lease, body.result, { rolledBack: true });
+			const r = await rt.jobs.fail(jobId, lease, body.result, { rolledBack: true });
 			if (r.status === 'rolled_back') {
-				settleDeployJob(rt, jobId);
-				settleScanJob(rt, jobId);
+				await settleDeployJob(rt, jobId);
+				await settleScanJob(rt, jobId);
 			}
 			return apiJson(r);
 		}

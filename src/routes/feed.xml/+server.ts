@@ -1,8 +1,8 @@
 import type { RequestHandler } from './$types';
 import { getRuntime } from '$lib/server/runtime';
 
-export const GET: RequestHandler = () => {
-	const { snapshot } = getRuntime().snapshot.current();
+export const GET: RequestHandler = async () => {
+	const { snapshot } = await getRuntime().snapshot.current();
 	const base = snapshot.site.url?.replace(/\/$/, '') ?? '';
 	const items = [...snapshot.incidents.active, ...snapshot.incidents.recent]
 		.map(

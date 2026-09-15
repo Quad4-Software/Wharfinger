@@ -32,7 +32,7 @@ export const PUT: RequestHandler = async (event) => {
 	const body = await readJson<{ value?: unknown; expected?: number | null }>(event.request);
 	if (!('value' in body)) return apiError(422, 'missing value');
 	try {
-		const result = saveSectionValue(
+		const result = await saveSectionValue(
 			rt,
 			user,
 			clientIp(event),
@@ -49,13 +49,13 @@ export const PUT: RequestHandler = async (event) => {
 	}
 };
 
-export const DELETE: RequestHandler = (event) => {
+export const DELETE: RequestHandler = async (event) => {
 	const rt = getRuntime();
 	const section = sectionOr404(event.params);
 	if (!section) return apiError(404, 'unknown section');
 	const user = requirePerm(event, sectionPermission(section));
 	try {
-		return apiJson(resetSection(rt, user, clientIp(event), section));
+		return apiJson(await resetSection(rt, user, clientIp(event), section));
 	} catch (err) {
 		if (err instanceof SectionError) {
 			return apiError(err.status, err.message, err.issues ? { issues: err.issues } : undefined);

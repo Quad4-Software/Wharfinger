@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import { asDb, type Db } from '$lib/server/store/driver';
 
 // Hub-hosted agent binaries for air-gapped or firewalled fleets: an
 // admin uploads release binaries once and agents pull the manifest +
@@ -32,11 +33,10 @@ export interface ReleaseManifest {
 
 export class AgentReleaseStore {
 	private readonly dir: string;
+	private readonly db: Db;
 
-	constructor(
-		private readonly db: DatabaseSync,
-		dataDir: string
-	) {
+	constructor(db: Db | DatabaseSync, dataDir: string) {
+		this.db = asDb(db);
 		this.dir = join(dataDir, 'agent-releases');
 	}
 
@@ -48,17 +48,17 @@ export class AgentReleaseStore {
 		return VERSION_RE.test(version);
 	}
 
-	list(): ReleaseFile[] {
-		return this.db
+	async list(): Promise<ReleaseFile[]> {
+		return (await this.db
 			.prepare(
 				'SELECT name, version, sha256, size, uploaded_at AS uploadedAt FROM agent_release_files ORDER BY name'
 			)
-			.all() as unknown as ReleaseFile[];
+			.all()) as unknown as ReleaseFile[];
 	}
 
 	/** Manifest for the newest uploaded version, or null when empty. */
-	manifest(): ReleaseManifest | null {
-		const files = this.list();
+	async manifest(): Promise<ReleaseManifest | null> {
+		const files = await this.list();
 		if (files.length === 0) return null;
 		const latest = files.map((f) => f.version).reduce((a, b) => (semverGt(b, a) ? b : a));
 		return {
@@ -74,14 +74,15 @@ export class AgentReleaseStore {
 	}
 
 	/** Store a binary. Returns the recorded metadata. */
-	put(name: string, version: string, body: Uint8Array): ReleaseFile {
+	async put(name: string, version: string, body: Uint8Array): Promise<ReleaseFile> {
 		mkdirSync(this.dir, { recursive: true });
 		const sha256 = createHash('sha256').update(body).digest('hex');
 		const tmp = join(this.dir, `.${name}.tmp`);
 		writeFileSync(tmp, body);
 		renameSync(tmp, join(this.dir, name));
 		const row: ReleaseFile = { name, version, sha256, size: body.length, uploadedAt: Date.now() };
-		this.db
+		// name is the text record key, so the upsert ports cleanly.
+		await this.db
 			.prepare(
 				`INSERT INTO agent_release_files (name, version, sha256, size, uploaded_at)
 				 VALUES (?, ?, ?, ?, ?)
@@ -102,8 +103,8 @@ export class AgentReleaseStore {
 		}
 	}
 
-	remove(name: string): boolean {
-		const gone = this.db.prepare('DELETE FROM agent_release_files WHERE name = ?').run(name);
+	async remove(name: string): Promise<boolean> {
+		const gone = await this.db.prepare('DELETE FROM agent_release_files WHERE name = ?').run(name);
 		if (NAME_RE.test(name)) {
 			try {
 				rmSync(join(this.dir, name));

@@ -85,9 +85,9 @@ async function json(res: Response): Promise<Record<string, unknown>> {
 }
 
 describe('SecretSetStore', () => {
-	it('seals values at rest and lists keys only', () => {
+	it('seals values at rest and lists keys only', async () => {
 		const store = getSecretStore(ref.db);
-		const s = store.create('registry', { USER: 'bot', TOKEN: 's3cret-value' });
+		const s = await store.create('registry', { USER: 'bot', TOKEN: 's3cret-value' });
 		expect(s.id).toMatch(/^sec_/);
 		expect(s.keys.sort()).toEqual(['TOKEN', 'USER']);
 
@@ -97,51 +97,51 @@ describe('SecretSetStore', () => {
 		expect(row.sealed.startsWith('v1.')).toBe(true);
 		expect(row.sealed).not.toContain('s3cret-value');
 
-		const listed = store.list().find((x) => x.id === s.id);
+		const listed = (await store.list()).find((x) => x.id === s.id);
 		expect(JSON.stringify(listed)).not.toContain('s3cret-value');
-		expect(store.get(s.id)?.keys.sort()).toEqual(['TOKEN', 'USER']);
+		expect((await store.get(s.id))?.keys.sort()).toEqual(['TOKEN', 'USER']);
 	});
 
-	it('reveals single values and replaces the whole map on put', () => {
+	it('reveals single values and replaces the whole map on put', async () => {
 		const store = getSecretStore(ref.db);
-		const s = store.create('swap', { OLD: 'gone', KEEP: 'stay' });
-		expect(store.reveal(s.id, 'KEEP')).toBe('stay');
+		const s = await store.create('swap', { OLD: 'gone', KEEP: 'stay' });
+		expect(await store.reveal(s.id, 'KEEP')).toBe('stay');
 
-		const updated = store.put(s.id, { entries: { NEW: 'fresh' } });
+		const updated = await store.put(s.id, { entries: { NEW: 'fresh' } });
 		expect(updated.keys).toEqual(['NEW']);
-		expect(store.reveal(s.id, 'OLD')).toBeNull();
-		expect(store.reveal(s.id, 'KEEP')).toBeNull();
-		expect(store.reveal(s.id, 'NEW')).toBe('fresh');
+		expect(await store.reveal(s.id, 'OLD')).toBeNull();
+		expect(await store.reveal(s.id, 'KEEP')).toBeNull();
+		expect(await store.reveal(s.id, 'NEW')).toBe('fresh');
 		expect(updated.updatedAt).toBeGreaterThanOrEqual(s.updatedAt);
 	});
 
-	it('renames without touching values and rejects bad input', () => {
+	it('renames without touching values and rejects bad input', async () => {
 		const store = getSecretStore(ref.db);
-		const s = store.create('rename-me', { K: 'v' });
-		const renamed = store.put(s.id, { name: 'renamed' });
+		const s = await store.create('rename-me', { K: 'v' });
+		const renamed = await store.put(s.id, { name: 'renamed' });
 		expect(renamed.name).toBe('renamed');
-		expect(store.reveal(s.id, 'K')).toBe('v');
+		expect(await store.reveal(s.id, 'K')).toBe('v');
 
-		expect(() => store.create('', {})).toThrow(SecretError);
-		expect(() => store.create('bad-keys', { 'NOT VALID': 'x' })).toThrow(SecretError);
+		await expect(store.create('', {})).rejects.toThrow(SecretError);
+		await expect(store.create('bad-keys', { 'NOT VALID': 'x' })).rejects.toThrow(SecretError);
 		try {
-			store.put('sec_none', { name: 'x' });
+			await store.put('sec_none', { name: 'x' });
 			expect.unreachable();
 		} catch (e) {
 			expect((e as SecretError).status).toBe(404);
 		}
 	});
 
-	it('deletes sets and resolves refs by name or id', () => {
+	it('deletes sets and resolves refs by name or id', async () => {
 		const store = getSecretStore(ref.db);
-		const s = store.create('resolver', { PASSWORD: 'hunter2' });
-		expect(resolveSecret(ref.db, `secret:${s.id}:PASSWORD`)).toBe('hunter2');
-		expect(resolveSecret(ref.db, 'secret:resolver:PASSWORD')).toBe('hunter2');
-		expect(resolveSecret(ref.db, 'secret:resolver:MISSING')).toBeNull();
-		expect(resolveSecret(ref.db, 'secret:nope:PASSWORD')).toBeNull();
-		expect(resolveSecret(ref.db, 'not-a-ref')).toBeNull();
-		expect(store.remove(s.id)).toBe(true);
-		expect(store.remove(s.id)).toBe(false);
+		const s = await store.create('resolver', { PASSWORD: 'hunter2' });
+		expect(await resolveSecret(ref.db, `secret:${s.id}:PASSWORD`)).toBe('hunter2');
+		expect(await resolveSecret(ref.db, 'secret:resolver:PASSWORD')).toBe('hunter2');
+		expect(await resolveSecret(ref.db, 'secret:resolver:MISSING')).toBeNull();
+		expect(await resolveSecret(ref.db, 'secret:nope:PASSWORD')).toBeNull();
+		expect(await resolveSecret(ref.db, 'not-a-ref')).toBeNull();
+		expect(await store.remove(s.id)).toBe(true);
+		expect(await store.remove(s.id)).toBe(false);
 	});
 });
 

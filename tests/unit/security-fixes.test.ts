@@ -27,51 +27,51 @@ const MINIMAL: Record<string, unknown> = {
 };
 
 describe('InviteStore.tryClaim', () => {
-	it('claims a usable invite exactly once', () => {
+	it('claims a usable invite exactly once', async () => {
 		const invites = new InviteStore(freshDb());
-		const { invite } = invites.create({ kind: 'invite', role: 'operator', ttlMs: 60_000 });
-		expect(invites.tryClaim(invite.tokenHash)).toBe(true);
+		const { invite } = await invites.create({ kind: 'invite', role: 'operator', ttlMs: 60_000 });
+		expect(await invites.tryClaim(invite.tokenHash)).toBe(true);
 		// Second claim on the same token loses the conditional update.
-		expect(invites.tryClaim(invite.tokenHash)).toBe(false);
+		expect(await invites.tryClaim(invite.tokenHash)).toBe(false);
 	});
 
-	it('refuses expired and revoked invites', () => {
+	it('refuses expired and revoked invites', async () => {
 		const invites = new InviteStore(freshDb());
-		const { invite } = invites.create({ kind: 'invite', role: 'operator', ttlMs: -1 });
-		expect(invites.tryClaim(invite.tokenHash)).toBe(false);
-		const b = invites.create({ kind: 'reset', role: 'operator', ttlMs: 60_000 }).invite;
-		invites.revoke(b.tokenHash);
-		expect(invites.tryClaim(b.tokenHash)).toBe(false);
+		const { invite } = await invites.create({ kind: 'invite', role: 'operator', ttlMs: -1 });
+		expect(await invites.tryClaim(invite.tokenHash)).toBe(false);
+		const b = (await invites.create({ kind: 'reset', role: 'operator', ttlMs: 60_000 })).invite;
+		await invites.revoke(b.tokenHash);
+		expect(await invites.tryClaim(b.tokenHash)).toBe(false);
 	});
 });
 
 describe('UserStore.createFirstUser', () => {
-	it('creates the first admin and rejects every later call', () => {
+	it('creates the first admin and rejects every later call', async () => {
 		const users = new UserStore(freshDb());
-		const first = users.createFirstUser('alice', 'a-very-long-password', 'admin');
+		const first = await users.createFirstUser('alice', 'a-very-long-password', 'admin');
 		expect(first?.role).toBe('admin');
-		const second = users.createFirstUser('mallory', 'a-very-long-password', 'admin');
+		const second = await users.createFirstUser('mallory', 'a-very-long-password', 'admin');
 		expect(second).toBeNull();
-		expect(users.count()).toBe(1);
+		expect(await users.count()).toBe(1);
 	});
 });
 
 describe('canGrantRole', () => {
-	it('only allows granting roles whose perms the actor holds', () => {
+	it('only allows granting roles whose perms the actor holds', async () => {
 		const db = freshDb();
 		const roles = new RoleStore(db, new UserStore(db));
-		const admin = roles.permsFor('admin');
-		const operator = roles.permsFor('operator');
-		const viewer = roles.permsFor('viewer');
+		const admin = await roles.permsFor('admin');
+		const operator = await roles.permsFor('operator');
+		const viewer = await roles.permsFor('viewer');
 
-		expect(canGrantRole(roles, admin, 'admin')).toBe(true);
-		expect(canGrantRole(roles, admin, 'viewer')).toBe(true);
-		expect(canGrantRole(roles, operator, 'operator')).toBe(true);
-		expect(canGrantRole(roles, operator, 'viewer')).toBe(true);
-		expect(canGrantRole(roles, operator, 'admin')).toBe(false);
-		expect(canGrantRole(roles, viewer, 'operator')).toBe(false);
-		expect(canGrantRole(roles, null, 'viewer')).toBe(false);
-		expect(canGrantRole(roles, admin, 'nonexistent')).toBe(false);
+		expect(await canGrantRole(roles, admin, 'admin')).toBe(true);
+		expect(await canGrantRole(roles, admin, 'viewer')).toBe(true);
+		expect(await canGrantRole(roles, operator, 'operator')).toBe(true);
+		expect(await canGrantRole(roles, operator, 'viewer')).toBe(true);
+		expect(await canGrantRole(roles, operator, 'admin')).toBe(false);
+		expect(await canGrantRole(roles, viewer, 'operator')).toBe(false);
+		expect(await canGrantRole(roles, null, 'viewer')).toBe(false);
+		expect(await canGrantRole(roles, admin, 'nonexistent')).toBe(false);
 	});
 });
 
@@ -85,7 +85,7 @@ describe('section permissions', () => {
 });
 
 describe('env interpolation scoping', () => {
-	it('interpolates file values but never override values', () => {
+	it('interpolates file values but never override values', async () => {
 		process.env.QUAD4_TEST_VAR = 'resolved-secret';
 		const fileRaw = {
 			...MINIMAL,
@@ -93,20 +93,20 @@ describe('env interpolation scoping', () => {
 		};
 		const store = new ConfigStore(freshDb());
 		// A panel-written override containing ${VAR} stays literal.
-		store.set('links', [{ label: '${QUAD4_TEST_VAR}', href: 'https://a.b' }], 'alice');
-		const eff = resolveEffective(fileRaw, store);
+		await store.set('links', [{ label: '${QUAD4_TEST_VAR}', href: 'https://a.b' }], 'alice');
+		const eff = await resolveEffective(fileRaw, store);
 		expect(eff.config.site.name).toBe('resolved-secret');
 		expect(eff.config.links[0].label).toBe('${QUAD4_TEST_VAR}');
 		// The raw merged doc still carries the placeholder for editing.
 		expect((eff.raw.links as { label: string }[])[0].label).toBe('${QUAD4_TEST_VAR}');
 	});
 
-	it('fails on missing env vars referenced by the file only', () => {
+	it('fails on missing env vars referenced by the file only', async () => {
 		expect(() => interpolateTrusted({ a: '${QUAD4_NOPE_MISSING}' })).toThrow(ConfigError);
 		// Overrides are not interpolated, so a missing ref there is inert.
 		const store = new ConfigStore(freshDb());
-		store.set('site', { name: '${QUAD4_NOPE_MISSING}' }, 'alice');
-		const eff = resolveEffective(MINIMAL, store);
+		await store.set('site', { name: '${QUAD4_NOPE_MISSING}' }, 'alice');
+		const eff = await resolveEffective(MINIMAL, store);
 		expect(eff.config.site.name).toBe('${QUAD4_NOPE_MISSING}');
 	});
 });
@@ -133,10 +133,10 @@ function pubObj(rawB64: string): KeyObject {
 }
 
 describe('hub key sealing', () => {
-	it('stores the private key sealed and still signs', () => {
+	it('stores the private key sealed and still signs', async () => {
 		const db = freshDb();
-		const pub = publicKeyB64(db);
-		const sig = signToken(db, 'token-abc');
+		const pub = await publicKeyB64(db);
+		const sig = await signToken(db, 'token-abc');
 		const row = db.prepare('SELECT priv, pub FROM hub_keys WHERE id = 1').get() as {
 			priv: string;
 			pub: string;
@@ -148,7 +148,7 @@ describe('hub key sealing', () => {
 		);
 	});
 
-	it('migrates a legacy plaintext key row to sealed storage', () => {
+	it('migrates a legacy plaintext key row to sealed storage', async () => {
 		const db = freshDb();
 		const { privateKey, publicKey } = generateKeyPairSync('ed25519');
 		const privDer = privateKey.export({ format: 'der', type: 'pkcs8' });
@@ -158,12 +158,12 @@ describe('hub key sealing', () => {
 			pubRaw.toString('base64'),
 			Date.now()
 		);
-		const pub = publicKeyB64(db);
+		const pub = await publicKeyB64(db);
 		expect(pub).toBe(pubRaw.toString('base64'));
 		// The plaintext row was resealed in place on first read.
 		const row = db.prepare('SELECT priv FROM hub_keys WHERE id = 1').get() as { priv: string };
 		expect(row.priv.startsWith('v1.')).toBe(true);
-		const sig = signToken(db, 't');
+		const sig = await signToken(db, 't');
 		expect(verify(null, Buffer.from('t'), pubObj(pub), Buffer.from(sig, 'base64'))).toBe(true);
 	});
 });

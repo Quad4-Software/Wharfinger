@@ -24,7 +24,7 @@ export const POST: RequestHandler = async (event) => {
 	const challenge = clientDataChallenge(raw.response?.clientDataJSON);
 	if (!challenge) return apiError(422, 'malformed passkey response');
 	const response = raw as unknown as RegistrationResponseJSON;
-	const pending = rt.passkeys.peekChallenge(challenge, 'register');
+	const pending = await rt.passkeys.peekChallenge(challenge, 'register');
 	if (pending?.userId !== user.id) return apiError(422, CEREMONY_EXPIRED);
 
 	const { rpID, origin } = relyingParty(rt.config, event.url);
@@ -42,12 +42,12 @@ export const POST: RequestHandler = async (event) => {
 	}
 	if (!verification.verified) return apiError(422, 'passkey verification failed');
 
-	if (!rt.passkeys.consumeChallenge(challenge, 'register')) {
+	if (!(await rt.passkeys.consumeChallenge(challenge, 'register'))) {
 		return apiError(422, CEREMONY_EXPIRED);
 	}
 	const info = verification.registrationInfo;
 	const name = asString(body.name, 80) ?? 'Passkey';
-	const created = rt.passkeys.insert({
+	const created = await rt.passkeys.insert({
 		userId: user.id,
 		credentialId: info.credential.id,
 		publicKey: info.credential.publicKey,
@@ -57,6 +57,6 @@ export const POST: RequestHandler = async (event) => {
 		backedUp: info.credentialBackedUp
 	});
 	if (!created) return apiError(409, 'this passkey is already registered');
-	audit(rt, event, 'account.passkey.add', name);
+	await audit(rt, event, 'account.passkey.add', name);
 	return apiJson({ ok: true, passkey: passkeyInfo(created) });
 };

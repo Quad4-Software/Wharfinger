@@ -8,18 +8,18 @@ import { getScanStore } from '$lib/server/scan/store';
  * first plus the latest one; without it, the latest report per app
  * for the fleet view.
  */
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	requirePerm(event, 'scan.view');
 	const rt = getRuntime();
 	const scans = getScanStore(rt.db);
 	const appId = event.url.searchParams.get('appId');
 	const limit = Number(event.url.searchParams.get('limit') ?? 50);
 	if (!appId) {
-		return apiJson({ reports: scans.latestPerApp(Number.isInteger(limit) ? limit : 200) });
+		return apiJson({ reports: await scans.latestPerApp(Number.isInteger(limit) ? limit : 200) });
 	}
-	if (!rt.deploys.getApp(appId)) return apiError(404, 'app not found');
+	if (!(await rt.deploys.getApp(appId))) return apiError(404, 'app not found');
 	return apiJson({
-		reports: scans.listForApp(appId, Number.isInteger(limit) ? limit : 50),
-		latest: scans.latestForApp(appId)
+		reports: await scans.listForApp(appId, Number.isInteger(limit) ? limit : 50),
+		latest: await scans.latestForApp(appId)
 	});
 };

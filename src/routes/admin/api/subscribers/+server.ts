@@ -2,11 +2,11 @@ import type { RequestHandler } from './$types';
 import { getRuntime } from '$lib/server/runtime';
 import { apiError, apiJson, audit, requirePerm } from '$lib/server/admin/http';
 
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	const rt = getRuntime();
 	requirePerm(event, 'status.view');
 	return apiJson({
-		subscribers: rt.subscribers.list().map((s) => ({
+		subscribers: (await rt.subscribers.list()).map((s) => ({
 			id: s.id,
 			url: s.url,
 			services: s.services,
@@ -17,12 +17,12 @@ export const GET: RequestHandler = (event) => {
 	});
 };
 
-export const DELETE: RequestHandler = (event) => {
+export const DELETE: RequestHandler = async (event) => {
 	const rt = getRuntime();
 	requirePerm(event, 'status.manage');
 	const id = Number(event.url.searchParams.get('id'));
 	if (!Number.isInteger(id) || id <= 0) return apiError(422, 'id is required');
-	if (!rt.subscribers.remove(id)) return apiError(404, 'subscriber not found');
-	audit(rt, event, 'subscribers.delete', `subscriber ${id}`);
+	if (!(await rt.subscribers.remove(id))) return apiError(404, 'subscriber not found');
+	await audit(rt, event, 'subscribers.delete', `subscriber ${id}`);
 	return apiJson({ ok: true });
 };

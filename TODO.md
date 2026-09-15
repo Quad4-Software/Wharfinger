@@ -21,6 +21,10 @@ checked.
       consistency (`check:tests`), coverage runner (`check:coverage`,
       numeric floor ratchet pending), wired into `pnpm verify`
 - [x] `.agents/` codebase docs: rules, skills, references (see below)
+- [x] Pluggable storage backend: `Db` driver interface with SQLite
+      (default, unchanged) plus SurrealDB over websocket JSON-RPC for
+      fleets that outgrow a single file; SQL translated at prepare()
+      time, see .agents/references/storage.md
 
 ## Phase 1: Deployments core (Coolify parity, simpler)
 
@@ -217,6 +221,44 @@ user-confirmed action path.
 - [ ] Graceful degradation: deploys pause when agent offline; queue
       shows waiting jobs with reason
 
+## Phase 6b: Enterprise identity and governance
+
+- [ ] SAML 2.0 SSO alongside the existing OIDC/LDAP paths (status
+      pages and panel both); metadata-driven IdP config in [auth.saml]
+- [ ] SCIM-lite user provisioning: bearer-authed /api/scim endpoints
+      for create/disable so IdPs can push deprovisioning
+- [ ] Panel IP allowlist: [admin].allowed_cidrs enforced in hooks
+      before session resolution
+- [ ] Session policy knobs: idle timeout separate from absolute ttl,
+      optional re-auth for destructive actions (delete app, rotate
+      hub key), per-role session limits
+- [ ] Audit export: stream audit_log to a webhook target or periodic
+      JSON dump for SIEM ingestion
+- [ ] Audit event webhooks: admin-visible outbound hooks on
+      configurable event kinds (deploy, user, config change)
+- [ ] Password policy expansion: history/reuse window, breach-list
+      check (k-anonymity), per-role 2FA enforcement flag
+- [ ] Read-only API tokens at org level separate from per-user keys
+
+## Phase 6c: HA, scale, and operations
+
+- [ ] Active/passive hub failover doc + tooling: shared SurrealDB
+      backend or SQLite replication (Litestream-style WAL shipping),
+      lock record so only one hub runs the monitor loop
+- [ ] Multi-hub active/active once storage is remote: monitor lease
+      table so checks partition across hubs without double-firing;
+      snapshot cache keyed per hub, SSE stays per-hub
+- [ ] Status page read path on a second process: snapshot.json +
+      static assets served from a read-only replica or CDN origin
+- [ ] Hub metrics endpoint for the hub itself (self-telemetry):
+      queue depth, check latency, db latency, WS fan-out counts
+- [ ] Backup/restore CLI: `wharfinger backup` streams db + sealed
+      keys + agent-release files into one archive; restore drill doc
+- [ ] Optional S3-compatible backup destination (rclone/restic hand-
+      off, not an embedded dependency)
+- [ ] Rolling agent updates: agent-releases fleet rollout with
+      per-agent update window and rollback-on-healthcheck-fail
+
 ## Phase 7: Gates and quality infrastructure
 
 - [ ] `pnpm check:files` no-god-files gate: line ceilings per file
@@ -250,6 +292,19 @@ user-confirmed action path.
 
 ## Deferred / backlog
 
+- Managed databases (one-click postgres/mysql with scheduled dumps);
+  today these are monitored checks, not provisioned resources
+- Per-app runtime log drain/search (build logs exist; container
+  stdout via agent docker logs is a bigger surface)
+- Container exec/console in the panel (needs an interactive ws
+  channel to the agent; high-risk surface, needs careful design)
+- Per-container resource stats (docker stats per app) for the app
+  detail page
+- Cron/scheduled tasks per app beyond deploy scheduling
+- Protected/private status pages (per-page token or SSO gate)
+- Per-component subscriber notifications at finer granularity than
+  service groups
+- Custom domain per status page (multi-tenant vhost mapping)
 - Blue-green across two agents (same-app replicas on different hosts)
 - Kubernetes as a deploy target (agent has kubelet inventory already)
 - Build cache/registry push for image reuse across agents

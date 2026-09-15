@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { asDb, type Db } from './driver';
 
 // Public status-page webhook subscribers. A subscription is pending
 // until the endpoint owner confirms via a token link delivered to the
@@ -39,62 +40,92 @@ const toSub = (r: Row): Subscriber => ({
 });
 
 export class SubscriberStore {
-	constructor(private readonly db: DatabaseSync) {}
+	private readonly db: Db;
 
-	/** Create a pending subscription; returns the raw confirm token. */
-	create(url: string, services: string[]): { sub: Subscriber; confirmToken: string } | null {
-		const count = (this.db.prepare('SELECT COUNT(*) AS n FROM subscribers').get() as { n: number })
-			.n;
-		if (count >= MAX_SUBSCRIBERS) return null;
-		const confirmToken = randomBytes(24).toString('hex');
-		const secret = randomBytes(24).toString('hex');
-		this.db
-			.prepare(
-				`INSERT INTO subscribers (url, services, secret, confirm_hash, created_at)
-				VALUES (?, ?, ?, ?, ?)
-				ON CONFLICT (url) DO UPDATE SET
-					services = excluded.services,
-					confirm_hash = excluded.confirm_hash,
-					confirmed_at = NULL,
-					disabled_at = NULL`
-			)
-			.run(url, JSON.stringify(services), secret, hash(confirmToken), Date.now());
-		const sub = this.db
-			.prepare(`SELECT ${COLS} FROM subscribers WHERE url = ?`)
-			.get(url) as unknown as Row;
-		return { sub: toSub(sub), confirmToken };
+	constructor(db: Db | DatabaseSync) {
+		this.db = asDb(db);
 	}
 
-	confirm(token: string): boolean {
-		return (
-			this.db
+	/**
+	 * Create a pending subscription; returns the raw confirm token.
+	 * url is a secondary unique, not the record key, so the upsert
+	 * ports as update-then-insert inside one transaction. A resubscribe
+	 * keeps the existing secret so older dispatch signatures and unsub
+	 * tokens stay valid.
+	 */
+	create(
+		url: string,
+		services: string[]
+	): Promise<{ sub: Subscriber; confirmToken: string } | null> {
+		return this.db.tx(async (tx) => {
+			const count = (
+				(await tx.prepare('SELECT COUNT(*) AS n FROM subscribers').get()) as { n: number }
+			).n;
+			if (count >= MAX_SUBSCRIBERS) return null;
+			const confirmToken = randomBytes(24).toString('hex');
+			const secret = randomBytes(24).toString('hex');
+			const upd = await tx
 				.prepare(
-					'UPDATE subscribers SET confirmed_at = ?, confirm_hash = NULL WHERE confirm_hash = ?'
+					`UPDATE subscribers SET services = ?, confirm_hash = ?, confirmed_at = NULL, disabled_at = NULL
+					WHERE url = ?`
 				)
-				.run(Date.now(), hash(token)).changes > 0
+				.run(JSON.stringify(services), hash(confirmToken), url);
+			if (Number(upd.changes) === 0) {
+				// INSERT OR IGNORE is not portable; the transaction makes
+				// this check-then-insert race-free.
+				const exists = await tx.prepare('SELECT id FROM subscribers WHERE url = ?').get(url);
+				if (!exists) {
+					await tx
+						.prepare(
+							`INSERT INTO subscribers (url, services, secret, confirm_hash, created_at)
+							VALUES (?, ?, ?, ?, ?)`
+						)
+						.run(url, JSON.stringify(services), secret, hash(confirmToken), Date.now());
+				}
+			}
+			const sub = (await tx
+				.prepare(`SELECT ${COLS} FROM subscribers WHERE url = ?`)
+				.get(url)) as unknown as Row;
+			return { sub: toSub(sub), confirmToken };
+		});
+	}
+
+	async confirm(token: string): Promise<boolean> {
+		return (
+			Number(
+				(
+					await this.db
+						.prepare(
+							'UPDATE subscribers SET confirmed_at = ?, confirm_hash = NULL WHERE confirm_hash = ?'
+						)
+						.run(Date.now(), hash(token))
+				).changes
+			) > 0
 		);
 	}
 
 	/** Verify the unsubscribe token carried in each dispatch payload. */
-	unsubscribe(id: number, token: string): boolean {
-		const row = this.db.prepare(`SELECT ${COLS} FROM subscribers WHERE id = ?`).get(id) as
+	async unsubscribe(id: number, token: string): Promise<boolean> {
+		const row = (await this.db.prepare(`SELECT ${COLS} FROM subscribers WHERE id = ?`).get(id)) as
 			Row | undefined;
 		if (!row) return false;
 		const sub = toSub(row);
 		const want = Buffer.from(this.unsubToken(sub));
 		const got = Buffer.from(token);
 		if (want.length !== got.length || !timingSafeEqual(want, got)) return false;
-		this.db.prepare('UPDATE subscribers SET disabled_at = ? WHERE id = ?').run(Date.now(), id);
+		await this.db
+			.prepare('UPDATE subscribers SET disabled_at = ? WHERE id = ?')
+			.run(Date.now(), id);
 		return true;
 	}
 
 	/** Confirmed, live subscribers for a service transition. */
-	active(serviceId: string | null): Subscriber[] {
-		const rows = this.db
+	async active(serviceId: string | null): Promise<Subscriber[]> {
+		const rows = (await this.db
 			.prepare(
 				`SELECT ${COLS} FROM subscribers WHERE confirmed_at IS NOT NULL AND disabled_at IS NULL`
 			)
-			.all() as unknown as Row[];
+			.all()) as unknown as Row[];
 		return rows
 			.map(toSub)
 			.filter(
@@ -102,14 +133,18 @@ export class SubscriberStore {
 			);
 	}
 
-	list(): Subscriber[] {
+	async list(): Promise<Subscriber[]> {
 		return (
-			this.db.prepare(`SELECT ${COLS} FROM subscribers ORDER BY id`).all() as unknown as Row[]
+			(await this.db
+				.prepare(`SELECT ${COLS} FROM subscribers ORDER BY id`)
+				.all()) as unknown as Row[]
 		).map(toSub);
 	}
 
-	remove(id: number): boolean {
-		return this.db.prepare('DELETE FROM subscribers WHERE id = ?').run(id).changes > 0;
+	async remove(id: number): Promise<boolean> {
+		return (
+			Number((await this.db.prepare('DELETE FROM subscribers WHERE id = ?').run(id)).changes) > 0
+		);
 	}
 
 	/** Unsubscribe token embedded in every dispatch payload. */

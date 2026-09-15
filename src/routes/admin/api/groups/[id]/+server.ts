@@ -27,9 +27,9 @@ export const PATCH: RequestHandler = async (event) => {
 	}
 
 	try {
-		const group = getGroupStore(rt.db).update(id, patch);
+		const group = await getGroupStore(rt.db).update(id, patch);
 		if (!group) return apiError(404, 'group not found');
-		audit(rt, event, 'group.update', `id=${id}`);
+		await audit(rt, event, 'group.update', `id=${id}`);
 		rt.snapshot.invalidate();
 		return apiJson({ ok: true, group });
 	} catch (err) {
@@ -38,12 +38,12 @@ export const PATCH: RequestHandler = async (event) => {
 	}
 };
 
-export const DELETE: RequestHandler = (event) => {
+export const DELETE: RequestHandler = async (event) => {
 	requirePerm(event, 'groups.manage');
 	const rt = getRuntime();
 	const id = event.params.id;
-	if (!getGroupStore(rt.db).remove(id)) return apiError(404, 'group not found');
-	audit(rt, event, 'group.delete', `id=${id}`);
+	if (!(await getGroupStore(rt.db).remove(id))) return apiError(404, 'group not found');
+	await audit(rt, event, 'group.delete', `id=${id}`);
 	rt.snapshot.invalidate();
 	return apiJson({ ok: true });
 };

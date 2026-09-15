@@ -21,100 +21,100 @@ function db(): DatabaseSync {
 }
 
 describe('PushStore', () => {
-	it('records beats and reports the latest', () => {
+	it('records beats and reports the latest', async () => {
 		const s = new PushStore(db());
-		expect(s.lastBeat('web')).toBeNull();
-		s.beat('web', 'ok');
-		s.beat('web', 'done');
-		const info = s.info('web');
+		expect(await s.lastBeat('web')).toBeNull();
+		await s.beat('web', 'ok');
+		await s.beat('web', 'done');
+		const info = await s.info('web');
 		expect(info?.beats).toBe(2);
 		expect(info?.lastMsg).toBe('done');
 		expect(info?.lastBeat).toBeGreaterThan(0);
 	});
 
-	it('derives stable, per-service tokens', () => {
+	it('derives stable, per-service tokens', async () => {
 		const d = db();
-		expect(pushToken(d, 'web')).toBe(pushToken(d, 'web'));
-		expect(pushToken(d, 'web')).not.toBe(pushToken(d, 'api'));
-		expect(pushToken(d, 'web')).toMatch(/^[0-9a-f]{32}$/);
-		expect(tokenMatches(d, 'web', pushToken(d, 'web'))).toBe(true);
-		expect(tokenMatches(d, 'web', pushToken(d, 'api'))).toBe(false);
-		expect(tokenMatches(d, 'web', 'short')).toBe(false);
+		expect(await pushToken(d, 'web')).toBe(await pushToken(d, 'web'));
+		expect(await pushToken(d, 'web')).not.toBe(await pushToken(d, 'api'));
+		expect(await pushToken(d, 'web')).toMatch(/^[0-9a-f]{32}$/);
+		expect(await tokenMatches(d, 'web', await pushToken(d, 'web'))).toBe(true);
+		expect(await tokenMatches(d, 'web', await pushToken(d, 'api'))).toBe(false);
+		expect(await tokenMatches(d, 'web', 'short')).toBe(false);
 	});
 
-	it('prunes beats for removed services', () => {
+	it('prunes beats for removed services', async () => {
 		const s = new PushStore(db());
-		s.beat('web', null);
-		s.beat('api', null);
-		s.prune(['web']);
-		expect(s.lastBeat('web')).not.toBeNull();
-		expect(s.lastBeat('api')).toBeNull();
+		await s.beat('web', null);
+		await s.beat('api', null);
+		await s.prune(['web']);
+		expect(await s.lastBeat('web')).not.toBeNull();
+		expect(await s.lastBeat('api')).toBeNull();
 	});
 });
 
 describe('MarkerStore', () => {
-	it('adds, lists, filters, and removes markers', () => {
+	it('adds, lists, filters, and removes markers', async () => {
 		const s = new MarkerStore(db());
 		const now = Date.now();
-		s.add({ ts: now - 1000, title: 'v1', kind: 'release', service: 'web' });
-		s.add({ ts: now, title: 'note', kind: 'note' });
-		const all = s.between(now - 2000, now + 1000);
+		await s.add({ ts: now - 1000, title: 'v1', kind: 'release', service: 'web' });
+		await s.add({ ts: now, title: 'note', kind: 'note' });
+		const all = await s.between(now - 2000, now + 1000);
 		expect(all).toHaveLength(2);
-		const web = s.between(now - 2000, now + 1000, 'web');
+		const web = await s.between(now - 2000, now + 1000, 'web');
 		expect(web.map((m) => m.title).sort()).toEqual(['note', 'v1']);
-		const api = s.between(now - 2000, now + 1000, 'api');
+		const api = await s.between(now - 2000, now + 1000, 'api');
 		expect(api.map((m) => m.title)).toEqual(['note']);
-		const { entries, total } = s.list({ limit: 10 });
+		const { entries, total } = await s.list({ limit: 10 });
 		expect(total).toBe(2);
 		expect(entries[0].title).toBe('note');
-		expect(s.remove(all[0].id)).toBe(true);
-		expect(s.list({ limit: 10 }).total).toBe(1);
+		expect(await s.remove(all[0].id)).toBe(true);
+		expect((await s.list({ limit: 10 })).total).toBe(1);
 	});
 
-	it('clamps far-future timestamps and bad kinds', () => {
+	it('clamps far-future timestamps and bad kinds', async () => {
 		const s = new MarkerStore(db());
-		const m = s.add({ ts: Date.now() + 3_600_000, title: 'future', kind: 'bogus' as never });
+		const m = await s.add({ ts: Date.now() + 3_600_000, title: 'future', kind: 'bogus' as never });
 		expect(m.ts).toBeLessThanOrEqual(Date.now() + 60_000);
 		expect(m.kind).toBe('note');
 	});
 
-	it('detects recent titles for auto-marker dedupe', () => {
+	it('detects recent titles for auto-marker dedupe', async () => {
 		const s = new MarkerStore(db());
-		s.add({ title: 'release 1.2.3' });
-		expect(s.exists('release 1.2.3', Date.now() - 60_000)).toBe(true);
-		expect(s.exists('release 9.9.9', Date.now() - 60_000)).toBe(false);
+		await s.add({ title: 'release 1.2.3' });
+		expect(await s.exists('release 1.2.3', Date.now() - 60_000)).toBe(true);
+		expect(await s.exists('release 9.9.9', Date.now() - 60_000)).toBe(false);
 	});
 });
 
 describe('ApiKeyStore', () => {
-	it('creates keys with shown-once tokens and resolves by hash', () => {
+	it('creates keys with shown-once tokens and resolves by hash', async () => {
 		const s = new ApiKeyStore(db());
-		const { key, token } = s.create('ci', ['read'], 'admin');
+		const { key, token } = await s.create('ci', ['read'], 'admin');
 		expect(token).toMatch(/^qs_[0-9a-f]{48}$/);
-		const resolved = s.resolve(token);
+		const resolved = await s.resolve(token);
 		expect(resolved?.id).toBe(key.id);
 		expect(resolved?.scopes).toEqual(['read']);
-		expect(s.resolve(`qs_${'0'.repeat(48)}`)).toBeNull();
-		expect(s.resolve('garbage')).toBeNull();
-		expect(s.resolve('')).toBeNull();
+		expect(await s.resolve(`qs_${'0'.repeat(48)}`)).toBeNull();
+		expect(await s.resolve('garbage')).toBeNull();
+		expect(await s.resolve('')).toBeNull();
 	});
 
-	it('honors disable and delete', () => {
+	it('honors disable and delete', async () => {
 		const s = new ApiKeyStore(db());
-		const { key, token } = s.create('ci', ['read', 'write'], null);
-		expect(s.setDisabled(key.id, true)).toBe(true);
-		expect(s.resolve(token)).toBeNull();
-		expect(s.setDisabled(key.id, false)).toBe(true);
-		expect(s.resolve(token)?.id).toBe(key.id);
-		expect(s.remove(key.id)).toBe(true);
-		expect(s.resolve(token)).toBeNull();
+		const { key, token } = await s.create('ci', ['read', 'write'], null);
+		expect(await s.setDisabled(key.id, true)).toBe(true);
+		expect(await s.resolve(token)).toBeNull();
+		expect(await s.setDisabled(key.id, false)).toBe(true);
+		expect((await s.resolve(token))?.id).toBe(key.id);
+		expect(await s.remove(key.id)).toBe(true);
+		expect(await s.resolve(token)).toBeNull();
 	});
 
-	it('lists keys without exposing hashes', () => {
+	it('lists keys without exposing hashes', async () => {
 		const s = new ApiKeyStore(db());
-		s.create('a', ['read'], 'x');
-		s.create('b', ['write'], 'x');
-		const keys = s.list();
+		await s.create('a', ['read'], 'x');
+		await s.create('b', ['write'], 'x');
+		const keys = await s.list();
 		expect(keys).toHaveLength(2);
 		expect(JSON.stringify(keys)).not.toContain('key_hash');
 		expect(keys[1].scopes).toEqual(['write']);
@@ -122,48 +122,48 @@ describe('ApiKeyStore', () => {
 });
 
 describe('SubscriberStore', () => {
-	it('creates pending subscribers and confirms via one-shot token', () => {
+	it('creates pending subscribers and confirms via one-shot token', async () => {
 		const s = new SubscriberStore(db());
-		const c = s.create('https://hook.example.com/x', ['all']);
+		const c = await s.create('https://hook.example.com/x', ['all']);
 		expect(c).not.toBeNull();
 		const { sub, confirmToken } = c!;
 		expect(sub.confirmedAt).toBeNull();
-		expect(s.active(null)).toHaveLength(0);
-		expect(s.confirm('bad-token')).toBe(false);
-		expect(s.confirm(confirmToken)).toBe(true);
-		expect(s.confirm(confirmToken)).toBe(false);
-		expect(s.active(null)).toHaveLength(1);
+		expect(await s.active(null)).toHaveLength(0);
+		expect(await s.confirm('bad-token')).toBe(false);
+		expect(await s.confirm(confirmToken)).toBe(true);
+		expect(await s.confirm(confirmToken)).toBe(false);
+		expect(await s.active(null)).toHaveLength(1);
 	});
 
-	it('re-subscribing resets confirmation without leaking', () => {
+	it('re-subscribing resets confirmation without leaking', async () => {
 		const s = new SubscriberStore(db());
-		const c1 = s.create('https://hook.example.com/x', ['all'])!;
-		expect(s.confirm(c1.confirmToken)).toBe(true);
-		const c2 = s.create('https://hook.example.com/x', ['web'])!;
+		const c1 = (await s.create('https://hook.example.com/x', ['all']))!;
+		expect(await s.confirm(c1.confirmToken)).toBe(true);
+		const c2 = (await s.create('https://hook.example.com/x', ['web']))!;
 		expect(c2.sub.confirmedAt).toBeNull();
-		expect(s.active(null)).toHaveLength(0);
-		expect(s.confirm(c2.confirmToken)).toBe(true);
-		expect(s.active('web')).toHaveLength(1);
-		expect(s.active('api')).toHaveLength(0);
+		expect(await s.active(null)).toHaveLength(0);
+		expect(await s.confirm(c2.confirmToken)).toBe(true);
+		expect(await s.active('web')).toHaveLength(1);
+		expect(await s.active('api')).toHaveLength(0);
 	});
 
-	it('filters by service and unsubscribes via signed token', () => {
+	it('filters by service and unsubscribes via signed token', async () => {
 		const s = new SubscriberStore(db());
-		const c = s.create('https://hook.example.com/x', ['web'])!;
-		s.confirm(c.confirmToken);
-		expect(s.active('web')).toHaveLength(1);
-		expect(s.active('api')).toHaveLength(0);
-		const sub = s.list()[0];
+		const c = (await s.create('https://hook.example.com/x', ['web']))!;
+		await s.confirm(c.confirmToken);
+		expect(await s.active('web')).toHaveLength(1);
+		expect(await s.active('api')).toHaveLength(0);
+		const sub = (await s.list())[0];
 		const token = s.unsubToken(sub);
-		expect(s.unsubscribe(sub.id, 'wrong-token-00000000000000000000')).toBe(false);
-		expect(s.unsubscribe(sub.id, token)).toBe(true);
-		expect(s.active('web')).toHaveLength(0);
+		expect(await s.unsubscribe(sub.id, 'wrong-token-00000000000000000000')).toBe(false);
+		expect(await s.unsubscribe(sub.id, token)).toBe(true);
+		expect(await s.active('web')).toHaveLength(0);
 	});
 
-	it('signs payloads deterministically per subscriber', () => {
+	it('signs payloads deterministically per subscriber', async () => {
 		const s = new SubscriberStore(db());
-		const a = s.create('https://a.example.com/x', ['all'])!;
-		const b = s.create('https://b.example.com/x', ['all'])!;
+		const a = (await s.create('https://a.example.com/x', ['all']))!;
+		const b = (await s.create('https://b.example.com/x', ['all']))!;
 		const body = JSON.stringify({ ping: true });
 		expect(s.signature(a.sub, body)).toBe(s.signature(a.sub, body));
 		expect(s.signature(a.sub, body)).not.toBe(s.signature(b.sub, body));
@@ -190,7 +190,7 @@ describe('push checker', () => {
 		userAgent: 'test',
 		certWarnDays: 14,
 		egress,
-		lastBeat: () => lastBeat
+		lastBeat: () => Promise.resolve(lastBeat)
 	});
 
 	it('reports degraded until the first beat arrives', async () => {
@@ -320,6 +320,15 @@ describe('maintenance alert suppression', () => {
 				environment: 'test',
 				client_reports: true,
 				max_per_minute: 60
+			},
+			storage: {
+				driver: 'sqlite',
+				url: '',
+				ns: 'wharfinger',
+				db: 'wharfinger',
+				user: '',
+				pass: '',
+				timeout_ms: 30_000
 			}
 		};
 	}

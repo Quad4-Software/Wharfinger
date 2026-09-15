@@ -1,9 +1,9 @@
 import type { RequestHandler } from './$types';
 import { getRuntime } from '$lib/server/runtime';
 
-export const GET: RequestHandler = ({ request }) => {
+export const GET: RequestHandler = async ({ request }) => {
 	const { snapshot, config } = getRuntime();
-	const { json, etag } = snapshot.current();
+	const { json, etag } = await snapshot.current();
 
 	if (request.headers.get('if-none-match') === etag) {
 		return new Response(null, { status: 304, headers: headers(etag, config) });

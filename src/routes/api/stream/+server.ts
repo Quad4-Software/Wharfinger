@@ -7,7 +7,7 @@ export const GET: RequestHandler = () => {
 	let client: SseClient;
 
 	const stream = new ReadableStream<Uint8Array>({
-		start(controller) {
+		async start(controller) {
 			const encoder = new TextEncoder();
 			let closed = false;
 			client = {
@@ -32,7 +32,7 @@ export const GET: RequestHandler = () => {
 			}
 			// Push the current snapshot immediately so clients can render
 			// without a second request.
-			client.send('snapshot', rt.snapshot.current().json);
+			client.send('snapshot', (await rt.snapshot.current()).json);
 		},
 		cancel() {
 			rt.hub.remove(client);

@@ -1,5 +1,6 @@
-import type { DatabaseSync, StatementSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 import type { CheckRow } from '$lib/shared/uptime';
+import { asDb, type Db, type Stmt } from './driver';
 
 export interface CheckResult {
 	ok: boolean;
@@ -9,34 +10,35 @@ export interface CheckResult {
 }
 
 export class CheckStore {
-	private readonly insert: StatementSync;
-	private readonly rangeQ: StatementSync;
-	private readonly latestQ: StatementSync;
-	private readonly uptimeQ: StatementSync;
-	private readonly pruneQ: StatementSync;
-	private readonly pruneIncidentsQ: StatementSync;
+	private readonly insert: Stmt;
+	private readonly rangeQ: Stmt;
+	private readonly latestQ: Stmt;
+	private readonly uptimeQ: Stmt;
+	private readonly pruneQ: Stmt;
+	private readonly pruneIncidentsQ: Stmt;
 
-	constructor(private readonly db: DatabaseSync) {
-		this.insert = db.prepare(
+	constructor(db: Db | DatabaseSync) {
+		const d = asDb(db);
+		this.insert = d.prepare(
 			'INSERT INTO checks (service_id, ts, ok, latency, status, detail) VALUES (?, ?, ?, ?, ?, ?)'
 		);
-		this.rangeQ = db.prepare(
+		this.rangeQ = d.prepare(
 			'SELECT ts, ok, latency AS latencyMs FROM checks WHERE service_id = ? AND ts >= ? ORDER BY ts ASC'
 		);
-		this.latestQ = db.prepare(
+		this.latestQ = d.prepare(
 			'SELECT ts, ok, latency AS latencyMs, status, detail FROM checks WHERE service_id = ? ORDER BY ts DESC LIMIT 1'
 		);
-		this.uptimeQ = db.prepare(
+		this.uptimeQ = d.prepare(
 			'SELECT CAST(SUM(ok) AS REAL) / COUNT(*) AS frac FROM checks WHERE service_id = ? AND ts >= ?'
 		);
-		this.pruneQ = db.prepare('DELETE FROM checks WHERE ts < ?');
-		this.pruneIncidentsQ = db.prepare(
+		this.pruneQ = d.prepare('DELETE FROM checks WHERE ts < ?');
+		this.pruneIncidentsQ = d.prepare(
 			'DELETE FROM incidents WHERE ended_at IS NOT NULL AND ended_at < ?'
 		);
 	}
 
-	record(serviceId: string, r: CheckResult, ts = Date.now()): void {
-		this.insert.run(
+	async record(serviceId: string, r: CheckResult, ts = Date.now()): Promise<void> {
+		await this.insert.run(
 			serviceId,
 			ts,
 			r.ok ? 1 : 0,
@@ -47,28 +49,30 @@ export class CheckStore {
 	}
 
 	/** Raw checks since `since` (unix ms), ascending. */
-	since(serviceId: string, since: number): CheckRow[] {
-		return this.rangeQ.all(serviceId, since) as unknown as CheckRow[];
+	async since(serviceId: string, since: number): Promise<CheckRow[]> {
+		return (await this.rangeQ.all(serviceId, since)) as unknown as CheckRow[];
 	}
 
-	latest(serviceId: string): (CheckRow & { status: string; detail: string | null }) | null {
-		const row = this.latestQ.get(serviceId) as
+	async latest(
+		serviceId: string
+	): Promise<(CheckRow & { status: string; detail: string | null }) | null> {
+		const row = (await this.latestQ.get(serviceId)) as
 			(CheckRow & { status: string; detail: string | null }) | undefined;
 		return row ?? null;
 	}
 
 	/** Fraction of successful checks since `since`, null if no checks. */
-	uptimeFraction(serviceId: string, since: number): number | null {
-		const row = this.uptimeQ.get(serviceId, since) as { frac: number | null } | undefined;
+	async uptimeFraction(serviceId: string, since: number): Promise<number | null> {
+		const row = (await this.uptimeQ.get(serviceId, since)) as { frac: number | null } | undefined;
 		return row?.frac ?? null;
 	}
 
 	/** Delete checks older than `before` (unix ms). Returns rows removed. */
-	prune(before: number): number {
-		return Number(this.pruneQ.run(before).changes);
+	async prune(before: number): Promise<number> {
+		return Number((await this.pruneQ.run(before)).changes);
 	}
 
-	pruneIncidents(endedBefore: number): number {
-		return Number(this.pruneIncidentsQ.run(endedBefore).changes);
+	async pruneIncidents(endedBefore: number): Promise<number> {
+		return Number((await this.pruneIncidentsQ.run(endedBefore)).changes);
 	}
 }

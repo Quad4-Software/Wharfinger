@@ -18,9 +18,9 @@ export const POST: RequestHandler = async (event) => {
 	const body = await readJson<RevealBody>(event.request, 8192);
 	const key = typeof body.key === 'string' ? body.key : '';
 	if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return apiError(422, 'invalid key name');
-	if (!getSecretStore(rt.db).get(id)) return apiError(404, 'secret set not found');
-	const value = resolveSecret(rt.db, `secret:${id}:${key}`);
+	if (!(await getSecretStore(rt.db).get(id))) return apiError(404, 'secret set not found');
+	const value = await resolveSecret(rt.db, `secret:${id}:${key}`);
 	if (value === null) return apiError(404, 'key not found');
-	audit(rt, event, 'secrets.reveal', `set=${id} key=${key}`);
+	await audit(rt, event, 'secrets.reveal', `set=${id} key=${key}`);
 	return apiJson({ ok: true, key, value });
 };

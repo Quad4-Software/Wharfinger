@@ -21,11 +21,11 @@ interface ReconcileItem {
  */
 export const POST: RequestHandler = async (event) => {
 	const rt = getRuntime();
-	const g = gate(rt, rt.agents, bearerToken(event.request));
+	const g = await gate(rt, rt.agents, bearerToken(event.request));
 	if (g.err) return g.err;
 
 	const text = await readText(event.request, 64 * 1024);
-	const badProof = proofGate(rt, g.agent, event.request, Buffer.from(text, 'utf8'));
+	const badProof = await proofGate(rt, g.agent, event.request, Buffer.from(text, 'utf8'));
 	if (badProof) return badProof;
 
 	let body: { jobs?: unknown };
@@ -41,15 +41,15 @@ export const POST: RequestHandler = async (event) => {
 		const id = Number(item.id);
 		const outcome = item.outcome as (typeof OUTCOMES)[number];
 		if (!Number.isInteger(id) || id <= 0 || !OUTCOMES.includes(outcome)) continue;
-		const job = rt.jobs.get(id);
+		const job = await rt.jobs.get(id);
 		// An agent may only reconcile jobs that were targeted at it.
 		if (!job || (job.target !== null && job.target !== g.agent.id)) continue;
-		if (rt.jobs.reconcile(id, outcome, item.result)) {
+		if (await rt.jobs.reconcile(id, outcome, item.result)) {
 			applied++;
 			// Close out linked records too: a reconciled deploy release
 			// or scan report must not stay pending/running forever.
-			settleDeployJob(rt, id);
-			settleScanJob(rt, id);
+			await settleDeployJob(rt, id);
+			await settleScanJob(rt, id);
 		}
 	}
 	return apiJson({ ok: true, applied });

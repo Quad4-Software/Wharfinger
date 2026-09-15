@@ -1,4 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { asDb, type Db } from '$lib/server/store/driver';
+import { asBytes } from '$lib/server/bytes';
 import { hashPassword, openSecret, sealSecret } from './crypto';
 import type { PublicUser, Role } from '$lib/shared/auth';
 
@@ -18,7 +20,8 @@ interface UserRow {
 	last_login_at: number | null;
 	source: string;
 	external_id: string | null;
-	has_avatar: number;
+	/** 0/1 on sqlite, boolean on surreal. */
+	has_avatar: number | boolean;
 }
 
 const SELECT =
@@ -34,60 +37,83 @@ function toPublic(row: UserRow): User {
 		createdAt: row.created_at,
 		disabledAt: row.disabled_at,
 		lastLoginAt: row.last_login_at,
-		hasAvatar: row.has_avatar === 1
+		hasAvatar: Boolean(row.has_avatar)
 	};
 }
 
 export class UserStore {
-	constructor(private readonly db: DatabaseSync) {}
+	private readonly db: Db;
 
-	count(): number {
-		const r = this.db.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number };
+	constructor(db: Db | DatabaseSync) {
+		this.db = asDb(db);
+	}
+
+	async count(): Promise<number> {
+		const r = (await this.db.prepare('SELECT COUNT(*) AS n FROM users').get()) as { n: number };
 		return r.n;
 	}
 
-	countByRole(role: string): number {
-		const r = this.db.prepare('SELECT COUNT(*) AS n FROM users WHERE role = ?').get(role) as {
-			n: number;
-		};
+	async countByRole(role: string): Promise<number> {
+		const r = (await this.db
+			.prepare('SELECT COUNT(*) AS n FROM users WHERE role = ?')
+			.get(role)) as { n: number };
 		return r.n;
 	}
 
-	admins(): User[] {
-		return (this.db.prepare(`${SELECT} WHERE role = 'admin'`).all() as unknown as UserRow[]).map(
-			toPublic
-		);
+	async admins(): Promise<User[]> {
+		const rows = (await this.db
+			.prepare(`${SELECT} WHERE role = 'admin'`)
+			.all()) as unknown as UserRow[];
+		return rows.map(toPublic);
 	}
 
-	all(): User[] {
-		return (this.db.prepare(`${SELECT} ORDER BY username`).all() as unknown as UserRow[]).map(
-			toPublic
-		);
+	async all(): Promise<User[]> {
+		const rows = (await this.db
+			.prepare(`${SELECT} ORDER BY username`)
+			.all()) as unknown as UserRow[];
+		return rows.map(toPublic);
 	}
 
-	byId(id: number): User | null {
-		const r = this.db.prepare(`${SELECT} WHERE id = ?`).get(id) as UserRow | undefined;
+	async byId(id: number): Promise<User | null> {
+		const r = (await this.db.prepare(`${SELECT} WHERE id = ?`).get(id)) as UserRow | undefined;
 		return r ? toPublic(r) : null;
 	}
 
-	/** Internal row including credentials; never serialized to clients. */
-	rowByName(username: string): UserRow | null {
+	/**
+	 * Internal row including credentials; never serialized to clients.
+	 * sqlite matches usernames through the NOCASE unique collation;
+	 * SurrealDB keeps the fold in a username_lc shadow col maintained
+	 * by the translator, so the lookup branches on the driver kind.
+	 */
+	async rowByName(username: string): Promise<UserRow | null> {
+		const surreal = this.db.kind === 'surreal';
+		const r = (await this.db
+			.prepare(`${SELECT} WHERE ${surreal ? 'username_lc' : 'username'} = ?`)
+			.get(surreal ? username.toLowerCase() : username)) as UserRow | undefined;
+		return r ?? null;
+	}
+
+	async rowById(id: number): Promise<UserRow | null> {
 		return (
-			(this.db.prepare(`${SELECT} WHERE username = ?`).get(username) as UserRow | undefined) ?? null
+			((await this.db.prepare(`${SELECT} WHERE id = ?`).get(id)) as UserRow | undefined) ?? null
 		);
 	}
 
-	rowById(id: number): UserRow | null {
-		return (this.db.prepare(`${SELECT} WHERE id = ?`).get(id) as UserRow | undefined) ?? null;
-	}
-
-	create(username: string, password: string, role: Role, displayName = ''): User {
-		const r = this.db
+	async create(username: string, password: string, role: Role, displayName = ''): Promise<User> {
+		const r = await this.db
 			.prepare(
-				'INSERT INTO users (username, display_name, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)'
+				'INSERT INTO users (username, display_name, password_hash, role, created_at, source, external_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
 			)
-			.run(username, displayName, hashPassword(password), role, Date.now());
-		const user = this.byId(Number(r.lastInsertRowid));
+			.run(
+				username,
+				displayName,
+				hashPassword(password),
+				role,
+				Date.now(),
+				'local',
+				localExternalId(username)
+			);
+		const user = await this.byId(Number(r.lastInsertRowid));
 		if (!user) throw new Error('failed to read newly created user');
 		return user;
 	}
@@ -97,41 +123,44 @@ export class UserStore {
 	 * transaction so two racing setup posts cannot both create an
 	 * admin. Returns null once any user exists.
 	 */
-	createFirstUser(username: string, password: string, role: Role, displayName = ''): User | null {
-		this.db.exec('BEGIN IMMEDIATE');
-		try {
-			const n = (this.db.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number }).n;
-			if (n > 0) {
-				this.db.exec('ROLLBACK');
-				return null;
-			}
-			const r = this.db
+	async createFirstUser(
+		username: string,
+		password: string,
+		role: Role,
+		displayName = ''
+	): Promise<User | null> {
+		return this.db.tx(async (tx) => {
+			const n = ((await tx.prepare('SELECT COUNT(*) AS n FROM users').get()) as { n: number }).n;
+			if (n > 0) return null;
+			const r = await tx
 				.prepare(
-					'INSERT INTO users (username, display_name, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)'
+					'INSERT INTO users (username, display_name, password_hash, role, created_at, source, external_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
 				)
-				.run(username, displayName, hashPassword(password), role, Date.now());
-			this.db.exec('COMMIT');
-			const user = this.byId(Number(r.lastInsertRowid));
-			if (!user) throw new Error('failed to read newly created user');
-			return user;
-		} catch (err) {
-			try {
-				this.db.exec('ROLLBACK');
-			} catch {
-				// already rolled back
-			}
-			throw err;
-		}
+				.run(
+					username,
+					displayName,
+					hashPassword(password),
+					role,
+					Date.now(),
+					'local',
+					localExternalId(username)
+				);
+			const row = (await tx.prepare(`${SELECT} WHERE id = ?`).get(Number(r.lastInsertRowid))) as
+				UserRow | undefined;
+			if (!row) throw new Error('failed to read newly created user');
+			return toPublic(row);
+		});
 	}
 
 	/**
 	 * Look up an externally-authenticated account (oidc/ldap) by its
 	 * stable external id. External ids are unique per source.
 	 */
-	rowByExternal(source: string, externalId: string): UserRow | null {
+	async rowByExternal(source: string, externalId: string): Promise<UserRow | null> {
 		return (
-			(this.db.prepare(`${SELECT} WHERE source = ? AND external_id = ?`).get(source, externalId) as
-				UserRow | undefined) ?? null
+			((await this.db
+				.prepare(`${SELECT} WHERE source = ? AND external_id = ?`)
+				.get(source, externalId)) as UserRow | undefined) ?? null
 		);
 	}
 
@@ -139,78 +168,95 @@ export class UserStore {
 	 * Provision an externally-authenticated user. Password hash stays
 	 * empty, so the local password path can never match these rows.
 	 */
-	createExternal(
+	async createExternal(
 		username: string,
 		displayName: string,
 		role: Role,
 		source: string,
 		externalId: string
-	): User {
-		const r = this.db
+	): Promise<User> {
+		const r = await this.db
 			.prepare(
 				'INSERT INTO users (username, display_name, password_hash, role, created_at, source, external_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
 			)
 			.run(username, displayName, '', role, Date.now(), source, externalId);
-		const user = this.byId(Number(r.lastInsertRowid));
+		const user = await this.byId(Number(r.lastInsertRowid));
 		if (!user) throw new Error('failed to read newly created user');
 		return user;
 	}
 
 	/** Refresh profile fields an external provider is authoritative for. */
-	syncExternal(id: number, displayName: string, role: Role): void {
-		this.db
+	async syncExternal(id: number, displayName: string, role: Role): Promise<void> {
+		await this.db
 			.prepare('UPDATE users SET display_name = ?, role = ? WHERE id = ?')
 			.run(displayName, role, id);
 	}
 
-	setPassword(id: number, password: string): void {
-		this.db
+	async setPassword(id: number, password: string): Promise<void> {
+		await this.db
 			.prepare('UPDATE users SET password_hash = ? WHERE id = ?')
 			.run(hashPassword(password), id);
 	}
 
-	setDisplayName(id: number, name: string): void {
-		this.db.prepare('UPDATE users SET display_name = ? WHERE id = ?').run(name, id);
+	async setDisplayName(id: number, name: string): Promise<void> {
+		await this.db.prepare('UPDATE users SET display_name = ? WHERE id = ?').run(name, id);
 	}
 
-	setAvatar(id: number, data: Uint8Array, mime: string): void {
-		this.db
+	async setAvatar(id: number, data: Uint8Array, mime: string): Promise<void> {
+		await this.db
 			.prepare('UPDATE users SET avatar = ?, avatar_mime = ? WHERE id = ?')
 			.run(data, mime, id);
 	}
 
-	clearAvatar(id: number): void {
-		this.db.prepare('UPDATE users SET avatar = NULL, avatar_mime = NULL WHERE id = ?').run(id);
+	async clearAvatar(id: number): Promise<void> {
+		await this.db
+			.prepare('UPDATE users SET avatar = NULL, avatar_mime = NULL WHERE id = ?')
+			.run(id);
 	}
 
-	avatarFor(id: number): { data: Uint8Array; mime: string } | null {
-		const r = this.db.prepare('SELECT avatar, avatar_mime FROM users WHERE id = ?').get(id) as
-			{ avatar: Uint8Array | null; avatar_mime: string | null } | undefined;
-		if (!r?.avatar || !r.avatar_mime) return null;
-		return { data: r.avatar, mime: r.avatar_mime };
+	async avatarFor(id: number): Promise<{ data: Uint8Array; mime: string } | null> {
+		const r = (await this.db
+			.prepare('SELECT avatar, avatar_mime FROM users WHERE id = ?')
+			.get(id)) as { avatar: unknown; avatar_mime: string | null } | undefined;
+		const data = asBytes(r?.avatar);
+		if (!data || !r?.avatar_mime) return null;
+		return { data, mime: r.avatar_mime };
 	}
 
-	setRole(id: number, role: Role): void {
-		this.db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, id);
+	async setRole(id: number, role: Role): Promise<void> {
+		await this.db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, id);
 	}
 
-	setDisabled(id: number, disabled: boolean): void {
-		this.db
+	async setDisabled(id: number, disabled: boolean): Promise<void> {
+		await this.db
 			.prepare('UPDATE users SET disabled_at = ? WHERE id = ?')
 			.run(disabled ? Date.now() : null, id);
 	}
 
-	touchLogin(id: number, now = Date.now()): void {
-		this.db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(now, id);
+	async touchLogin(id: number, now = Date.now()): Promise<void> {
+		await this.db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(now, id);
 	}
 
-	remove(id: number): void {
-		this.db.prepare('DELETE FROM users WHERE id = ?').run(id);
+	async remove(id: number): Promise<void> {
+		// SurrealDB has no ON DELETE CASCADE, so FK children go down
+		// explicitly in one transaction. On sqlite this duplicates the
+		// real cascade and stays harmless.
+		await this.db.tx(async (tx) => {
+			await tx.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+			await tx.prepare('DELETE FROM invites WHERE user_id = ?').run(id);
+			await tx.prepare('DELETE FROM webauthn_credentials WHERE user_id = ?').run(id);
+			await tx.prepare('DELETE FROM webauthn_challenges WHERE user_id = ?').run(id);
+			await tx.prepare('DELETE FROM users WHERE id = ?').run(id);
+		});
 	}
 
 	// TOTP secrets are sealed with the per-install data key.
-	setTotp(id: number, secretB32: string | null, backupHashes: string[] | null): void {
-		this.db
+	async setTotp(
+		id: number,
+		secretB32: string | null,
+		backupHashes: string[] | null
+	): Promise<void> {
+		await this.db
 			.prepare('UPDATE users SET totp_secret = ?, totp_backup = ? WHERE id = ?')
 			.run(
 				secretB32 === null ? null : sealSecret(secretB32),
@@ -233,16 +279,24 @@ export class UserStore {
 		}
 	}
 
-	consumeBackupCode(id: number, hash: string): boolean {
-		const row = this.rowById(id);
+	async consumeBackupCode(id: number, hash: string): Promise<boolean> {
+		const row = await this.rowById(id);
 		if (!row) return false;
 		const hashes = this.totpBackupHashes(row);
 		const idx = hashes.indexOf(hash);
 		if (idx === -1) return false;
 		hashes.splice(idx, 1);
-		this.db
+		await this.db
 			.prepare('UPDATE users SET totp_backup = ? WHERE id = ?')
 			.run(JSON.stringify(hashes), id);
 		return true;
 	}
+}
+
+// The (source, external_id) unique index cannot stay partial under
+// SurrealDB - every row must carry an external_id or the second local
+// account trips the unique on ('local', NONE). Local accounts get a
+// namespaced id so the pair is always populated and unique.
+function localExternalId(username: string): string {
+	return `local:${username}`;
 }

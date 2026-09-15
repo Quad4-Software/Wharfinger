@@ -35,8 +35,8 @@ export const PUT: RequestHandler = async (event) => {
 		return apiError(422, 'add and remove must be arrays of {memberKind, memberId}');
 	}
 	try {
-		const group = getGroupStore(rt.db).setMembers(id, add, remove);
-		audit(rt, event, 'group.members', `id=${id} +${add.length} -${remove.length}`);
+		const group = await getGroupStore(rt.db).setMembers(id, add, remove);
+		await audit(rt, event, 'group.members', `id=${id} +${add.length} -${remove.length}`);
 		rt.snapshot.invalidate();
 		return apiJson({ ok: true, group });
 	} catch (err) {

@@ -33,8 +33,8 @@ function specImage(spec: DeploySpec | null): string | undefined {
 	return undefined;
 }
 
-function releaseSpec(deploys: DeployStore, releaseId: string): DeploySpec | null {
-	const raw = deploys.releaseSpec(releaseId);
+async function releaseSpec(deploys: DeployStore, releaseId: string): Promise<DeploySpec | null> {
+	const raw = await deploys.releaseSpec(releaseId);
 	if (!raw) return null;
 	try {
 		return JSON.parse(raw) as DeploySpec;
@@ -49,28 +49,28 @@ function releaseSpec(deploys: DeployStore, releaseId: string): DeploySpec | null
  * or the app's image source. Built images fall back to the local
  * <app>:<release> tag the executor used.
  */
-function resolveTarget(
+async function resolveTarget(
 	deploys: DeployStore,
 	appId: string,
 	releaseId?: string
-): { imageRef: string; releaseId?: string } {
-	const app = deploys.getApp(appId);
+): Promise<{ imageRef: string; releaseId?: string }> {
+	const app = await deploys.getApp(appId);
 	if (!app) throw new DeployError(404, 'app not found');
 
 	let relId = releaseId;
 	if (relId) {
-		const rel = deploys.release(relId);
+		const rel = await deploys.release(relId);
 		if (!rel) throw new DeployError(404, 'release not found');
 		if (rel.appId !== appId) throw new DeployError(422, 'release belongs to another app');
-		const ref = rel.image ?? specImage(releaseSpec(deploys, relId));
+		const ref = rel.image ?? specImage(await releaseSpec(deploys, relId));
 		if (ref) return { imageRef: ref, releaseId: relId };
 		return { imageRef: `${foldTag(appId)}:${foldTag(relId)}`, releaseId: relId };
 	}
 
-	const live = deploys.liveRelease(appId);
+	const live = await deploys.liveRelease(appId);
 	if (live) {
 		relId = live.id;
-		const ref = live.image ?? specImage(releaseSpec(deploys, live.id));
+		const ref = live.image ?? specImage(await releaseSpec(deploys, live.id));
 		if (ref) return { imageRef: ref, releaseId: relId };
 		return { imageRef: `${foldTag(appId)}:${foldTag(live.id)}`, releaseId: relId };
 	}
@@ -87,27 +87,27 @@ function resolveTarget(
  * frozen snapshot targeting the app's agent. A scan already in
  * flight for the app dedupes instead of queueing a second agent run.
  */
-export function enqueueScan(
+export async function enqueueScan(
 	deploys: DeployStore,
 	jobs: JobQueue,
 	scans: ScanStore,
 	appId: string,
 	opts: { releaseId?: string } = {}
-): { job: Job | null; report: ScanReport; deduped: boolean } {
-	const app = deploys.getApp(appId);
+): Promise<{ job: Job | null; report: ScanReport; deduped: boolean }> {
+	const app = await deploys.getApp(appId);
 	if (!app) throw new DeployError(404, 'app not found');
 
-	const active = scans.activeForApp(appId);
+	const active = await scans.activeForApp(appId);
 	if (active) {
-		const existing = jobs.byKey(`scan:${appId}:${active.id}`);
+		const existing = await jobs.byKey(`scan:${appId}:${active.id}`);
 		if (existing) return { job: existing, report: active, deduped: true };
 		// The report outlived its job row (pruned or unknown): close
 		// it out so the app is not blocked from scanning forever.
-		scans.complete(active.id, 'failed', { error: 'scan job lost before completion' });
+		await scans.complete(active.id, 'failed', { error: 'scan job lost before completion' });
 	}
 
-	const { imageRef, releaseId } = resolveTarget(deploys, appId, opts.releaseId);
-	const report = scans.createReport({ appId, target: imageRef, releaseId });
+	const { imageRef, releaseId } = await resolveTarget(deploys, appId, opts.releaseId);
+	const report = await scans.createReport({ appId, target: imageRef, releaseId });
 	const spec: ScanJobSpec = {
 		scanId: report.id,
 		appId,
@@ -115,7 +115,7 @@ export function enqueueScan(
 		releaseId,
 		jobKey: `scan:${appId}:${report.id}`
 	};
-	const { job } = jobs.enqueue({
+	const { job } = await jobs.enqueue({
 		kind: 'scan',
 		target: app.agentId,
 		spec,
@@ -137,12 +137,12 @@ function scanSpec(job: Job): ScanJobSpec | null {
 }
 
 /** The agent posted 'start': flip the queued report to running. */
-export function markScanJobRunning(rt: Runtime, jobId: number): void {
-	const job = rt.jobs.get(jobId);
+export async function markScanJobRunning(rt: Runtime, jobId: number): Promise<void> {
+	const job = await rt.jobs.get(jobId);
 	if (job?.kind !== 'scan') return;
 	const spec = scanSpec(job);
 	if (!spec) return;
-	getScanStore(rt.db).markRunning(spec.scanId);
+	await getScanStore(rt.db).markRunning(spec.scanId);
 }
 
 function wireFindings(result: ScanJobResult): Omit<ScanFinding, 'reportId'>[] {
@@ -170,8 +170,8 @@ function wireFindings(result: ScanJobResult): Omit<ScanFinding, 'reportId'>[] {
  * recommendations. Called from the job lifecycle route after a
  * terminal transition; no-ops for non-scan jobs.
  */
-export function settleScanJob(rt: Runtime, jobId: number): void {
-	const job = rt.jobs.get(jobId);
+export async function settleScanJob(rt: Runtime, jobId: number): Promise<void> {
+	const job = await rt.jobs.get(jobId);
 	if (job?.kind !== 'scan' || !job.result) return;
 	const spec = scanSpec(job);
 	if (!spec) return;
@@ -185,7 +185,7 @@ export function settleScanJob(rt: Runtime, jobId: number): void {
 		} catch {
 			// keep the generic message
 		}
-		scans.complete(spec.scanId, 'failed', { error });
+		await scans.complete(spec.scanId, 'failed', { error });
 		return;
 	}
 
@@ -193,26 +193,26 @@ export function settleScanJob(rt: Runtime, jobId: number): void {
 	try {
 		result = JSON.parse(job.result) as ScanJobResult;
 	} catch {
-		scans.complete(spec.scanId, 'failed', { error: 'malformed scan result' });
+		await scans.complete(spec.scanId, 'failed', { error: 'malformed scan result' });
 		return;
 	}
 	if (result.scanId !== spec.scanId) {
-		scans.complete(spec.scanId, 'failed', { error: 'scan id mismatch in result' });
+		await scans.complete(spec.scanId, 'failed', { error: 'scan id mismatch in result' });
 		return;
 	}
-	const report = scans.complete(spec.scanId, 'done', {
+	const report = await scans.complete(spec.scanId, 'done', {
 		findings: wireFindings(result)
 	});
 	if (report?.status !== 'done') return;
 
-	const app = rt.deploys.getApp(spec.appId);
+	const app = await rt.deploys.getApp(spec.appId);
 	if (!app) return;
-	const relSpec = spec.releaseId ? releaseSpec(rt.deploys, spec.releaseId) : null;
-	const recs = evaluate(app, relSpec, scans.findings(spec.scanId), {
+	const relSpec = spec.releaseId ? await releaseSpec(rt.deploys, spec.releaseId) : null;
+	const recs = evaluate(app, relSpec, await scans.findings(spec.scanId), {
 		imageRef: spec.imageRef,
 		repoDigests: Array.isArray(result.repoDigests)
 			? result.repoDigests.filter((d): d is string => typeof d === 'string').slice(0, 8)
 			: []
 	});
-	scans.sync(spec.appId, recs);
+	await scans.sync(spec.appId, recs);
 }

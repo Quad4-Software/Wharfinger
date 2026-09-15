@@ -36,9 +36,9 @@ describe('roleFromGroups', () => {
 });
 
 describe('resolveExternalUser', () => {
-	it('provisions on first login and syncs on later ones', () => {
+	it('provisions on first login and syncs on later ones', async () => {
 		const users = freshUsers();
-		const u1 = resolveExternalUser(
+		const u1 = (await resolveExternalUser(
 			users,
 			'oidc',
 			'iss|sub1',
@@ -46,33 +46,53 @@ describe('resolveExternalUser', () => {
 			'Alice A',
 			'operator',
 			true
-		)!;
+		))!;
 		expect(u1.username).toBe('alice');
 		expect(u1.role).toBe('operator');
-		const u2 = resolveExternalUser(users, 'oidc', 'iss|sub1', 'alice', 'Alice B', 'admin', true)!;
+		const u2 = (await resolveExternalUser(
+			users,
+			'oidc',
+			'iss|sub1',
+			'alice',
+			'Alice B',
+			'admin',
+			true
+		))!;
 		expect(u2.id).toBe(u1.id);
-		expect(users.byId(u1.id)!.displayName).toBe('Alice B');
-		expect(users.byId(u1.id)!.role).toBe('admin');
+		expect((await users.byId(u1.id))!.displayName).toBe('Alice B');
+		expect((await users.byId(u1.id))!.role).toBe('admin');
 	});
 
-	it('never adopts a same-named local account', () => {
+	it('never adopts a same-named local account', async () => {
 		const users = freshUsers();
-		const local = users.create('admin', 'correct horse battery', 'admin');
-		const ext = resolveExternalUser(users, 'oidc', 'iss|x', 'admin', 'Ad Min', 'admin', true)!;
+		const local = await users.create('admin', 'correct horse battery', 'admin');
+		const ext = (await resolveExternalUser(
+			users,
+			'oidc',
+			'iss|x',
+			'admin',
+			'Ad Min',
+			'admin',
+			true
+		))!;
 		expect(ext.id).not.toBe(local.id);
 		expect(ext.username).not.toBe('admin');
 		// Local login still works; external user has no password.
-		expect(verifyPassword('correct horse battery', users.rowByName('admin')!.password_hash)).toBe(
-			true
+		expect(
+			verifyPassword('correct horse battery', (await users.rowByName('admin'))!.password_hash)
+		).toBe(true);
+		expect(verifyPassword('anything', (await users.rowByName(ext.username))!.password_hash)).toBe(
+			false
 		);
-		expect(verifyPassword('anything', users.rowByName(ext.username)!.password_hash)).toBe(false);
 	});
 
-	it('returns null for disabled external accounts', () => {
+	it('returns null for disabled external accounts', async () => {
 		const users = freshUsers();
-		const u = resolveExternalUser(users, 'ldap', 'dn1', 'bob', 'Bob', 'operator', true)!;
-		users.setDisabled(u.id, true);
-		expect(resolveExternalUser(users, 'ldap', 'dn1', 'bob', 'Bob', 'operator', true)).toBeNull();
+		const u = (await resolveExternalUser(users, 'ldap', 'dn1', 'bob', 'Bob', 'operator', true))!;
+		await users.setDisabled(u.id, true);
+		expect(
+			await resolveExternalUser(users, 'ldap', 'dn1', 'bob', 'Bob', 'operator', true)
+		).toBeNull();
 	});
 });
 

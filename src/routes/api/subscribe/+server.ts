@@ -52,7 +52,7 @@ export const POST: RequestHandler = async (event) => {
 		: ['all'];
 	if (services.length === 0) services.push('all');
 
-	const created = rt.subscribers.create(url.toString(), services);
+	const created = await rt.subscribers.create(url.toString(), services);
 	if (!created) {
 		return json({ error: 'subscriber limit reached' }, { status: 429, headers: CORS });
 	}

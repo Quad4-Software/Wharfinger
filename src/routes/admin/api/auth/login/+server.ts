@@ -28,7 +28,7 @@ export const POST: RequestHandler = async (event) => {
 		maxAttempts: rt.config.admin.login_max_attempts,
 		lockoutMs: rt.config.admin.login_lockout_minutes * 60_000
 	};
-	const locked = rt.protection.lockedUntil(ip, policy);
+	const locked = await rt.protection.lockedUntil(ip, policy);
 	if (locked !== null) {
 		return apiError(429, 'too many failed attempts; try again later', {
 			retry_after: Math.ceil((locked - Date.now()) / 1000)
@@ -38,13 +38,13 @@ export const POST: RequestHandler = async (event) => {
 	// rather than a hard lockout, so the legitimate owner can still
 	// sign in from a clean source.
 	if (username) {
-		const delay = rt.protection.usernameDelayMs(username, policy);
+		const delay = await rt.protection.usernameDelayMs(username, policy);
 		if (delay > 0) await new Promise((r) => setTimeout(r, delay));
 	}
 
-	const fail = () => {
-		rt.protection.record(ip, username || null, false);
-		rt.audit.log({ username: username || null, action: 'auth.login.fail', ip });
+	const fail = async () => {
+		await rt.protection.record(ip, username || null, false);
+		await rt.audit.log({ username: username || null, action: 'auth.login.fail', ip });
 		return apiError(401, GENERIC);
 	};
 
@@ -52,7 +52,7 @@ export const POST: RequestHandler = async (event) => {
 	if (honeypotTripped(body)) return fail();
 	if (!username || !password) return fail();
 
-	let row = rt.users.rowByName(username);
+	let row = await rt.users.rowByName(username);
 	if (!row || row.source === 'ldap') {
 		// LDAP path: a provisioned ldap account, or a first login that
 		// provisions on success. Local accounts never fall through here.
@@ -61,8 +61,8 @@ export const POST: RequestHandler = async (event) => {
 			return fail();
 		}
 		const ident = await ldapAuthenticate(rt.config.ldap, username, password, rt.egress);
-		if (!ident?.role || !knownRole(rt.roles, ident.role)) return fail();
-		const user = resolveExternalUser(
+		if (!ident?.role || !(await knownRole(rt.roles, ident.role))) return fail();
+		const user = await resolveExternalUser(
 			rt.users,
 			'ldap',
 			ident.dn,
@@ -72,10 +72,10 @@ export const POST: RequestHandler = async (event) => {
 			true
 		);
 		if (!user) {
-			rt.audit.log({ username, action: 'auth.login.disabled', ip });
+			await rt.audit.log({ username, action: 'auth.login.disabled', ip });
 			return fail();
 		}
-		row = rt.users.rowById(user.id);
+		row = await rt.users.rowById(user.id);
 	} else if (row.password_hash === '') {
 		// Externally provisioned account (oidc): keep the timing close
 		// to a real scrypt verify so the source is not revealed.
@@ -86,10 +86,10 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	if (!row) return fail();
-	const user = rt.users.byId(row.id);
+	const user = await rt.users.byId(row.id);
 	if (!user) return fail();
 	if (user.disabledAt !== null) {
-		rt.audit.log({ userId: user.id, username, action: 'auth.login.disabled', ip });
+		await rt.audit.log({ userId: user.id, username, action: 'auth.login.disabled', ip });
 		return fail();
 	}
 
@@ -99,20 +99,20 @@ export const POST: RequestHandler = async (event) => {
 		let ok = secret ? verifyTotp(secret, code) : false;
 		if (!ok) {
 			// Fall back to single-use backup codes.
-			ok = rt.users.consumeBackupCode(row.id, hashToken(code));
+			ok = await rt.users.consumeBackupCode(row.id, hashToken(code));
 		}
 		if (!ok) return fail();
 	}
 
-	rt.protection.record(ip, username, true);
-	rt.users.touchLogin(row.id);
-	const token = rt.sessions.create(
+	await rt.protection.record(ip, username, true);
+	await rt.users.touchLogin(row.id);
+	const token = await rt.sessions.create(
 		row.id,
 		rt.sessionTtlMs(),
 		ip,
 		event.request.headers.get('user-agent')
 	);
 	setSessionCookie(event.cookies, token, rt.sessionTtlMs(), isSecureRequest(event));
-	rt.audit.log({ userId: row.id, username, action: 'auth.login', ip });
+	await rt.audit.log({ userId: row.id, username, action: 'auth.login', ip });
 	return apiJson({ ok: true, user });
 };

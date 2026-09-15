@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { AUDIT_LOG_MAX } from '$lib/server/constants';
+import { asDb, type Db, type SqlValue } from '$lib/server/store/driver';
 
 export interface AuditEntry {
 	id: number;
@@ -44,29 +45,57 @@ export function auditRowHash(row: AuditHashRow, prevHash: string): string {
 		.digest('hex');
 }
 
-export class AuditStore {
-	constructor(private readonly db: DatabaseSync) {}
+const ENTRY_SELECT =
+	'SELECT id, user_id AS userId, username, action, detail, ip, at FROM audit_log';
 
-	log(
-		entry: {
-			userId?: number | null;
-			username?: string | null;
-			action: string;
-			detail?: string | null;
-			ip?: string | null;
-		},
-		now = Date.now()
-	): void {
-		// The head read and the insert are back-to-back synchronous calls
-		// on one connection, so two log() calls cannot interleave.
-		const head = this.db.prepare('SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1').get() as
-			{ hash: string | null } | undefined;
+interface LogEntry {
+	userId?: number | null;
+	username?: string | null;
+	action: string;
+	detail?: string | null;
+	ip?: string | null;
+}
+
+interface FilterOpts {
+	action?: string;
+	q?: string;
+	user?: string;
+}
+
+export class AuditStore {
+	private readonly db: Db;
+	// Each log() reads the chain head before writing; the mutex keeps a
+	// concurrent log() from interleaving its head read between another
+	// call's read and insert, which would fork the chain.
+	private chain: Promise<unknown> = Promise.resolve();
+
+	constructor(db: Db | DatabaseSync) {
+		this.db = asDb(db);
+	}
+
+	log(entry: LogEntry, now = Date.now()): Promise<void> {
+		// Write failures resolve rather than reject: most callers log
+		// fire-and-forget, and an unhandled rejection would take the
+		// process down over a bookkeeping row.
+		const run = this.chain
+			.then(() => this.writeEntry(entry, now))
+			.catch((err: unknown) => {
+				console.warn('[audit] failed to write entry:', err);
+			});
+		this.chain = run;
+		return run;
+	}
+
+	private async writeEntry(entry: LogEntry, now: number): Promise<void> {
+		const head = (await this.db
+			.prepare('SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1')
+			.get()) as { hash: string | null } | undefined;
 		const prevHash = head?.hash ?? AUDIT_GENESIS;
 		const userId = entry.userId ?? null;
 		const username = entry.username ?? null;
 		const detail = entry.detail ?? null;
 		const ip = entry.ip ?? null;
-		const r = this.db
+		const r = await this.db
 			.prepare(
 				'INSERT INTO audit_log (user_id, username, action, detail, ip, at, prev_hash) VALUES (?, ?, ?, ?, ?, ?, ?)'
 			)
@@ -77,7 +106,7 @@ export class AuditStore {
 			{ id, user_id: userId, username, action: entry.action, detail, ip, at: now },
 			prevHash
 		);
-		this.db.prepare('UPDATE audit_log SET hash = ? WHERE id = ?').run(hash, id);
+		await this.db.prepare('UPDATE audit_log SET hash = ? WHERE id = ?').run(hash, id);
 	}
 
 	/**
@@ -85,12 +114,12 @@ export class AuditStore {
 	 * may chain from a pruned predecessor, so only its own hash is
 	 * recomputed; every later row must also link to the row before it.
 	 */
-	verify(): { ok: boolean; rows: number; firstBadId?: number } {
-		const rows = this.db
+	async verify(): Promise<{ ok: boolean; rows: number; firstBadId?: number }> {
+		const rows = (await this.db
 			.prepare(
 				'SELECT id, user_id, username, action, detail, ip, at, prev_hash, hash FROM audit_log ORDER BY id ASC'
 			)
-			.all() as unknown as (AuditHashRow & { prev_hash: string | null; hash: string | null })[];
+			.all()) as unknown as (AuditHashRow & { prev_hash: string | null; hash: string | null })[];
 		let prev: string | null = null;
 		for (let i = 0; i < rows.length; i++) {
 			const row = rows[i];
@@ -103,105 +132,152 @@ export class AuditStore {
 		return { ok: true, rows: rows.length };
 	}
 
-	list(opts: { limit: number; offset: number; action?: string; q?: string; user?: string }): {
-		entries: AuditEntry[];
-		total: number;
-	} {
-		const { where, args } = this.filters(opts);
-		const total = (
-			this.db.prepare(`SELECT COUNT(*) AS n FROM audit_log ${where}`).get(...args) as {
-				n: number;
-			}
-		).n;
-		const entries = this.db
-			.prepare(
-				`SELECT id, user_id AS userId, username, action, detail, ip, at FROM audit_log ${where} ORDER BY at DESC LIMIT ? OFFSET ?`
-			)
-			.all(...args, opts.limit, opts.offset) as unknown as AuditEntry[];
-		return { entries, total };
+	async list(opts: {
+		limit: number;
+		offset: number;
+		action?: string;
+		q?: string;
+		user?: string;
+	}): Promise<{ entries: AuditEntry[]; total: number }> {
+		const { where, args } = filters(opts);
+		const q = needle(opts.q);
+		if (q === null) {
+			const total = (
+				(await this.db.prepare(`SELECT COUNT(*) AS n FROM audit_log ${where}`).get(...args)) as {
+					n: number;
+				}
+			).n;
+			const entries = (await this.db
+				.prepare(`${ENTRY_SELECT} ${where} ORDER BY at DESC LIMIT ? OFFSET ?`)
+				.all(...args, opts.limit, opts.offset)) as unknown as AuditEntry[];
+			return { entries, total };
+		}
+		// LIKE is outside the portable dialect; the substring search
+		// runs in memory over the rows the exact filters already bound.
+		// audit_log is capped at AUDIT_LOG_MAX rows, so the scan stays
+		// bounded.
+		const matched = (await this.filteredRows(where, args)).filter((e) => matches(e, q));
+		return {
+			entries: matched.slice(opts.offset, opts.offset + opts.limit),
+			total: matched.length
+		};
 	}
 
 	/** Same filters as list() without pagination, for export. */
-	exportRows(opts: { action?: string; q?: string; user?: string; max: number }): AuditEntry[] {
-		const { where, args } = this.filters(opts);
-		return this.db
-			.prepare(
-				`SELECT id, user_id AS userId, username, action, detail, ip, at FROM audit_log ${where} ORDER BY at DESC LIMIT ?`
-			)
-			.all(...args, opts.max) as unknown as AuditEntry[];
+	async exportRows(opts: {
+		action?: string;
+		q?: string;
+		user?: string;
+		max: number;
+	}): Promise<AuditEntry[]> {
+		const { where, args } = filters(opts);
+		const q = needle(opts.q);
+		if (q === null) {
+			return (await this.db
+				.prepare(`${ENTRY_SELECT} ${where} ORDER BY at DESC LIMIT ?`)
+				.all(...args, opts.max)) as unknown as AuditEntry[];
+		}
+		return (await this.filteredRows(where, args)).filter((e) => matches(e, q)).slice(0, opts.max);
 	}
 
-	private filters(opts: { action?: string; q?: string; user?: string }): {
-		where: string;
-		args: (string | number)[];
-	} {
-		const parts: string[] = [];
-		const args: (string | number)[] = [];
-		if (opts.action) {
-			parts.push('action = ?');
-			args.push(opts.action);
-		}
-		if (opts.user) {
-			parts.push('username = ?');
-			args.push(opts.user);
-		}
-		const q = opts.q?.trim();
-		if (q) {
-			const like = `%${q.replaceAll('%', '').replaceAll('_', '')}%`;
-			parts.push('(username LIKE ? OR detail LIKE ? OR ip LIKE ? OR action LIKE ?)');
-			args.push(like, like, like, like);
-		}
-		return { where: parts.length ? `WHERE ${parts.join(' AND ')}` : '', args };
+	private async filteredRows(where: string, args: SqlValue[]): Promise<AuditEntry[]> {
+		return (await this.db
+			.prepare(`${ENTRY_SELECT} ${where} ORDER BY at DESC`)
+			.all(...args)) as unknown as AuditEntry[];
 	}
 
 	/**
-	 * Aggregate counts for the KPI strip on the audit page. Runs one
-	 * bounded pass over the filtered set so the numbers always match the
-	 * rows the admin is looking at.
+	 * Aggregate counts for the KPI strip on the audit page. COUNT
+	 * DISTINCT and LIKE are outside the portable dialect, so the
+	 * filtered rows are tallied in memory; the log is capped at
+	 * AUDIT_LOG_MAX so the pass stays bounded.
 	 */
-	summary(opts: { action?: string; q?: string; user?: string }): {
+	async summary(opts: FilterOpts): Promise<{
 		today: number;
 		week: number;
 		actors: number;
 		failedAuth: number;
-	} {
-		const { where, args } = this.filters(opts);
+	}> {
+		const { where, args } = filters(opts);
+		const q = needle(opts.q);
+		const rows = await this.filteredRows(where, args);
 		const dayStart = new Date();
 		dayStart.setHours(0, 0, 0, 0);
+		const dayStartMs = dayStart.getTime();
 		const weekStart = Date.now() - 7 * 86_400_000;
-		const row = this.db
-			.prepare(
-				`SELECT
-					COALESCE(SUM(CASE WHEN at >= ? THEN 1 ELSE 0 END), 0) AS today,
-					COALESCE(SUM(CASE WHEN at >= ? THEN 1 ELSE 0 END), 0) AS week,
-					COUNT(DISTINCT username) AS actors,
-					COALESCE(SUM(CASE WHEN action LIKE 'auth.%' AND (
-						action LIKE '%.fail' OR action LIKE '%.denied' OR action LIKE '%.disabled'
-					) THEN 1 ELSE 0 END), 0) AS failedAuth
-				FROM audit_log ${where}`
-			)
-			.get(dayStart.getTime(), weekStart, ...args) as unknown as {
-			today: number;
-			week: number;
-			actors: number;
-			failedAuth: number;
-		};
-		return row;
+		const actors = new Set<string>();
+		let today = 0;
+		let week = 0;
+		let failedAuth = 0;
+		for (const e of rows) {
+			if (q !== null && !matches(e, q)) continue;
+			if (e.at >= dayStartMs) today++;
+			if (e.at >= weekStart) week++;
+			if (e.username !== null) actors.add(e.username);
+			if (
+				e.action.startsWith('auth.') &&
+				(e.action.endsWith('.fail') ||
+					e.action.endsWith('.denied') ||
+					e.action.endsWith('.disabled'))
+			) {
+				failedAuth++;
+			}
+		}
+		return { today, week, actors: actors.size, failedAuth };
 	}
 
-	actions(): string[] {
-		return (
-			this.db.prepare('SELECT DISTINCT action FROM audit_log ORDER BY action').all() as unknown as {
-				action: string;
-			}[]
-		).map((r) => r.action);
+	async actions(): Promise<string[]> {
+		const rows = (await this.db
+			.prepare('SELECT action FROM audit_log ORDER BY action')
+			.all()) as unknown as { action: string }[];
+		return [...new Set(rows.map((r) => r.action))];
 	}
 
-	prune(): void {
-		this.db
-			.prepare(
-				`DELETE FROM audit_log WHERE id NOT IN (SELECT id FROM audit_log ORDER BY at DESC LIMIT ?)`
-			)
-			.run(AUDIT_LOG_MAX);
+	/**
+	 * Keep only the newest AUDIT_LOG_MAX entries. The surviving ids are
+	 * selected first because the translator cannot nest a LIMIT inside
+	 * the delete's NOT IN.
+	 */
+	async prune(): Promise<void> {
+		const keep = (await this.db
+			.prepare('SELECT id FROM audit_log ORDER BY at DESC LIMIT ?')
+			.all(AUDIT_LOG_MAX)) as unknown as { id: number }[];
+		if (keep.length === 0) {
+			await this.db.prepare('DELETE FROM audit_log').run();
+			return;
+		}
+		await this.db
+			.prepare(`DELETE FROM audit_log WHERE id NOT IN (${keep.map(() => '?').join(',')})`)
+			.run(...keep.map((k) => k.id));
 	}
+}
+
+function filters(opts: FilterOpts): { where: string; args: SqlValue[] } {
+	const parts: string[] = [];
+	const args: SqlValue[] = [];
+	if (opts.action) {
+		parts.push('action = ?');
+		args.push(opts.action);
+	}
+	if (opts.user) {
+		parts.push('username = ?');
+		args.push(opts.user);
+	}
+	return { where: parts.length ? `WHERE ${parts.join(' AND ')}` : '', args };
+}
+
+/** Lowercased search needle, or null when no q filter applies. */
+function needle(q: string | undefined): string | null {
+	const t = q?.trim().toLowerCase();
+	if (!t) return null;
+	return t;
+}
+
+function matches(e: AuditEntry, q: string): boolean {
+	return (
+		e.action.toLowerCase().includes(q) ||
+		(e.username ?? '').toLowerCase().includes(q) ||
+		(e.detail ?? '').toLowerCase().includes(q) ||
+		(e.ip ?? '').toLowerCase().includes(q)
+	);
 }

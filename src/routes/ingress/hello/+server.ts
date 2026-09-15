@@ -21,7 +21,7 @@ export const POST: RequestHandler = async (event) => {
 		proof?: unknown;
 	}>(event.request, 4096);
 	const token = typeof body.token === 'string' ? body.token : null;
-	const g = gate(rt, rt.agents, token);
+	const g = await gate(rt, rt.agents, token);
 	if (g.err) return g.err;
 
 	const hasKey = body.pubkey !== undefined && body.pubkey !== null;
@@ -31,11 +31,11 @@ export const POST: RequestHandler = async (event) => {
 	let nonce: Buffer | null = null;
 	if (hasKey) {
 		nonce = g.agent.bindNonce === null ? null : Buffer.from(g.agent.bindNonce, 'base64');
-		rt.agents.clearBindNonce(g.agent.id);
+		await rt.agents.clearBindNonce(g.agent.id);
 	}
 
 	const fp = typeof body.fingerprint === 'string' ? body.fingerprint.slice(0, 128) : '';
-	const check = rt.agents.checkFingerprint(g.agent, fp);
+	const check = await rt.agents.checkFingerprint(g.agent, fp);
 	if (check === 'mismatch') {
 		return apiError(403, 'fingerprint mismatch: this token is bound to another machine');
 	}
@@ -59,7 +59,7 @@ export const POST: RequestHandler = async (event) => {
 	if (!verifyAgentSig(pubRaw, nonce, body.proof)) {
 		return apiError(403, 'invalid key proof');
 	}
-	const keyCheck = rt.agents.checkPubkey(g.agent, pubB64);
+	const keyCheck = await rt.agents.checkPubkey(g.agent, pubB64);
 	if (keyCheck === 'mismatch') {
 		return apiError(403, 'agent key mismatch: this token is bound to another key');
 	}

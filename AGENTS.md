@@ -18,7 +18,7 @@ deploy-pipeline, safe-breakdown, security-audit, ui-standards), and
 
 ## Structure
 
-- `src/lib/server/` config (TOML+valibot), monitor (checkers, scheduler, flap protection), store (node:sqlite), status (snapshot builder), sse, http helpers
+- `src/lib/server/` config (TOML+valibot), monitor (checkers, scheduler, flap protection), store (async `Db` driver: node:sqlite default, SurrealDB optional via `[storage]`; see .agents/references/storage.md), status (snapshot builder), sse, http helpers
 - `src/lib/server/admin/` authn/z (scrypt, TOTP, sessions, invites, lockout, audit), config section actions, http helpers
 - `src/lib/server/config/` schema + load (TOML base) + store/effective (sqlite section overrides merged over the file)
 - `src/lib/server/notify/` dispatcher + senders (ntfy, unifiedpush, webhook) + delivery log
@@ -90,4 +90,7 @@ deploy-pipeline, safe-breakdown, security-audit, ui-standards), and
   carry the payload as a JSON string so the bridge can forward the
   exact bytes the proof covers
 - sqlite writes assume concurrent connections; openDb sets
-  busy_timeout and multi-statement writes wrap BEGIN IMMEDIATE
+  busy_timeout and multi-statement writes go through db.tx (BEGIN
+  IMMEDIATE on sqlite, interactive txn on surreal). Stores never see
+  DatabaseSync; statements stay in the portable subset in
+  .agents/references/storage.md

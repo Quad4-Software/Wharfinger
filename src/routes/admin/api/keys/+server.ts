@@ -13,10 +13,10 @@ import {
 // Automation API key management. The raw token is returned exactly
 // once at creation; only its sha256 hash is stored.
 
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	const rt = getRuntime();
 	requirePerm(event, 'admin.settings');
-	return apiJson({ keys: rt.apiKeys.list() });
+	return apiJson({ keys: await rt.apiKeys.list() });
 };
 
 export const POST: RequestHandler = async (event) => {
@@ -29,18 +29,18 @@ export const POST: RequestHandler = async (event) => {
 		.filter((s): s is 'read' | 'write' => s === 'read' || s === 'write')
 		.filter((s, i, a) => a.indexOf(s) === i);
 	if (scopes.length === 0) return apiError(422, 'scopes must include read and/or write');
-	const { key, token } = rt.apiKeys.create(name, scopes, user.username);
-	audit(rt, event, 'apikeys.create', `${name} (${scopes.join('+')})`);
+	const { key, token } = await rt.apiKeys.create(name, scopes, user.username);
+	await audit(rt, event, 'apikeys.create', `${name} (${scopes.join('+')})`);
 	return apiJson({ key, token }, 201);
 };
 
-export const DELETE: RequestHandler = (event) => {
+export const DELETE: RequestHandler = async (event) => {
 	const rt = getRuntime();
 	requirePerm(event, 'admin.settings');
 	const id = Number(event.url.searchParams.get('id'));
 	if (!Number.isInteger(id) || id <= 0) return apiError(422, 'id is required');
-	if (!rt.apiKeys.remove(id)) return apiError(404, 'key not found');
-	audit(rt, event, 'apikeys.delete', `key ${id}`);
+	if (!(await rt.apiKeys.remove(id))) return apiError(404, 'key not found');
+	await audit(rt, event, 'apikeys.delete', `key ${id}`);
 	return apiJson({ ok: true });
 };
 
@@ -51,7 +51,7 @@ export const PATCH: RequestHandler = async (event) => {
 	const id = Number(body.id);
 	if (!Number.isInteger(id) || id <= 0) return apiError(422, 'id is required');
 	if (typeof body.disabled !== 'boolean') return apiError(422, 'disabled must be a boolean');
-	if (!rt.apiKeys.setDisabled(id, body.disabled)) return apiError(404, 'key not found');
-	audit(rt, event, 'apikeys.toggle', `key ${id} disabled=${String(body.disabled)}`);
+	if (!(await rt.apiKeys.setDisabled(id, body.disabled))) return apiError(404, 'key not found');
+	await audit(rt, event, 'apikeys.toggle', `key ${id} disabled=${String(body.disabled)}`);
 	return apiJson({ ok: true });
 };

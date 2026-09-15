@@ -4,13 +4,13 @@ import type { DeployApp, DeploySpec, Healthcheck } from '$lib/shared/deploy';
 import { DeployError } from './store';
 import type { Job } from '$lib/shared/jobs';
 
-function buildSpec(
+async function buildSpec(
 	rt: Runtime,
 	app: DeployApp,
 	releaseId: string,
 	rollbackOf?: string
-): DeploySpec {
-	const live = rt.deploys.liveRelease(app.id);
+): Promise<DeploySpec> {
+	const live = await rt.deploys.liveRelease(app.id);
 	// Static apps publish files, not containers: ports and
 	// healthchecks are meaningless and must not leak into the spec.
 	const isStatic = app.source.kind === 'static';
@@ -69,16 +69,16 @@ function buildSpec(
  * deploy claim goes to 'unknown' for reconciliation rather than
  * blindly re-running a possibly-half-applied deploy.
  */
-export function triggerDeploy(
+export async function triggerDeploy(
 	rt: Runtime,
 	app: DeployApp,
 	opts: { rollbackTo?: string; jobKey?: string } = {}
-): { job: Job; releaseId: string | null; deduped: boolean } {
+): Promise<{ job: Job; releaseId: string | null; deduped: boolean }> {
 	let spec: DeploySpec;
 	let releaseId: string;
 
 	if (opts.rollbackTo) {
-		const frozen = rt.deploys.releaseSpec(opts.rollbackTo);
+		const frozen = await rt.deploys.releaseSpec(opts.rollbackTo);
 		if (!frozen) throw new DeployError(404, 'target release not found');
 		const prior = JSON.parse(frozen) as DeploySpec;
 		if (prior.appId !== app.id) throw new DeployError(422, 'release belongs to another app');
@@ -91,24 +91,24 @@ export function triggerDeploy(
 		};
 	} else {
 		releaseId = `rel_${randomBytes(9).toString('base64url')}`;
-		spec = buildSpec(rt, app, releaseId);
+		spec = await buildSpec(rt, app, releaseId);
 	}
 	if (opts.jobKey) spec.jobKey = opts.jobKey;
 
 	// Delivery dedupe: a repeated webhook for the same push must not
 	// mint a second release + job.
-	const existing = rt.jobs.byKey(spec.jobKey);
+	const existing = await rt.jobs.byKey(spec.jobKey);
 	if (existing) return { job: existing, releaseId: null, deduped: true };
 
-	const release = rt.deploys.createRelease(app.id, JSON.stringify(spec), null, releaseId);
-	const { job } = rt.jobs.enqueue({
+	const release = await rt.deploys.createRelease(app.id, JSON.stringify(spec), null, releaseId);
+	const { job } = await rt.jobs.enqueue({
 		kind: 'deploy',
 		target: app.agentId,
 		spec,
 		jobKey: spec.jobKey,
 		maxAttempts: 1
 	});
-	rt.deploys.linkJob(release.id, job.id);
+	await rt.deploys.linkJob(release.id, job.id);
 	return { job, releaseId: release.id, deduped: false };
 }
 
@@ -116,8 +116,8 @@ export function triggerDeploy(
  * Map a finished deploy job onto its release record. Called from the
  * job lifecycle route after a terminal transition.
  */
-export function settleDeployJob(rt: Runtime, jobId: number): void {
-	const job = rt.jobs.get(jobId);
+export async function settleDeployJob(rt: Runtime, jobId: number): Promise<void> {
+	const job = await rt.jobs.get(jobId);
 	if (job?.kind !== 'deploy' || !job.result) return;
 	let releaseId: string | undefined;
 	try {
@@ -132,7 +132,8 @@ export function settleDeployJob(rt: Runtime, jobId: number): void {
 		container?: string;
 	};
 	const meta = { commit: result.commit, image: result.image };
-	if (job.status === 'succeeded') rt.deploys.markLive(releaseId, meta);
-	else if (job.status === 'rolled_back') rt.deploys.markRelease(releaseId, 'rolled_back', meta);
-	else if (job.status === 'failed') rt.deploys.markRelease(releaseId, 'failed', meta);
+	if (job.status === 'succeeded') await rt.deploys.markLive(releaseId, meta);
+	else if (job.status === 'rolled_back')
+		await rt.deploys.markRelease(releaseId, 'rolled_back', meta);
+	else if (job.status === 'failed') await rt.deploys.markRelease(releaseId, 'failed', meta);
 }

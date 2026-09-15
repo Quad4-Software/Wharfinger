@@ -37,8 +37,8 @@ export const PUT: RequestHandler = async (event) => {
 	}
 
 	try {
-		const set = getSecretStore(rt.db).put(id, patch);
-		audit(rt, event, 'secrets.update', `id=${id} keys=${set.keys.length}`);
+		const set = await getSecretStore(rt.db).put(id, patch);
+		await audit(rt, event, 'secrets.update', `id=${id} keys=${set.keys.length}`);
 		return apiJson({ ok: true, set });
 	} catch (err) {
 		if (err instanceof SecretError) return apiError(err.status, err.message);
@@ -46,11 +46,11 @@ export const PUT: RequestHandler = async (event) => {
 	}
 };
 
-export const DELETE: RequestHandler = (event) => {
+export const DELETE: RequestHandler = async (event) => {
 	requirePerm(event, 'secrets.manage');
 	const rt = getRuntime();
 	const id = event.params.id;
-	if (!getSecretStore(rt.db).remove(id)) return apiError(404, 'secret set not found');
-	audit(rt, event, 'secrets.delete', `id=${id}`);
+	if (!(await getSecretStore(rt.db).remove(id))) return apiError(404, 'secret set not found');
+	await audit(rt, event, 'secrets.delete', `id=${id}`);
 	return apiJson({ ok: true });
 };

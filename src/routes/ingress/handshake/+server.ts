@@ -17,14 +17,14 @@ export const POST: RequestHandler = async (event) => {
 	const rt = getRuntime();
 	const body = await readJson<{ token?: unknown }>(event.request, 4096);
 	const token = typeof body.token === 'string' ? body.token : null;
-	const g = gate(rt, rt.agents, token);
+	const g = await gate(rt, rt.agents, token);
 	if (g.err) return g.err;
 	const nonce = randomBytes(32).toString('base64');
-	rt.agents.setBindNonce(g.agent.id, nonce);
+	await rt.agents.setBindNonce(g.agent.id, nonce);
 	return apiJson({
 		ok: true,
-		signature: signToken(rt.db, token ?? ''),
-		pub: publicKeyB64(rt.db),
+		signature: await signToken(rt.db, token ?? ''),
+		pub: await publicKeyB64(rt.db),
 		nonce
 	});
 };

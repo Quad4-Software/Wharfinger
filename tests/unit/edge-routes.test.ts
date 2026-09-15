@@ -52,35 +52,35 @@ function event(path: string, headers: Record<string, string> = {}): RequestEvent
 
 const GIT = { kind: 'git', url: 'https://git.example.com/org/app.git', ref: 'main' } as const;
 
-function liveApp(
+async function liveApp(
 	name: string,
 	opts: { domains?: string[]; agentId?: string; source?: unknown; port?: number } = {}
 ) {
-	const { app } = ref.rt.deploys.createApp({
+	const { app } = await ref.rt.deploys.createApp({
 		name,
 		agentId: opts.agentId ?? 'agent-1',
 		source: (opts.source ?? GIT) as never,
 		domains: opts.domains ?? [`${name}.example.com`],
 		healthcheck: { kind: 'http', port: opts.port ?? 8080 }
 	});
-	const { releaseId } = triggerDeploy(ref.rt, app);
-	ref.rt.deploys.markLive(releaseId!);
+	const { releaseId } = await triggerDeploy(ref.rt, app);
+	await ref.rt.deploys.markLive(releaseId!);
 	return { app, releaseId: releaseId! };
 }
 
 describe('buildRouteTable', () => {
-	it('returns an empty table for an agent with no apps', () => {
-		const table = buildRouteTable(ref.rt.db, 'agent-none');
+	it('returns an empty table for an agent with no apps', async () => {
+		const table = await buildRouteTable(ref.rt.db, 'agent-none');
 		expect(table.routes).toEqual([]);
 		expect(table.version).toBeGreaterThanOrEqual(0);
 	});
 
-	it('routes each domain to the published host-port upstream', () => {
-		const { app } = liveApp('webapp', {
+	it('routes each domain to the published host-port upstream', async () => {
+		const { app } = await liveApp('webapp', {
 			domains: ['web.example.com', 'www.example.com'],
 			port: 8080
 		});
-		const table = buildRouteTable(ref.rt.db, 'agent-1');
+		const table = await buildRouteTable(ref.rt.db, 'agent-1');
 		const mine = table.routes.filter((r) => r.appId === app.id);
 		expect(mine).toHaveLength(2);
 		for (const r of mine) {
@@ -94,72 +94,72 @@ describe('buildRouteTable', () => {
 		expect(mine.map((r) => r.host)).toEqual(['web.example.com', 'www.example.com']);
 	});
 
-	it('skips apps with no live release and apps with no domains', () => {
-		const pending = ref.rt.deploys.createApp({
+	it('skips apps with no live release and apps with no domains', async () => {
+		const pending = await ref.rt.deploys.createApp({
 			name: 'pendingapp',
 			agentId: 'agent-1',
 			source: GIT,
 			domains: ['pending.example.com'],
 			healthcheck: { kind: 'http', port: 8080 }
 		});
-		ref.rt.deploys.createApp({
+		await ref.rt.deploys.createApp({
 			name: 'nodomains',
 			agentId: 'agent-1',
 			source: GIT,
 			domains: [],
 			healthcheck: { kind: 'http', port: 8080 }
 		});
-		const table = buildRouteTable(ref.rt.db, 'agent-1');
+		const table = await buildRouteTable(ref.rt.db, 'agent-1');
 		expect(table.routes.some((r) => r.appId === pending.app.id)).toBe(false);
 		expect(table.routes.some((r) => r.host === 'pending.example.com')).toBe(false);
 	});
 
-	it('serves static apps from staticRoot instead of an upstream', () => {
-		const { app } = liveApp('staticapp', {
+	it('serves static apps from staticRoot instead of an upstream', async () => {
+		const { app } = await liveApp('staticapp', {
 			source: { kind: 'static', subdir: 'dist' },
 			domains: ['static.example.com']
 		});
-		const table = buildRouteTable(ref.rt.db, 'agent-1');
+		const table = await buildRouteTable(ref.rt.db, 'agent-1');
 		const route = table.routes.find((r) => r.appId === app.id);
 		expect(route?.staticRoot).toBe(`src/${app.id}/dist`);
 		expect(route?.upstream).toBeUndefined();
 	});
 
-	it('does not leak apps bound to another agent', () => {
-		liveApp('otherapp', { agentId: 'agent-2', domains: ['other.example.com'] });
-		const table = buildRouteTable(ref.rt.db, 'agent-1');
+	it('does not leak apps bound to another agent', async () => {
+		await liveApp('otherapp', { agentId: 'agent-2', domains: ['other.example.com'] });
+		const table = await buildRouteTable(ref.rt.db, 'agent-1');
 		expect(table.routes.some((r) => r.host === 'other.example.com')).toBe(false);
 	});
 
-	it('bumps the version when a domain-having app is deleted', () => {
-		const { app } = liveApp('goneapp', { domains: ['gone.example.com'] });
-		const before = buildRouteTable(ref.rt.db, 'agent-1').version;
-		ref.rt.deploys.deleteApp(app.id);
-		const after = buildRouteTable(ref.rt.db, 'agent-1');
+	it('bumps the version when a domain-having app is deleted', async () => {
+		const { app } = await liveApp('goneapp', { domains: ['gone.example.com'] });
+		const before = (await buildRouteTable(ref.rt.db, 'agent-1')).version;
+		await ref.rt.deploys.deleteApp(app.id);
+		const after = await buildRouteTable(ref.rt.db, 'agent-1');
 		expect(after.version).not.toBe(before);
 		expect(after.routes.some((r) => r.host === 'gone.example.com')).toBe(false);
 	});
 
-	it('regenerates routes when a domain edit lands through updateApp', () => {
-		const { app } = liveApp('renamed', { domains: ['old.example.com'] });
-		const before = routeTable(ref.rt.db, 'agent-1');
+	it('regenerates routes when a domain edit lands through updateApp', async () => {
+		const { app } = await liveApp('renamed', { domains: ['old.example.com'] });
+		const before = await routeTable(ref.rt.db, 'agent-1');
 		expect(before.routes.some((r) => r.host === 'old.example.com')).toBe(true);
-		ref.rt.deploys.updateApp(app.id, {
+		await ref.rt.deploys.updateApp(app.id, {
 			domains: ['new-name.example.com'],
 			expectedUpdatedAt: app.updatedAt
 		});
-		const after = routeTable(ref.rt.db, 'agent-1');
+		const after = await routeTable(ref.rt.db, 'agent-1');
 		expect(after.version).not.toBe(before.version);
 		expect(after.routes.some((r) => r.host === 'old.example.com')).toBe(false);
 		expect(after.routes.some((r) => r.host === 'new-name.example.com')).toBe(true);
 	});
 
-	it('memoizes per db+agent and rebuilds on change', () => {
-		const t1 = routeTable(ref.rt.db, 'agent-1');
-		const t2 = routeTable(ref.rt.db, 'agent-1');
+	it('memoizes per db+agent and rebuilds on change', async () => {
+		const t1 = await routeTable(ref.rt.db, 'agent-1');
+		const t2 = await routeTable(ref.rt.db, 'agent-1');
 		expect(t2).toBe(t1); // same object: stamp unchanged
-		liveApp('newapp', { domains: ['new.example.com'] });
-		const t3 = routeTable(ref.rt.db, 'agent-1');
+		await liveApp('newapp', { domains: ['new.example.com'] });
+		const t3 = await routeTable(ref.rt.db, 'agent-1');
 		expect(t3).not.toBe(t1);
 		expect(t3.routes.some((r) => r.host === 'new.example.com')).toBe(true);
 	});

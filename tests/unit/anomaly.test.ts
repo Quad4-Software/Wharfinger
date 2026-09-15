@@ -25,13 +25,22 @@ function freshDb(): DatabaseSync {
 
 // Seed a settled baseline of constant v so the next point can be
 // scored against enough history to clear the min-samples gate.
-function seedBaseline(e: AnomalyEngine, metric: string, v: number, n = ANOMALY_MIN_SAMPLES): void {
-	for (let i = 0; i < n; i++) e.observe(metric, v, 1_000_000 + i);
+async function seedBaseline(
+	e: AnomalyEngine,
+	metric: string,
+	v: number,
+	n = ANOMALY_MIN_SAMPLES
+): Promise<void> {
+	for (let i = 0; i < n; i++) await e.observe(metric, v, 1_000_000 + i);
 }
 
-function forceAlert(e: AnomalyEngine, metric = 'test.metric', ts = Date.now()): AnomalyRow {
-	seedBaseline(e, metric, 5);
-	const a = e.observe(metric, 5000, ts, { note: 'spike' });
+async function forceAlert(
+	e: AnomalyEngine,
+	metric = 'test.metric',
+	ts = Date.now()
+): Promise<AnomalyRow> {
+	await seedBaseline(e, metric, 5);
+	const a = await e.observe(metric, 5000, ts, { note: 'spike' });
 	expect(a).not.toBeNull();
 	return a!;
 }
@@ -75,99 +84,99 @@ describe('zScore and classify', () => {
 });
 
 describe('AnomalyEngine.observe', () => {
-	it('stays quiet while the baseline is young, then flags a spike', () => {
+	it('stays quiet while the baseline is young, then flags a spike', async () => {
 		const e = new AnomalyEngine(freshDb());
 		for (let i = 0; i < ANOMALY_MIN_SAMPLES - 1; i++) {
-			expect(e.observe('m.young', 1000 * i, i)).toBeNull();
+			expect(await e.observe('m.young', 1000 * i, i)).toBeNull();
 		}
-		seedBaseline(e, 'm.settled', 5);
-		const a = e.observe('m.settled', 5000);
+		await seedBaseline(e, 'm.settled', 5);
+		const a = await e.observe('m.settled', 5000);
 		expect(a?.severity).toBe('alert');
 		expect(a?.expected).toBeCloseTo(5, 0);
 		expect(a?.detail).toBeNull();
 	});
 
-	it('rejects bad metric names and non-finite values', () => {
+	it('rejects bad metric names and non-finite values', async () => {
 		const e = new AnomalyEngine(freshDb());
-		expect(e.observe('bad name!', 1)).toBeNull();
-		expect(e.observe('x'.repeat(200), 1)).toBeNull();
-		expect(e.observe('ok.metric', Number.NaN)).toBeNull();
-		expect(e.observe('ok.metric', Number.POSITIVE_INFINITY)).toBeNull();
-		expect(e.metrics()).toHaveLength(0);
+		expect(await e.observe('bad name!', 1)).toBeNull();
+		expect(await e.observe('x'.repeat(200), 1)).toBeNull();
+		expect(await e.observe('ok.metric', Number.NaN)).toBeNull();
+		expect(await e.observe('ok.metric', Number.POSITIVE_INFINITY)).toBeNull();
+		expect(await e.metrics()).toHaveLength(0);
 	});
 
-	it('bounds detail JSON at 4KB', () => {
+	it('bounds detail JSON at 4KB', async () => {
 		const e = new AnomalyEngine(freshDb());
-		const a = forceAlert(e, 'm.detail');
-		const big = e.observe('m.detail', 9000, Date.now() + 1, { pad: 'x'.repeat(10 * 1024) });
+		const a = await forceAlert(e, 'm.detail');
+		const big = await e.observe('m.detail', 9000, Date.now() + 1, { pad: 'x'.repeat(10 * 1024) });
 		expect(big?.detail?.length).toBeLessThanOrEqual(4096);
 		expect(a.id).toBeGreaterThan(0);
 	});
 });
 
 describe('AnomalyEngine.ack', () => {
-	it('acks once, stays idempotent, and records the actor', () => {
+	it('acks once, stays idempotent, and records the actor', async () => {
 		const e = new AnomalyEngine(freshDb());
-		const a = forceAlert(e);
-		const acked = e.ack(a.id, 'alice');
+		const a = await forceAlert(e);
+		const acked = await e.ack(a.id, 'alice');
 		expect(acked?.ackedBy).toBe('alice');
 		expect(acked?.ackedAt).toBeTypeOf('number');
-		const again = e.ack(a.id, 'bob');
+		const again = await e.ack(a.id, 'bob');
 		expect(again?.ackedBy).toBe('alice');
-		expect(e.ack(999999, 'alice')).toBeNull();
-		expect(e.ack(-1, 'alice')).toBeNull();
+		expect(await e.ack(999999, 'alice')).toBeNull();
+		expect(await e.ack(-1, 'alice')).toBeNull();
 	});
 });
 
 describe('AnomalyEngine alert suppression', () => {
-	it('rate-limits repeat alerts per metric for 30 minutes', () => {
+	it('rate-limits repeat alerts per metric for 30 minutes', async () => {
 		const e = new AnomalyEngine(freshDb());
 		const sent: AnomalyRow[] = [];
 		e.alerter = (a) => sent.push(a);
 		const t0 = 10_000_000;
-		forceAlert(e, 'm.sup', t0);
-		forceAlert(e, 'm.sup', t0 + 60_000);
+		await forceAlert(e, 'm.sup', t0);
+		await forceAlert(e, 'm.sup', t0 + 60_000);
 		expect(sent).toHaveLength(1);
-		forceAlert(e, 'm.sup', t0 + ANOMALY_ALERT_COOLDOWN_MS + 1);
+		await forceAlert(e, 'm.sup', t0 + ANOMALY_ALERT_COOLDOWN_MS + 1);
 		expect(sent).toHaveLength(2);
 	});
 
-	it('does not notify on warn severity', () => {
+	it('does not notify on warn severity', async () => {
 		const e = new AnomalyEngine(freshDb());
 		const sent: AnomalyRow[] = [];
 		e.alerter = (a) => sent.push(a);
-		seedBaseline(e, 'm.warn', 5);
+		await seedBaseline(e, 'm.warn', 5);
 		// Flat baseline: sd floors at sqrt(epsilon)=0.1, so 5.35 scores
 		// z=3.5, warn but below the alert line the hook fires on.
-		const w = e.observe('m.warn', 5.35);
+		const w = await e.observe('m.warn', 5.35);
 		expect(w?.severity).toBe('warn');
 		expect(sent).toHaveLength(0);
 	});
 });
 
 describe('AnomalyEngine.list and summary', () => {
-	it('filters and paginates by cursor', () => {
+	it('filters and paginates by cursor', async () => {
 		const e = new AnomalyEngine(freshDb());
-		for (let i = 0; i < 5; i++) forceAlert(e, `m.${i}`, 5000 + i);
-		const page1 = e.list({ limit: 2 });
+		for (let i = 0; i < 5; i++) await forceAlert(e, `m.${i}`, 5000 + i);
+		const page1 = await e.list({ limit: 2 });
 		expect(page1.entries).toHaveLength(2);
 		expect(page1.nextCursor).not.toBeNull();
-		const page2 = e.list({ limit: 2, cursor: page1.nextCursor! });
+		const page2 = await e.list({ limit: 2, cursor: page1.nextCursor! });
 		expect(page2.entries[0].id).toBeLessThan(page1.entries[1].id);
-		expect(e.list({ severity: 'warn' }).entries).toHaveLength(0);
-		expect(e.list({ metric: 'm.3' }).entries).toHaveLength(1);
-		expect(e.list({ status: 'open' }).entries).toHaveLength(5);
-		const first = e.list({ limit: 1 }).entries[0];
-		e.ack(first.id, 'root');
-		expect(e.list({ status: 'acked' }).entries).toHaveLength(1);
-		expect(e.list({ status: 'open' }).entries).toHaveLength(4);
+		expect((await e.list({ severity: 'warn' })).entries).toHaveLength(0);
+		expect((await e.list({ metric: 'm.3' })).entries).toHaveLength(1);
+		expect((await e.list({ status: 'open' })).entries).toHaveLength(5);
+		const first = (await e.list({ limit: 1 })).entries[0];
+		await e.ack(first.id, 'root');
+		expect((await e.list({ status: 'acked' })).entries).toHaveLength(1);
+		expect((await e.list({ status: 'open' })).entries).toHaveLength(4);
 	});
 
-	it('summarizes open alerts, recent warns, and tracked metrics', () => {
+	it('summarizes open alerts, recent warns, and tracked metrics', async () => {
 		const e = new AnomalyEngine(freshDb());
-		forceAlert(e, 'm.s1');
-		forceAlert(e, 'm.s2');
-		const s = e.summary();
+		await forceAlert(e, 'm.s1');
+		await forceAlert(e, 'm.s2');
+		const s = await e.summary();
 		expect(s.openAlerts).toBe(2);
 		expect(s.metricsTracked).toBe(2);
 		expect(s.lastAnomalyAt).toBeTypeOf('number');
@@ -175,7 +184,7 @@ describe('AnomalyEngine.list and summary', () => {
 });
 
 describe('AnomalyEngine collectors', () => {
-	it('counts auth failures, deploys, flaps, config churn, and agent drift', () => {
+	it('counts auth failures, deploys, flaps, config churn, and agent drift', async () => {
 		const db = freshDb();
 		const now = Date.now();
 		// 3 auth failures inside the tick window, 1 outside it.
@@ -211,8 +220,8 @@ describe('AnomalyEngine collectors', () => {
 		smp.run('ag_t1', now - 120_000, 10, 0.5);
 
 		const e = new AnomalyEngine(db);
-		e.collect(now);
-		const stats = Object.fromEntries(e.metrics().map((m) => [m.metric, m]));
+		await e.collect(now);
+		const stats = Object.fromEntries((await e.metrics()).map((m) => [m.metric, m]));
 		expect(stats['auth.failures_per_min'].mean).toBe(3);
 		expect(stats['deploy.per_hour'].mean).toBe(2);
 		expect(stats['service.flaps_per_hour'].mean).toBe(2);
@@ -221,17 +230,15 @@ describe('AnomalyEngine collectors', () => {
 		expect(stats['agent.ag_t1.load1'].mean).toBe(1.5);
 
 		// Second tick: the stale audit row stays out of the window.
-		e.collect(now + 60_000);
-		const after = Object.fromEntries(e.metrics().map((m) => [m.metric, m]));
+		await e.collect(now + 60_000);
+		const after = Object.fromEntries((await e.metrics()).map((m) => [m.metric, m]));
 		expect(after['auth.failures_per_min'].n).toBe(2);
 	});
 
-	it('is a no-op on empty source tables', () => {
+	it('is a no-op on empty source tables', async () => {
 		const e = new AnomalyEngine(freshDb());
-		expect(() => {
-			e.collect();
-		}).not.toThrow();
-		expect(e.metrics().length).toBeGreaterThan(0);
+		await e.collect();
+		expect((await e.metrics()).length).toBeGreaterThan(0);
 	});
 });
 
@@ -249,12 +256,12 @@ describe('AnomalyEngine lifecycle', () => {
 		expect(getEngine(db)).toBe(getEngine(db));
 	});
 
-	it('prune drops old anomalies', () => {
+	it('prune drops old anomalies', async () => {
 		const e = new AnomalyEngine(freshDb());
-		forceAlert(e, 'm.old', Date.now() - 40 * 86_400_000);
-		forceAlert(e, 'm.new');
-		expect(e.prune(30)).toBe(1);
-		expect(e.list().entries).toHaveLength(1);
+		await forceAlert(e, 'm.old', Date.now() - 40 * 86_400_000);
+		await forceAlert(e, 'm.new');
+		expect(await e.prune(30)).toBe(1);
+		expect((await e.list()).entries).toHaveLength(1);
 	});
 });
 
@@ -339,7 +346,7 @@ describe('anomaly api routes', () => {
 
 	it('lists anomalies with summary and honors hostile params safely', async () => {
 		const e = setup();
-		forceAlert(e, 'm.route');
+		await forceAlert(e, 'm.route');
 		const res = await listAnomalies(
 			routeEvent('/admin/api/anomalies?severity=bogus&limit=99999&cursor=-4', viewer) as never
 		);
@@ -353,7 +360,7 @@ describe('anomaly api routes', () => {
 
 	it('acks an anomaly, audits it, and 404s on unknown ids', async () => {
 		const e = setup();
-		const a = forceAlert(e, 'm.ackme');
+		const a = await forceAlert(e, 'm.ackme');
 		const res = await ackAnomaly(
 			routeEvent(`/admin/api/anomalies/${a.id}/ack`, viewer, ['anomaly.view'], {
 				id: String(a.id)

@@ -8,10 +8,10 @@ import { rotateHubKey } from '$lib/server/ingress/keys';
 // key automatically on their next handshake failure; agents pinned to
 // anything older need a manual re-pin. Push tokens are unaffected:
 // they derive from a separate stable secret.
-export const POST: RequestHandler = (event) => {
+export const POST: RequestHandler = async (event) => {
 	requirePerm(event, 'agents.manage');
 	const rt = getRuntime();
-	const info = rotateHubKey(rt.db);
-	audit(rt, event, 'agents.rotate_hub_key', `pub=${info.pub.slice(0, 16)}...`);
+	const info = await rotateHubKey(rt.db);
+	await audit(rt, event, 'agents.rotate_hub_key', `pub=${info.pub.slice(0, 16)}...`);
 	return apiJson(info);
 };

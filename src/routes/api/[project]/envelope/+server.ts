@@ -21,11 +21,14 @@ const err = (status: number, message: string) =>
 
 // A new release string is a deploy: drop a chart marker the first
 // time each value shows up so latency/uptime graphs get the line.
-function markRelease(rt: ReturnType<typeof getRuntime>, release: string | null): void {
+async function markRelease(
+	rt: ReturnType<typeof getRuntime>,
+	release: string | null
+): Promise<void> {
 	if (!release) return;
 	const title = `release ${release}`.slice(0, 256);
-	if (rt.markers.exists(title, 0)) return;
-	rt.markers.add({ title, kind: 'release', source: 'telemetry' });
+	if (await rt.markers.exists(title, 0)) return;
+	await rt.markers.add({ title, kind: 'release', source: 'telemetry' });
 }
 
 // Sentry envelope ingest: /api/<projectId>/envelope/
@@ -34,7 +37,11 @@ export const OPTIONS: RequestHandler = () => new Response(null, { status: 204, h
 
 export const POST: RequestHandler = async (event) => {
 	const rt = getRuntime();
-	const project = resolveProject(rt.telemetry, event.params.project, sentryKey(event.request));
+	const project = await resolveProject(
+		rt.telemetry,
+		event.params.project,
+		sentryKey(event.request)
+	);
 	if (!project) return err(401, 'invalid DSN key or project');
 
 	const len = Number(event.request.headers.get('content-length') ?? 0);
@@ -50,13 +57,13 @@ export const POST: RequestHandler = async (event) => {
 	if (item.kind === 'transaction') {
 		const t = normalizeTransaction(item.transaction);
 		if (!t) return err(422, 'invalid transaction payload');
-		rt.telemetry.recordTrace({ projectId: project.id, ...t });
-		markRelease(rt, t.release);
+		await rt.telemetry.recordTrace({ projectId: project.id, ...t });
+		await markRelease(rt, t.release);
 		return json({ id: t.traceId }, { headers: CORS });
 	}
 
 	const e = normalizeEvent(item.event);
-	rt.telemetry.record({
+	await rt.telemetry.record({
 		projectId: project.id,
 		fingerprint: e.fingerprint,
 		title: e.title,
@@ -75,6 +82,6 @@ export const POST: RequestHandler = async (event) => {
 		stack: e.stack,
 		raw: e.raw
 	});
-	markRelease(rt, e.release);
+	await markRelease(rt, e.release);
 	return json({ id: e.eventId }, { headers: CORS });
 };

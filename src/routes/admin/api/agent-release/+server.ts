@@ -7,10 +7,13 @@ import { apiError, apiJson, audit, requirePerm } from '$lib/server/admin/http';
 // binary as the body with ?name= and ?version=; sha256 is computed
 // server-side so the manifest never trusts a client-supplied digest.
 
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	requirePerm(event, 'agents.manage');
 	const rt = getRuntime();
-	return apiJson({ manifest: rt.agentReleases.manifest(), files: rt.agentReleases.list() });
+	return apiJson({
+		manifest: await rt.agentReleases.manifest(),
+		files: await rt.agentReleases.list()
+	});
 };
 
 export const POST: RequestHandler = async (event) => {
@@ -25,17 +28,17 @@ export const POST: RequestHandler = async (event) => {
 	const body = new Uint8Array(await event.request.arrayBuffer());
 	if (body.length === 0) return apiError(422, 'empty body');
 	if (body.length > RELEASE_FILE_MAX_BYTES) return apiError(413, 'file too large');
-	const row = rt.agentReleases.put(name, version, body);
-	audit(rt, event, 'agent.release.upload', `${name} ${version} (${row.size} bytes)`);
+	const row = await rt.agentReleases.put(name, version, body);
+	await audit(rt, event, 'agent.release.upload', `${name} ${version} (${row.size} bytes)`);
 	return apiJson(row);
 };
 
-export const DELETE: RequestHandler = (event) => {
+export const DELETE: RequestHandler = async (event) => {
 	requirePerm(event, 'agents.manage');
 	const rt = getRuntime();
 	const name = event.url.searchParams.get('name') ?? '';
 	if (!AgentReleaseStore.validName(name)) return apiError(422, 'invalid file name');
-	if (!rt.agentReleases.remove(name)) return apiError(404, 'unknown file');
-	audit(rt, event, 'agent.release.delete', name);
+	if (!(await rt.agentReleases.remove(name))) return apiError(404, 'unknown file');
+	await audit(rt, event, 'agent.release.delete', name);
 	return apiJson({ ok: true });
 };

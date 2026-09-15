@@ -20,40 +20,40 @@ export const POST: RequestHandler = async (event) => {
 	const action = body.action as (typeof ACTIONS)[number];
 	if (!ACTIONS.includes(action)) return apiError(422, 'action must be apply or dismiss');
 
-	const rec = scans.rec(event.params.id);
+	const rec = await scans.rec(event.params.id);
 	if (!rec) return apiError(404, 'recommendation not found');
 	if (rec.status !== 'open') return apiError(409, `recommendation is ${rec.status}`);
 
 	if (action === 'dismiss') {
-		if (!scans.setStatus(rec.id, 'dismissed')) {
+		if (!(await scans.setStatus(rec.id, 'dismissed'))) {
 			return apiError(409, 'recommendation is no longer open');
 		}
-		audit(rt, event, 'scan.rec.dismiss', `app=${rec.appId} rec=${rec.id} kind=${rec.kind}`);
-		return apiJson({ ok: true, rec: scans.rec(rec.id) });
+		await audit(rt, event, 'scan.rec.dismiss', `app=${rec.appId} rec=${rec.id} kind=${rec.kind}`);
+		return apiJson({ ok: true, rec: await scans.rec(rec.id) });
 	}
 
 	if (!rec.autoFixable) return apiError(409, 'recommendation has no automatic fix');
-	const app = rt.deploys.getApp(rec.appId);
+	const app = await rt.deploys.getApp(rec.appId);
 	if (!app) return apiError(404, 'app not found');
 	const patch = fixFor(rec, app);
 	if (!patch) return apiError(409, 'recommendation has no expressible fix');
 
 	const before = JSON.stringify({ source: app.source, healthcheck: app.healthcheck });
 	try {
-		const updated = rt.deploys.updateApp(app.id, patch);
-		if (!scans.setStatus(rec.id, 'applied')) {
+		const updated = await rt.deploys.updateApp(app.id, patch);
+		if (!(await scans.setStatus(rec.id, 'applied'))) {
 			// The patch is idempotent, so a lost race still leaves the
 			// app fixed; report the rec state honestly either way.
 			return apiError(409, 'recommendation is no longer open');
 		}
 		const after = JSON.stringify({ source: updated.source, healthcheck: updated.healthcheck });
-		audit(
+		await audit(
 			rt,
 			event,
 			'deploy.app.autofix',
 			`app=${app.id} rec=${rec.id} kind=${rec.kind} before=${before} after=${after}`
 		);
-		return apiJson({ ok: true, rec: scans.rec(rec.id), app: updated });
+		return apiJson({ ok: true, rec: await scans.rec(rec.id), app: updated });
 	} catch (err) {
 		if (err instanceof DeployError) return apiError(err.status, err.message);
 		throw err;

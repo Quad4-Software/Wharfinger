@@ -122,13 +122,13 @@ export function clientIp(event: RequestEvent): string {
 	}
 }
 
-export function audit(
+export async function audit(
 	rt: Runtime,
 	event: RequestEvent,
 	action: string,
 	detail?: string | null
-): void {
-	rt.audit.log({
+): Promise<void> {
+	await rt.audit.log({
 		userId: event.locals.user?.id ?? null,
 		username: event.locals.user?.username ?? null,
 		action,

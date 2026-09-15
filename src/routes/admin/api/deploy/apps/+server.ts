@@ -4,10 +4,10 @@ import { apiError, apiJson, audit, readJson, requirePerm } from '$lib/server/adm
 import { DeployError } from '$lib/server/deploy/store';
 import type { AppSource, DeployRuntime, Healthcheck, PortMap } from '$lib/shared/deploy';
 
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	requirePerm(event, 'deploy.view');
 	const rt = getRuntime();
-	return apiJson({ apps: rt.deploys.listApps() });
+	return apiJson({ apps: await rt.deploys.listApps() });
 };
 
 interface CreateBody {
@@ -29,11 +29,11 @@ export const POST: RequestHandler = async (event) => {
 	const body = await readJson<CreateBody>(event.request, 64 * 1024);
 
 	const agentId = typeof body.agentId === 'string' ? body.agentId : '';
-	if (!rt.agents.get(agentId)) return apiError(422, 'target agent not found');
+	if (!(await rt.agents.get(agentId))) return apiError(422, 'target agent not found');
 
 	const domains = Array.isArray(body.domains) ? body.domains.map(String) : [];
 	try {
-		const { app, webhook, deployKeyPub } = rt.deploys.createApp({
+		const { app, webhook, deployKeyPub } = await rt.deploys.createApp({
 			name: typeof body.name === 'string' ? body.name : '',
 			agentId,
 			source: body.source as AppSource,
@@ -45,13 +45,13 @@ export const POST: RequestHandler = async (event) => {
 			replicas: body.replicas === null ? null : (body.replicas as number | undefined)
 		});
 		if (body.env && typeof body.env === 'object') {
-			rt.deploys.setEnv(app.id, body.env as Record<string, string>);
+			await rt.deploys.setEnv(app.id, body.env as Record<string, string>);
 		}
-		audit(rt, event, 'deploy.app.create', `app=${app.id} name=${app.name} agent=${agentId}`);
+		await audit(rt, event, 'deploy.app.create', `app=${app.id} name=${app.name} agent=${agentId}`);
 		return apiJson(
 			{
 				ok: true,
-				app: rt.deploys.getApp(app.id),
+				app: await rt.deploys.getApp(app.id),
 				webhook: `${event.url.origin}/api/deploy/hook/${webhook}`,
 				deployKeyPub
 			},

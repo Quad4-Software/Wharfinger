@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { asDb, type Db } from '$lib/server/store/driver';
 import type { EdgeReport } from './schema';
 
 export interface EdgeSample {
@@ -16,11 +17,15 @@ const MAX_HISTORY_POINTS = 600;
 
 /** Edge traffic reports keyed to the registering system's agent id. */
 export class EdgeStore {
-	constructor(private db: DatabaseSync) {}
+	private readonly db: Db;
 
-	record(agentId: string, r: EdgeReport): void {
+	constructor(db: Db | DatabaseSync) {
+		this.db = asDb(db);
+	}
+
+	async record(agentId: string, r: EdgeReport): Promise<void> {
 		const errs = r.errors?.length ?? 0;
-		this.db
+		await this.db
 			.prepare(
 				'INSERT OR IGNORE INTO edge_reports (agent_id, ts, window_s, requests, s2xx, s3xx, s4xx, s5xx, errs, report) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 			)
@@ -38,10 +43,10 @@ export class EdgeStore {
 			);
 	}
 
-	latest(agentId: string): EdgeReport | null {
-		const row = this.db
+	async latest(agentId: string): Promise<EdgeReport | null> {
+		const row = (await this.db
 			.prepare('SELECT report FROM edge_reports WHERE agent_id = ? ORDER BY ts DESC LIMIT 1')
-			.get(agentId) as { report: string } | undefined;
+			.get(agentId)) as { report: string } | undefined;
 		if (!row) return null;
 		try {
 			return JSON.parse(row.report) as EdgeReport;
@@ -52,12 +57,12 @@ export class EdgeStore {
 
 	// Same bucketing approach as agent samples: group by time buckets
 	// derived from the real data span, capped at MAX_HISTORY_POINTS.
-	history(agentId: string, sinceMs: number): EdgeSample[] {
-		const rows = this.db
+	async history(agentId: string, sinceMs: number): Promise<EdgeSample[]> {
+		const rows = (await this.db
 			.prepare(
 				'SELECT ts, window_s, requests, s2xx, s3xx, s4xx, s5xx, errs FROM edge_reports WHERE agent_id = ? AND ts >= ? ORDER BY ts ASC'
 			)
-			.all(agentId, sinceMs) as unknown as {
+			.all(agentId, sinceMs)) as unknown as {
 			ts: number;
 			window_s: number;
 			requests: number;
@@ -105,7 +110,7 @@ export class EdgeStore {
 		return out;
 	}
 
-	prune(olderThanMs: number): void {
-		this.db.prepare('DELETE FROM edge_reports WHERE ts < ?').run(olderThanMs);
+	async prune(olderThanMs: number): Promise<void> {
+		await this.db.prepare('DELETE FROM edge_reports WHERE ts < ?').run(olderThanMs);
 	}
 }

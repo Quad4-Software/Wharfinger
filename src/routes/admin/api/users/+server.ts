@@ -5,10 +5,10 @@ import { apiError, apiJson, audit, asString, readJson, requirePerm } from '$lib/
 import { canGrantRole } from '$lib/server/admin/authz';
 import { USERNAME_RE, checkPassword } from '$lib/server/admin/policy';
 
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	const rt = getRuntime();
 	requirePerm(event, 'users.manage');
-	return apiJson({ users: rt.users.all() });
+	return apiJson({ users: await rt.users.all() });
 };
 
 /** Create an account directly (invites are the usual path). */
@@ -25,10 +25,10 @@ export const POST: RequestHandler = async (event) => {
 	const username = typeof body.username === 'string' ? body.username.trim() : '';
 	const displayName = asString(body.display_name, 80) ?? '';
 	const password = typeof body.password === 'string' ? body.password : '';
-	if (typeof body.role !== 'string' || !rt.roles.exists(body.role)) {
+	if (typeof body.role !== 'string' || !(await rt.roles.exists(body.role))) {
 		return apiError(422, 'unknown role');
 	}
-	if (!canGrantRole(rt.roles, event.locals.perms, body.role)) {
+	if (!(await canGrantRole(rt.roles, event.locals.perms, body.role))) {
 		return apiError(403, 'you cannot grant a role with permissions you do not hold');
 	}
 	const role: Role = body.role;
@@ -37,9 +37,9 @@ export const POST: RequestHandler = async (event) => {
 	}
 	const pwError = checkPassword(password, username, rt.config.admin.password_min_length);
 	if (pwError) return apiError(422, pwError);
-	if (rt.users.rowByName(username)) return apiError(409, 'that username is taken');
+	if (await rt.users.rowByName(username)) return apiError(409, 'that username is taken');
 
-	const user = rt.users.create(username, password, role, displayName);
-	audit(rt, event, 'users.create', `username=${username} role=${role} by=${actor.username}`);
+	const user = await rt.users.create(username, password, role, displayName);
+	await audit(rt, event, 'users.create', `username=${username} role=${role} by=${actor.username}`);
 	return apiJson({ ok: true, user }, 201);
 };

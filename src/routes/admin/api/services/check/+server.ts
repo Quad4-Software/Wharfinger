@@ -52,7 +52,7 @@ export const POST: RequestHandler = async (event) => {
 		certWarnDays: rt.config.monitor.cert_warn_days,
 		egress: rt.egress
 	});
-	audit(rt, event, 'services.check', `id=${svc.id} type=${svc.type} by=${user.username}`);
+	void audit(rt, event, 'services.check', `id=${svc.id} type=${svc.type} by=${user.username}`);
 	return apiJson({
 		ok: outcome.ok,
 		degraded: outcome.degraded,

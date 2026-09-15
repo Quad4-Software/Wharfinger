@@ -1,8 +1,7 @@
 import { join } from 'node:path';
-import type { DatabaseSync } from 'node:sqlite';
 import { building } from '$app/environment';
 import { ConfigError, loadRawConfig } from './config/load';
-import { resolveEffective, type EffectiveConfig } from './config/effective';
+import { resolveEffective, validateMergedDoc, type EffectiveConfig } from './config/effective';
 import { ConfigStore } from './config/store';
 import type { StatusConfig } from './config/schema';
 import { IconCache } from './icons';
@@ -10,7 +9,8 @@ import { Monitor } from './monitor/monitor';
 import { SseHub } from './sse';
 import { SnapshotBuilder } from './status/snapshot';
 import { CheckStore } from './store/checks';
-import { dataDir, openDb } from './store/db';
+import { dataDir, openStorage } from './store/db';
+import type { Db } from './store/driver';
 import { IncidentStore } from './store/incidents';
 import { MarkerStore } from './store/markers';
 import { PushStore } from './store/push';
@@ -50,7 +50,14 @@ import { bindTelemetry } from './telemetry';
 
 export interface Runtime {
 	config: StatusConfig;
-	db: DatabaseSync;
+	db: Db;
+	/**
+	 * Resolves once the database is reachable, section overrides are
+	 * merged, admin bootstrap ran, and the monitor started. Construction
+	 * stays synchronous so SvelteKit init/reroute can call getRuntime();
+	 * request handlers must await ready before touching stores.
+	 */
+	ready: Promise<void>;
 	monitor: Monitor;
 	snapshot: SnapshotBuilder;
 	hub: SseHub;
@@ -92,7 +99,7 @@ export interface Runtime {
 	adminEnabled(): boolean;
 	adminBase(): string;
 	/** Re-resolve file + overrides and push through the apply pipeline. */
-	reloadConfig(): void;
+	reloadConfig(): Promise<void>;
 }
 
 let runtime: Runtime | null = null;
@@ -105,7 +112,8 @@ export function getRuntime(): Runtime {
 	if (runtime) return runtime;
 	if (building) throw new Error('runtime not available during build');
 
-	const db = openDb();
+	const fileRaw = loadRawConfig();
+	const db = openStorage(fileRaw.storage);
 	const checks = new CheckStore(db);
 	const incidents = new IncidentStore(db);
 	const pushBeats = new PushStore(db);
@@ -129,54 +137,54 @@ export function getRuntime(): Runtime {
 	const jobs = new JobQueue(db);
 	const deploys = new DeployStore(db);
 
-	let eff = resolveEffective(loadRawConfig(), configStore);
+	// File-only config up front so construction stays synchronous; the
+	// ready pipeline merges sqlite section overrides before the monitor
+	// starts and before any request touches the stores.
+	let eff: EffectiveConfig = {
+		config: validateMergedDoc(fileRaw, new Map()),
+		raw: fileRaw,
+		fileRaw,
+		overrides: new Map()
+	};
 	let cfg = eff.config;
 
 	// The reporter reads live config through this getter, so reloads
 	// and panel overrides apply without a restart.
 	bindTelemetry(() => cfg.telemetry);
 
-	// Non-interactive first-admin bootstrap and the env kill switch.
-	// WHARFINGER_ADMIN_ENABLED=false wins over config and cannot be undone
-	// from inside the panel.
+	// Non-interactive first-admin bootstrap runs inside ready; the env
+	// kill switch is read here since it only depends on process.env.
 	const envDisabled = adminEnvDisabled();
-	switch (bootstrapAdmin(users, audit, process.env, cfg.admin.password_min_length)) {
-		case 'created':
-			console.log('[admin] created initial admin account from env');
-			break;
-		case 'incomplete':
-			console.warn(
-				'[admin] set both WHARFINGER_ADMIN_USERNAME and WHARFINGER_ADMIN_PASSWORD to bootstrap the first admin'
-			);
-			break;
-		case 'invalid':
-			console.warn('[admin] env bootstrap skipped: credentials fail username/password policy');
-			break;
-	}
-	if (envDisabled) console.log('[admin] panel disabled via WHARFINGER_ADMIN_ENABLED');
 
 	// One egress policy for monitor checks and notification sends; the
 	// allow flag reads live config so reloads apply without a restart.
 	const egress = makeEgress(() => cfg.monitor.allow_link_local);
 	const monitor = new Monitor(cfg, checks, incidents, egress, pushBeats);
 	const icons = new IconCache(join(dataDir(), 'icons'), monitor.userAgent, egress);
-	const snapshot = new SnapshotBuilder(() => cfg, monitor, checks, incidents, icons, markers);
+	const snapshot = new SnapshotBuilder(() => cfg, monitor, checks, incidents, icons, db, markers);
 	const hub = new SseHub();
 	const dispatcher = new NotifyDispatcher(() => cfg, notifyLog, egress, subscribers);
 	dispatcher.attach(monitor);
 	const alerter = new AgentAlerter(() => cfg, agents, dispatcher);
 
 	// Broadcast fresh snapshots on every monitor event; the builder is
-	// cached so this is cheap when nothing changed.
-	monitor.on('change', () => {
-		hub.broadcast('snapshot', snapshot.current().json);
-	});
-	monitor.on('update', () => {
-		hub.broadcast('snapshot', snapshot.current().json);
-	});
+	// cached so this is cheap when nothing changed. Builds serialize
+	// through a promise queue so events cannot interleave rebuilds.
+	let broadcastQueue = Promise.resolve();
+	const broadcastSnapshot = (): void => {
+		broadcastQueue = broadcastQueue
+			.then(async () => {
+				hub.broadcast('snapshot', (await snapshot.current()).json);
+			})
+			.catch((err: unknown) => {
+				console.error('[runtime] snapshot broadcast failed:', err);
+			});
+	};
+	monitor.on('change', broadcastSnapshot);
+	monitor.on('update', broadcastSnapshot);
 
-	function apply(): void {
-		eff = resolveEffective(loadRawConfig(), configStore);
+	async function apply(): Promise<void> {
+		eff = await resolveEffective(loadRawConfig(), configStore);
 		cfg = eff.config;
 		monitor.reload(cfg);
 		icons.schedule(cfg.services);
@@ -184,60 +192,99 @@ export function getRuntime(): Runtime {
 	}
 
 	// Periodic cleanup for admin tables; independent of check retention.
+	const cleanupTick = async (): Promise<void> => {
+		await sessions.prune();
+		await invites.prune();
+		await passkeys.prune();
+		await protection.prune();
+		await audit.prune();
+		await notifyLog.prune();
+		const cutoff = Date.now() - cfg.ingress.sample_retention_days * 86_400_000;
+		await agents.prune(cutoff);
+		await edge.prune(cutoff);
+		await telemetry.prune();
+		await pushBeats.prune(cfg.services.map((s) => s.id));
+		await markers.prune(cutoff);
+		await chat.prune();
+		await jobs.prune(Date.now() - 30 * 86_400_000);
+		await getScanStore(db).prune(Date.now() - 90 * 86_400_000);
+	};
 	const cleanup = setInterval(() => {
-		try {
-			sessions.prune();
-			invites.prune();
-			passkeys.prune();
-			protection.prune();
-			audit.prune();
-			notifyLog.prune();
-			const cutoff = Date.now() - cfg.ingress.sample_retention_days * 86_400_000;
-			agents.prune(cutoff);
-			edge.prune(cutoff);
-			telemetry.prune();
-			pushBeats.prune(cfg.services.map((s) => s.id));
-			markers.prune(cutoff);
-			chat.prune();
-			jobs.prune(Date.now() - 30 * 86_400_000);
-			getScanStore(db).prune(Date.now() - 90 * 86_400_000);
-		} catch (err) {
+		cleanupTick().catch((err: unknown) => {
 			console.error('[runtime] cleanup failed:', err);
-		}
+		});
 	}, 3600_000);
 	cleanup.unref();
 
 	// Agent silence detection; threshold rules are evaluated on ingest.
 	const alertTick = setInterval(() => {
-		try {
-			alerter.tick();
-		} catch (err) {
+		alerter.tick().catch((err: unknown) => {
 			console.error('[alerts] tick failed:', err);
-		}
+		});
 	}, 60_000);
 	alertTick.unref();
 
-	// Startup + periodic lease recovery: stale claims requeue, stale
-	// running jobs go to 'unknown' for reconciliation. See
-	// .agents/skills/job-queue.
-	const recovered = jobs.recover();
-	if (recovered.requeued || recovered.unknown) {
-		console.log(`[jobs] recovered: ${recovered.requeued} requeued, ${recovered.unknown} unknown`);
-	}
 	const jobSweep = setInterval(() => {
-		try {
-			jobs.recover();
-		} catch (err) {
+		jobs.recover().catch((err: unknown) => {
 			console.error('[jobs] sweep failed:', err);
-		}
+		});
 	}, 60_000);
 	jobSweep.unref();
+
+	// Async boot: connect the storage backend, merge overrides, bootstrap
+	// the first admin, recover stale jobs, then start the monitor. Every
+	// awaited step inside also covers SurrealDB schema setup, which runs
+	// lazily on the first statement. runtime is assigned below before
+	// the first await inside resolves.
+	const ready = (async () => {
+		await db.exec('SELECT 1 FROM hub_keys LIMIT 1');
+		await apply();
+
+		// WHARFINGER_ADMIN_ENABLED=false wins over config and cannot be
+		// undone from inside the panel.
+		switch (await bootstrapAdmin(users, audit, process.env, cfg.admin.password_min_length)) {
+			case 'created':
+				console.log('[admin] created initial admin account from env');
+				break;
+			case 'incomplete':
+				console.warn(
+					'[admin] set both WHARFINGER_ADMIN_USERNAME and WHARFINGER_ADMIN_PASSWORD to bootstrap the first admin'
+				);
+				break;
+			case 'invalid':
+				console.warn('[admin] env bootstrap skipped: credentials fail username/password policy');
+				break;
+		}
+		if (envDisabled) console.log('[admin] panel disabled via WHARFINGER_ADMIN_ENABLED');
+
+		// Startup lease recovery: stale claims requeue, stale running jobs
+		// go to 'unknown' for reconciliation. See .agents/skills/job-queue.
+		const recovered = await jobs.recover();
+		if (recovered.requeued || recovered.unknown) {
+			console.log(`[jobs] recovered: ${recovered.requeued} requeued, ${recovered.unknown} unknown`);
+		}
+
+		monitor.start();
+		icons.schedule(cfg.services);
+		// Anomaly engine: EWMA baselines over auth/deploy/service/agent
+		// metrics; alerts fan out through the notify dispatcher. The
+		// module-level handle is assigned before the first await above
+		// resolves; the assertion defeats control-flow narrowing to
+		// the pre-assignment null.
+		const rt = runtime as Runtime | null;
+		if (rt) startAnomaly(rt);
+		console.log(`[monitor] started, ${cfg.services.length} service(s)`);
+	})();
+	ready.catch((err: unknown) => {
+		console.error('[runtime] init failed:', err);
+	});
 
 	runtime = {
 		get config() {
 			return cfg;
 		},
 		db,
+		ready,
 		monitor,
 		snapshot,
 		hub,
@@ -279,19 +326,15 @@ export function getRuntime(): Runtime {
 	};
 
 	process.on('SIGHUP', () => {
-		try {
-			runtime?.reloadConfig();
-			console.log('[config] reloaded after SIGHUP');
-		} catch (err) {
-			console.error('[config] reload failed:', err instanceof ConfigError ? err.message : err);
-		}
+		runtime
+			?.reloadConfig()
+			.then(() => {
+				console.log('[config] reloaded after SIGHUP');
+			})
+			.catch((err: unknown) => {
+				console.error('[config] reload failed:', err instanceof ConfigError ? err.message : err);
+			});
 	});
 
-	monitor.start();
-	icons.schedule(cfg.services);
-	// Anomaly engine: EWMA baselines over auth/deploy/service/agent
-	// metrics; alerts fan out through the notify dispatcher.
-	startAnomaly(runtime);
-	console.log(`[monitor] started, ${cfg.services.length} service(s)`);
 	return runtime;
 }

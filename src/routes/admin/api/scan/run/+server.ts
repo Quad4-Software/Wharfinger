@@ -13,11 +13,17 @@ export const POST: RequestHandler = async (event) => {
 	const appId = typeof body.appId === 'string' ? body.appId : '';
 	if (!appId) return apiError(422, 'appId is required');
 	try {
-		const { job, report, deduped } = enqueueScan(rt.deploys, rt.jobs, getScanStore(rt.db), appId, {
-			releaseId: typeof body.releaseId === 'string' ? body.releaseId : undefined
-		});
+		const { job, report, deduped } = await enqueueScan(
+			rt.deploys,
+			rt.jobs,
+			getScanStore(rt.db),
+			appId,
+			{
+				releaseId: typeof body.releaseId === 'string' ? body.releaseId : undefined
+			}
+		);
 		if (!deduped) {
-			audit(
+			await audit(
 				rt,
 				event,
 				'scan.run',

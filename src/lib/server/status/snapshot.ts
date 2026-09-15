@@ -14,6 +14,7 @@ import type { Monitor } from '$lib/server/monitor/monitor';
 import type { CheckStore } from '$lib/server/store/checks';
 import type { IncidentStore } from '$lib/server/store/incidents';
 import type { MarkerStore } from '$lib/server/store/markers';
+import type { Db } from '$lib/server/store/driver';
 import { groupSnapshotData } from '$lib/server/groups/store';
 import { paths } from '$lib/shared/paths';
 import { worstStatus } from '$lib/shared/status';
@@ -51,6 +52,7 @@ export class SnapshotBuilder {
 		private readonly checks: CheckStore,
 		private readonly incidents: IncidentStore,
 		private readonly icons: IconCache,
+		private readonly db: Db,
 		private readonly markers?: MarkerStore
 	) {
 		monitor.on('update', () => {
@@ -65,9 +67,9 @@ export class SnapshotBuilder {
 		this.dirty = true;
 	}
 
-	current(): SnapshotCache {
+	async current(): Promise<SnapshotCache> {
 		if (this.dirty || !this.cached) {
-			const snapshot = this.build();
+			const snapshot = await this.build();
 			const json = JSON.stringify(snapshot);
 			this.cached = {
 				snapshot,
@@ -79,7 +81,7 @@ export class SnapshotBuilder {
 		return this.cached;
 	}
 
-	private build(): StatusSnapshot {
+	private async build(): Promise<StatusSnapshot> {
 		const cfg = this.config();
 		const now = Date.now();
 		const days = cfg.page.history_days;
@@ -108,29 +110,31 @@ export class SnapshotBuilder {
 		}
 
 		// Admin-managed service groups; one db read per build.
-		const groupData = groupSnapshotData();
+		const groupData = await groupSnapshotData(this.db);
 
 		const groupOrder: string[] = [];
 		const groups = new Map<string, ServiceSnapshot[]>();
-		for (const s of cfg.services) {
-			let list = groups.get(s.group);
-			if (!list) {
-				list = [];
-				groups.set(s.group, list);
-				groupOrder.push(s.group);
-			}
-			list.push(
-				this.buildService(
-					s,
-					now,
-					since90,
-					days,
-					[...allWindows, ...(windowsByService.get(s.id) ?? [])],
-					activeWindowServices,
-					groupData.byService.get(s.id) ?? []
-				)
-			);
-		}
+		await Promise.all(
+			cfg.services.map(async (s) => {
+				let list = groups.get(s.group);
+				if (!list) {
+					list = [];
+					groups.set(s.group, list);
+					groupOrder.push(s.group);
+				}
+				list.push(
+					await this.buildService(
+						s,
+						now,
+						since90,
+						days,
+						[...allWindows, ...(windowsByService.get(s.id) ?? [])],
+						activeWindowServices,
+						groupData.byService.get(s.id) ?? []
+					)
+				);
+			})
+		);
 
 		const groupSnapshots = groupOrder.map((name) => {
 			const services = groups.get(name);
@@ -173,7 +177,7 @@ export class SnapshotBuilder {
 			},
 			overall,
 			groups: groupSnapshots,
-			incidents: this.buildIncidents(cfg),
+			incidents: await this.buildIncidents(cfg),
 			maintenance: {
 				active: publicWindows.filter((w) => w.active),
 				upcoming: upcoming.slice(0, UPCOMING_WINDOW_MAX)
@@ -192,7 +196,7 @@ export class SnapshotBuilder {
 		};
 	}
 
-	private buildService(
+	private async buildService(
 		s: StatusConfig['services'][number],
 		now: number,
 		since: number,
@@ -200,14 +204,14 @@ export class SnapshotBuilder {
 		serviceWindows: ExpandedWindow[],
 		activeWindowServices: Set<string>,
 		groupIds: string[]
-	): ServiceSnapshot {
+	): Promise<ServiceSnapshot> {
 		const id = s.id;
 		const inMaintenance = activeWindowServices.has(id) || activeWindowServices.has('*');
-		const rows = this.checks.since(id, since - DAY_MS); // small overlap for day edges
+		const rows = await this.checks.since(id, since - DAY_MS); // small overlap for day edges
 		const windows = serviceWindows.map((w) => ({ start: w.start, end: w.end }));
 
 		const status = this.monitor.serviceStatus.get(id) ?? 'unknown';
-		const latest = this.checks.latest(id);
+		const latest = await this.checks.latest(id);
 		const certDays = this.monitor.certDays.get(id) ?? null;
 		const warnDays =
 			(s.type === 'http' || s.type === 'tcp' ? s.cert_warn_days : undefined) ??
@@ -219,15 +223,15 @@ export class SnapshotBuilder {
 		// rows covers [rowsFrom, now]; uptime fractions inside that range are
 		// counted from the rows instead of one aggregate query each.
 		const rowsFrom = since - DAY_MS;
-		const uptimeFrac = (from: number): number | null =>
+		const uptimeFrac = async (from: number): Promise<number | null> =>
 			from >= rowsFrom ? uptimeFractionInRows(rows, from) : this.checks.uptimeFraction(id, from);
 
-		const d = (ms: number) => this.fracToPct(uptimeFrac(now - ms));
+		const d = async (ms: number) => this.fracToPct(await uptimeFrac(now - ms));
 		const slo = sloCfg
-			? (() => {
+			? await (async () => {
 					const windowMs = sloCfg.window_days * DAY_MS;
-					const frac = uptimeFrac(now - windowMs);
-					const hour = uptimeFrac(now - 3600_000);
+					const frac = await uptimeFrac(now - windowMs);
+					const hour = await uptimeFrac(now - 3600_000);
 					const allowed = (100 - sloCfg.target_percent) / 100;
 					const budgetRemaining =
 						frac === null || allowed <= 0
@@ -253,10 +257,10 @@ export class SnapshotBuilder {
 			status: inMaintenance ? 'maintenance' : status,
 			latencyMs: latest?.ok === 1 ? latest.latencyMs : null,
 			uptime: {
-				d24: d(DAY_MS),
-				d7: d(7 * DAY_MS),
-				d30: d(30 * DAY_MS),
-				d90: d(90 * DAY_MS)
+				d24: await d(DAY_MS),
+				d7: await d(7 * DAY_MS),
+				d30: await d(30 * DAY_MS),
+				d90: await d(90 * DAY_MS)
 			},
 			latency: buildLatencySeries({
 				checks: rows.filter((r) => r.ts >= now - LATENCY_RANGES['24h'].ms),
@@ -265,9 +269,11 @@ export class SnapshotBuilder {
 				buckets: LATENCY_RANGES['24h'].buckets
 			}),
 			markers:
-				this.markers
-					?.between(now - LATENCY_RANGES['24h'].ms, now, id)
-					.map((m) => ({ ts: m.ts, title: m.title, kind: m.kind })) ?? [],
+				(await this.markers?.between(now - LATENCY_RANGES['24h'].ms, now, id))?.map((m) => ({
+					ts: m.ts,
+					title: m.title,
+					kind: m.kind
+				})) ?? [],
 			slo,
 			days: buildDayBuckets({ now, days, checks: rows, maintenance: windows }),
 			inMaintenance,
@@ -284,9 +290,12 @@ export class SnapshotBuilder {
 		return frac === null ? null : Math.round(frac * 10000) / 100;
 	}
 
-	private buildIncidents(cfg: StatusConfig): StatusSnapshot['incidents'] {
-		const autoRows = [...this.incidents.allOpen(), ...this.incidents.recent(RECENT_INCIDENTS_MAX)];
-		const dbUpdates = this.incidents.updatesFor(autoRows.map((r) => r.id));
+	private async buildIncidents(cfg: StatusConfig): Promise<StatusSnapshot['incidents']> {
+		const autoRows = [
+			...(await this.incidents.allOpen()),
+			...(await this.incidents.recent(RECENT_INCIDENTS_MAX))
+		];
+		const dbUpdates = await this.incidents.updatesFor(autoRows.map((r) => r.id));
 		const auto: Incident[] = autoRows.map((r) => ({
 			id: `auto-${r.id}`,
 			title: r.title,

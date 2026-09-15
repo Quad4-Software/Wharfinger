@@ -13,7 +13,7 @@ function csvCell(v: string | number | null): string {
 	return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
 }
 
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	const rt = getRuntime();
 	requirePerm(event, 'audit.view');
 	const page = Math.max(1, Number(event.url.searchParams.get('page') ?? 1));
@@ -22,7 +22,7 @@ export const GET: RequestHandler = (event) => {
 	const user = event.url.searchParams.get('user')?.slice(0, 100) ?? undefined;
 
 	if (event.url.searchParams.get('format') === 'csv') {
-		const rows = rt.audit.exportRows({ action, q, user, max: EXPORT_MAX });
+		const rows = await rt.audit.exportRows({ action, q, user, max: EXPORT_MAX });
 		const body = [
 			'at,username,action,detail,ip',
 			...rows.map((r) =>
@@ -43,7 +43,7 @@ export const GET: RequestHandler = (event) => {
 		});
 	}
 
-	const { entries, total } = rt.audit.list({
+	const { entries, total } = await rt.audit.list({
 		limit: AUDIT_PAGE_SIZE,
 		offset: (page - 1) * AUDIT_PAGE_SIZE,
 		action,
@@ -55,7 +55,7 @@ export const GET: RequestHandler = (event) => {
 		total,
 		page,
 		pageSize: AUDIT_PAGE_SIZE,
-		actions: rt.audit.actions(),
-		summary: rt.audit.summary({ action, q, user })
+		actions: await rt.audit.actions(),
+		summary: await rt.audit.summary({ action, q, user })
 	});
 };

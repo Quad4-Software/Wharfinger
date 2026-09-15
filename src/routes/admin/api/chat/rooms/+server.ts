@@ -13,8 +13,8 @@ export const POST: RequestHandler = async (event) => {
 		.map(Number)
 		.filter((n) => Number.isInteger(n) && n > 0);
 	try {
-		const room = rt.chat.createRoom(name, members, user.id);
-		audit(rt, event, 'chat.room.create', `room=${room.id} name=${room.name}`);
+		const room = await rt.chat.createRoom(name, members, user.id);
+		await audit(rt, event, 'chat.room.create', `room=${room.id} name=${room.name}`);
 		return apiJson({ ok: true, room }, 201);
 	} catch (err) {
 		return chatFail(err);

@@ -18,17 +18,17 @@ interface ChainRow {
 }
 
 describe('audit hash chain', () => {
-	it('verifies an empty log', () => {
+	it('verifies an empty log', async () => {
 		const audit = new AuditStore(openDb(freshDir()));
-		expect(audit.verify()).toEqual({ ok: true, rows: 0 });
+		expect(await audit.verify()).toEqual({ ok: true, rows: 0 });
 	});
 
-	it('chains new rows from genesis and verifies', () => {
+	it('chains new rows from genesis and verifies', async () => {
 		const db = openDb(freshDir());
 		const audit = new AuditStore(db);
-		audit.log({ action: 'a', username: 'alice' });
-		audit.log({ action: 'b', detail: 'd', ip: '10.0.0.1' });
-		audit.log({ action: 'c' });
+		await audit.log({ action: 'a', username: 'alice' });
+		await audit.log({ action: 'b', detail: 'd', ip: '10.0.0.1' });
+		await audit.log({ action: 'c' });
 
 		const rows = db
 			.prepare('SELECT id, prev_hash, hash FROM audit_log ORDER BY id')
@@ -39,40 +39,40 @@ describe('audit hash chain', () => {
 		expect(rows[1].prev_hash).toBe(rows[0].hash);
 		expect(rows[2].prev_hash).toBe(rows[1].hash);
 
-		expect(audit.verify()).toEqual({ ok: true, rows: 3 });
+		expect(await audit.verify()).toEqual({ ok: true, rows: 3 });
 	});
 
-	it('reports a tampered row by id', () => {
+	it('reports a tampered row by id', async () => {
 		const db = openDb(freshDir());
 		const audit = new AuditStore(db);
-		for (let i = 0; i < 5; i++) audit.log({ action: `act${i}` });
+		for (let i = 0; i < 5; i++) await audit.log({ action: `act${i}` });
 		db.prepare("UPDATE audit_log SET detail = 'forged' WHERE id = 3").run();
-		expect(audit.verify()).toEqual({ ok: false, rows: 3, firstBadId: 3 });
+		expect(await audit.verify()).toEqual({ ok: false, rows: 3, firstBadId: 3 });
 	});
 
-	it('reports a relinked prev_hash', () => {
+	it('reports a relinked prev_hash', async () => {
 		const db = openDb(freshDir());
 		const audit = new AuditStore(db);
-		for (let i = 0; i < 3; i++) audit.log({ action: `act${i}` });
+		for (let i = 0; i < 3; i++) await audit.log({ action: `act${i}` });
 		db.prepare("UPDATE audit_log SET prev_hash = 'beef' WHERE id = 2").run();
-		const r = audit.verify();
+		const r = await audit.verify();
 		expect(r.ok).toBe(false);
 		expect(r.firstBadId).toBe(2);
 	});
 
-	it('tolerates pruned head rows whose prev_hash dangles', () => {
+	it('tolerates pruned head rows whose prev_hash dangles', async () => {
 		const db = openDb(freshDir());
 		const audit = new AuditStore(db);
-		for (let i = 0; i < 5; i++) audit.log({ action: `act${i}` });
+		for (let i = 0; i < 5; i++) await audit.log({ action: `act${i}` });
 		db.prepare('DELETE FROM audit_log WHERE id <= 2').run();
-		expect(audit.verify()).toEqual({ ok: true, rows: 3 });
+		expect(await audit.verify()).toEqual({ ok: true, rows: 3 });
 	});
 
-	it('backfills pre-chain rows oldest-first on open', () => {
+	it('backfills pre-chain rows oldest-first on open', async () => {
 		const dir = freshDir();
 		const db = openDb(dir);
 		const audit = new AuditStore(db);
-		audit.log({ action: 'chained' });
+		await audit.log({ action: 'chained' });
 		// Rows written by a pre-chain version carry no hashes.
 		db.prepare(
 			"INSERT INTO audit_log (user_id, username, action, detail, ip, at) VALUES (1, 'bob', 'old1', NULL, NULL, 1000)"
@@ -89,6 +89,6 @@ describe('audit hash chain', () => {
 		expect(rows.every((r) => r.hash !== null)).toBe(true);
 		expect(rows[1].prev_hash).toBe(rows[0].hash);
 		expect(rows[2].prev_hash).toBe(rows[1].hash);
-		expect(new AuditStore(db2).verify()).toEqual({ ok: true, rows: 3 });
+		expect(await new AuditStore(db2).verify()).toEqual({ ok: true, rows: 3 });
 	});
 });

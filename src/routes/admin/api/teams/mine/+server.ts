@@ -8,8 +8,8 @@ import { getTeamStore } from '$lib/server/teams/store';
  * scope service visibility per user. Enforcement beyond visibility
  * (write scoping, per-team permissions) is deferred.
  */
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	const user = requireUser(event);
 	const rt = getRuntime();
-	return apiJson({ teams: getTeamStore(rt.db).teamsForUser(user.id) });
+	return apiJson({ teams: await getTeamStore(rt.db).teamsForUser(user.id) });
 };

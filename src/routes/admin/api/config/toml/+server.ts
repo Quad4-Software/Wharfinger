@@ -107,11 +107,11 @@ export const PUT: RequestHandler = async (event) => {
 	}
 
 	for (const key of writable) {
-		if (next.has(key)) rt.configStore.set(key, next.get(key), user.username);
-		else rt.configStore.clear(key);
+		if (next.has(key)) await rt.configStore.set(key, next.get(key), user.username);
+		else await rt.configStore.clear(key);
 	}
-	rt.reloadConfig();
-	audit(rt, event, 'config.toml.save', `overrides=${[...next.keys()].join(',') || 'none'}`);
+	await rt.reloadConfig();
+	await audit(rt, event, 'config.toml.save', `overrides=${[...next.keys()].join(',') || 'none'}`);
 	return apiJson({ ok: true, overrides: [...next.keys()] });
 };
 

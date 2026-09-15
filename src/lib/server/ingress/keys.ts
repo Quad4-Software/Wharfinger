@@ -6,6 +6,7 @@ import {
 	type KeyObject
 } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { asDb, rawSqlite, type Db } from '../store/driver';
 import { openSecret, sealSecret } from '../admin/crypto';
 
 // Hub identity for the ws handshake. The private key signs each agent's
@@ -43,25 +44,33 @@ interface HubKeys {
 }
 
 // Keyed on the db handle: a different database (tests, recreated data
-// dir) must never see another db's keypair.
-const cache = new WeakMap<DatabaseSync, HubKeys>();
+// dir) must never see another db's keypair. Callers may pass either a
+// Db driver or a raw DatabaseSync, so the key is the underlying
+// DatabaseSync when one exists and the Db object otherwise.
+const cache = new WeakMap<object, HubKeys>();
 
-function create(db: DatabaseSync): HubKeys {
+function cacheKey(db: Db | DatabaseSync): object {
+	return rawSqlite(db) ?? asDb(db);
+}
+
+async function create(db: Db): Promise<HubKeys> {
 	const { privateKey, publicKey } = generateKeyPairSync('ed25519');
 	// spki DER has a fixed 12-byte prefix; the raw 32-byte key follows.
 	const pubRaw = publicKey.export({ format: 'der', type: 'spki' }).subarray(-32);
 	const privDer = privateKey.export({ format: 'der', type: 'pkcs8' });
 	// Two writers racing first boot: the insert is single-row guarded,
 	// and whoever loses re-reads the winner's key below.
-	db.prepare(
-		'INSERT OR IGNORE INTO hub_keys (id, priv, pub, secret, created_at) VALUES (1, ?, ?, ?, ?)'
-	).run(
-		sealSecret(privDer.toString('base64')),
-		pubRaw.toString('base64'),
-		sealSecret(randomBytes(32).toString('hex')),
-		Date.now()
-	);
-	const row = load(db);
+	await db
+		.prepare(
+			'INSERT OR IGNORE INTO hub_keys (id, priv, pub, secret, created_at) VALUES (1, ?, ?, ?, ?)'
+		)
+		.run(
+			sealSecret(privDer.toString('base64')),
+			pubRaw.toString('base64'),
+			sealSecret(randomBytes(32).toString('hex')),
+			Date.now()
+		);
+	const row = await load(db);
 	if (row) return row;
 	return {
 		priv: privateKey,
@@ -73,10 +82,10 @@ function create(db: DatabaseSync): HubKeys {
 	};
 }
 
-function load(db: DatabaseSync): HubKeys | null {
-	const row = db
+async function load(db: Db): Promise<HubKeys | null> {
+	const row = (await db
 		.prepare('SELECT priv, pub, prev_pub, rotated_at, proof, secret FROM hub_keys WHERE id = 1')
-		.get() as KeyRow | undefined;
+		.get()) as KeyRow | undefined;
 	if (!row) return null;
 	let privB64: string | null;
 	if (row.priv.startsWith('v1.')) {
@@ -85,14 +94,14 @@ function load(db: DatabaseSync): HubKeys | null {
 			// Sealed under a secrets.key that no longer exists: the old
 			// key is unrecoverable, so replace the row outright. Push
 			// URLs minted under it die either way.
-			db.prepare('DELETE FROM hub_keys WHERE id = 1').run();
+			await db.prepare('DELETE FROM hub_keys WHERE id = 1').run();
 			return null;
 		}
 	} else {
 		// Legacy plaintext row: use it, then reseal in place.
 		privB64 = row.priv;
 		try {
-			db.prepare('UPDATE hub_keys SET priv = ? WHERE id = 1').run(sealSecret(privB64));
+			await db.prepare('UPDATE hub_keys SET priv = ? WHERE id = 1').run(sealSecret(privB64));
 		} catch {
 			// Reseal is best effort; the key still works unsealed.
 		}
@@ -105,7 +114,7 @@ function load(db: DatabaseSync): HubKeys | null {
 	if (!secretB64) {
 		secretB64 = sealSecret(Buffer.from(privB64, 'base64').toString('hex'));
 		try {
-			db.prepare('UPDATE hub_keys SET secret = ? WHERE id = 1').run(secretB64);
+			await db.prepare('UPDATE hub_keys SET secret = ? WHERE id = 1').run(secretB64);
 		} catch {
 			// Best effort; the in-memory value is identical.
 		}
@@ -128,26 +137,27 @@ function load(db: DatabaseSync): HubKeys | null {
 	};
 }
 
-function hubKeys(db: DatabaseSync): HubKeys {
-	const hit = cache.get(db);
+async function hubKeys(db: Db | DatabaseSync): Promise<HubKeys> {
+	const key = cacheKey(db);
+	const hit = cache.get(key);
 	if (hit) return hit;
-	const keys = load(db) ?? create(db);
-	cache.set(db, keys);
+	const keys = (await load(asDb(db))) ?? (await create(asDb(db)));
+	cache.set(key, keys);
 	return keys;
 }
 
 /** Raw secret bytes for keyed derivation (HMAC of push tokens). */
-export function hubSecret(db: DatabaseSync): Buffer {
-	return hubKeys(db).secret;
+export async function hubSecret(db: Db | DatabaseSync): Promise<Buffer> {
+	return (await hubKeys(db)).secret;
 }
 
 /** base64 ed25519 signature over the registration token. */
-export function signToken(db: DatabaseSync, token: string): string {
-	return sign(null, Buffer.from(token), hubKeys(db).priv).toString('base64');
+export async function signToken(db: Db | DatabaseSync, token: string): Promise<string> {
+	return sign(null, Buffer.from(token), (await hubKeys(db)).priv).toString('base64');
 }
 
-export function publicKeyB64(db: DatabaseSync): string {
-	return hubKeys(db).pubB64;
+export async function publicKeyB64(db: Db | DatabaseSync): Promise<string> {
+	return (await hubKeys(db)).pubB64;
 }
 
 export interface HubKeyInfo {
@@ -160,8 +170,8 @@ export interface HubKeyInfo {
 // Advertised key state for GET /ingress/pubkey. prev_pub and proof
 // only appear after a rotation; proof signs the new raw pubkey bytes
 // with the previous private key.
-export function publicKeyInfo(db: DatabaseSync): HubKeyInfo {
-	const k = hubKeys(db);
+export async function publicKeyInfo(db: Db | DatabaseSync): Promise<HubKeyInfo> {
+	const k = await hubKeys(db);
 	const out: HubKeyInfo = { pub: k.pubB64 };
 	if (k.prevPubB64 && k.rotatedAt !== null && k.proof) {
 		out.prev_pub = k.prevPubB64;
@@ -177,22 +187,25 @@ export function publicKeyInfo(db: DatabaseSync): HubKeyInfo {
  * the network; agents pinned to anything older (two rotations behind)
  * cannot verify and need a manual re-pin.
  */
-export function rotateHubKey(db: DatabaseSync): HubKeyInfo {
-	const cur = hubKeys(db);
+export async function rotateHubKey(db: Db | DatabaseSync): Promise<HubKeyInfo> {
+	const d = asDb(db);
+	const cur = await hubKeys(db);
 	const { privateKey, publicKey } = generateKeyPairSync('ed25519');
 	const pubRaw = publicKey.export({ format: 'der', type: 'spki' }).subarray(-32);
 	const privDer = privateKey.export({ format: 'der', type: 'pkcs8' });
 	// Signed by the OLD key over the raw 32-byte new pubkey.
 	const proof = sign(null, pubRaw, cur.priv).toString('base64');
-	db.prepare(
-		'UPDATE hub_keys SET priv = ?, pub = ?, prev_pub = ?, rotated_at = ?, proof = ? WHERE id = 1'
-	).run(
-		sealSecret(privDer.toString('base64')),
-		pubRaw.toString('base64'),
-		cur.pubB64,
-		Date.now(),
-		proof
-	);
-	cache.delete(db);
+	await d
+		.prepare(
+			'UPDATE hub_keys SET priv = ?, pub = ?, prev_pub = ?, rotated_at = ?, proof = ? WHERE id = 1'
+		)
+		.run(
+			sealSecret(privDer.toString('base64')),
+			pubRaw.toString('base64'),
+			cur.pubB64,
+			Date.now(),
+			proof
+		);
+	cache.delete(cacheKey(db));
 	return publicKeyInfo(db);
 }

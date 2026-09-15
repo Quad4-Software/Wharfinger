@@ -67,7 +67,7 @@ describe('ingress job routes', () => {
 	});
 
 	it('claim hands out a lease and the lifecycle endpoints honor it', async () => {
-		ref.rt.jobs.enqueue({ jobKey: 'k1', kind: 'deploy', target: 'agent-1', spec: { x: 1 } });
+		await ref.rt.jobs.enqueue({ jobKey: 'k1', kind: 'deploy', target: 'agent-1', spec: { x: 1 } });
 		const claim = await json(await claimJobs(event('/ingress/jobs/claim', {}) as never));
 		const job = claim.job as { id: number; lease: string };
 		expect(job.lease).toBeTruthy();
@@ -93,11 +93,11 @@ describe('ingress job routes', () => {
 			)
 		);
 		expect(prog).toEqual({ ok: true });
-		expect(ref.rt.jobs.get(job.id)?.log).toContain('[build] step 1');
+		expect((await ref.rt.jobs.get(job.id))?.log).toContain('[build] step 1');
 	});
 
 	it('rejects lifecycle calls with a wrong lease', async () => {
-		ref.rt.jobs.enqueue({ jobKey: 'k2', kind: 'deploy', target: 'agent-1', spec: {} });
+		await ref.rt.jobs.enqueue({ jobKey: 'k2', kind: 'deploy', target: 'agent-1', spec: {} });
 		const claim = await json(await claimJobs(event('/ingress/jobs/claim', {}) as never));
 		const job = claim.job as { id: number };
 		const res = await json(
@@ -113,13 +113,13 @@ describe('ingress job routes', () => {
 	});
 
 	it('secrets requires the live lease and returns sealed env', async () => {
-		const { app } = ref.rt.deploys.createApp({
+		const { app } = await ref.rt.deploys.createApp({
 			name: 'secapp',
 			agentId: 'agent-1',
 			source: GIT
 		});
-		ref.rt.deploys.setEnv(app.id, { TOKEN: 's3cret' });
-		const { job } = triggerDeploy(ref.rt, app);
+		await ref.rt.deploys.setEnv(app.id, { TOKEN: 's3cret' });
+		const { job } = await triggerDeploy(ref.rt, app);
 		const claim = await json(await claimJobs(event('/ingress/jobs/claim', {}) as never));
 		const claimed = claim.job as { id: number; lease: string };
 		expect(claimed.id).toBe(job.id);
@@ -142,12 +142,12 @@ describe('ingress job routes', () => {
 	});
 
 	it('succeed settles the release live through the trigger', async () => {
-		const { app } = ref.rt.deploys.createApp({
+		const { app } = await ref.rt.deploys.createApp({
 			name: 'settleapp',
 			agentId: 'agent-1',
 			source: GIT
 		});
-		const { job, releaseId } = triggerDeploy(ref.rt, app);
+		const { job, releaseId } = await triggerDeploy(ref.rt, app);
 		const claim = await json(await claimJobs(event('/ingress/jobs/claim', {}) as never));
 		const claimed = claim.job as { id: number; lease: string };
 		expect(claimed.id).toBe(job.id);
@@ -162,11 +162,11 @@ describe('ingress job routes', () => {
 			)
 		);
 		expect(res).toEqual({ ok: true });
-		expect(ref.rt.deploys.release(releaseId!)?.status).toBe('live');
+		expect((await ref.rt.deploys.release(releaseId!))?.status).toBe('live');
 	});
 
 	it('reconcile only applies to unknown jobs owned by the agent', async () => {
-		ref.rt.jobs.enqueue({ jobKey: 'k3', kind: 'deploy', target: 'agent-1', spec: {} });
+		await ref.rt.jobs.enqueue({ jobKey: 'k3', kind: 'deploy', target: 'agent-1', spec: {} });
 		const claim = await json(await claimJobs(event('/ingress/jobs/claim', {}) as never));
 		const job = claim.job as { id: number; lease: string };
 		// A running job whose lease expired goes unknown on recovery:
@@ -178,8 +178,8 @@ describe('ingress job routes', () => {
 				{ id: String(job.id) }
 			) as never
 		);
-		ref.rt.jobs.recover(Date.now() + 200_000);
-		expect(ref.rt.jobs.get(job.id)?.status).toBe('unknown');
+		await ref.rt.jobs.recover(Date.now() + 200_000);
+		expect((await ref.rt.jobs.get(job.id))?.status).toBe('unknown');
 
 		const res = await json(
 			await reconcile(
@@ -187,7 +187,7 @@ describe('ingress job routes', () => {
 			)
 		);
 		expect(res).toEqual({ ok: true, applied: 1 });
-		expect(ref.rt.jobs.get(job.id)?.status).toBe('failed');
+		expect((await ref.rt.jobs.get(job.id))?.status).toBe('failed');
 
 		// A second report on the now-terminal job applies nothing.
 		const again = await json(

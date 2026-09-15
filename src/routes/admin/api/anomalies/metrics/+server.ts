@@ -5,8 +5,8 @@ import { getEngine } from '$lib/server/anomaly/engine';
 
 // Tracked metric keys plus their EWMA baseline stats; feeds the
 // panel's metric filter and the "vs baseline" display.
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	requirePerm(event, 'anomaly.view');
 	const rt = getRuntime();
-	return apiJson({ metrics: getEngine(rt.db).metrics() });
+	return apiJson({ metrics: await getEngine(rt.db).metrics() });
 };

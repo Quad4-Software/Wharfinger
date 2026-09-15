@@ -27,8 +27,8 @@ export const PUT: RequestHandler = async (event) => {
 		return apiError(422, 'add and remove must be arrays of user ids');
 	}
 	try {
-		const team = getTeamStore(rt.db).setMembers(id, add, remove);
-		audit(rt, event, 'team.members', `id=${id} +${add.length} -${remove.length}`);
+		const team = await getTeamStore(rt.db).setMembers(id, add, remove);
+		await audit(rt, event, 'team.members', `id=${id} +${add.length} -${remove.length}`);
 		return apiJson({ ok: true, team });
 	} catch (err) {
 		if (err instanceof TeamError) return apiError(err.status, err.message);

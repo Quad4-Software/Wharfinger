@@ -14,11 +14,16 @@ function freshDb(): DatabaseSync {
 	return openDb(mkdtempSync(join(tmpdir(), 'wharfinger-testdb-')));
 }
 
-function setup(): { db: DatabaseSync; users: UserStore; passkeys: WebAuthnStore; userId: number } {
+async function setup(): Promise<{
+	db: DatabaseSync;
+	users: UserStore;
+	passkeys: WebAuthnStore;
+	userId: number;
+}> {
 	const db = freshDb();
 	const users = new UserStore(db);
 	const passkeys = new WebAuthnStore(db);
-	const userId = users.create('alice', 'a-very-long-password', 'admin').id;
+	const userId = (await users.create('alice', 'a-very-long-password', 'admin')).id;
 	return { db, users, passkeys, userId };
 }
 
@@ -35,10 +40,10 @@ function insertCred(passkeys: WebAuthnStore, userId: number, credId = 'cred-1') 
 }
 
 describe('webauthn challenges', () => {
-	it('issues a challenge stored only as a hash', () => {
-		const { db, passkeys, userId } = setup();
+	it('issues a challenge stored only as a hash', async () => {
+		const { db, passkeys, userId } = await setup();
 		const token = randomToken();
-		passkeys.putChallenge(token, 'register', userId, 60_000);
+		await passkeys.putChallenge(token, 'register', userId, 60_000);
 		const row = db.prepare('SELECT token_hash FROM webauthn_challenges').get() as {
 			token_hash: string;
 		};
@@ -46,94 +51,94 @@ describe('webauthn challenges', () => {
 		expect(row.token_hash).not.toBe(token);
 	});
 
-	it('peek finds a live challenge without consuming it', () => {
-		const { passkeys, userId } = setup();
+	it('peek finds a live challenge without consuming it', async () => {
+		const { passkeys, userId } = await setup();
 		const token = randomToken();
-		passkeys.putChallenge(token, 'register', userId, 60_000);
-		expect(passkeys.peekChallenge(token, 'register')?.userId).toBe(userId);
-		expect(passkeys.peekChallenge(token, 'register')?.userId).toBe(userId);
+		await passkeys.putChallenge(token, 'register', userId, 60_000);
+		expect((await passkeys.peekChallenge(token, 'register'))?.userId).toBe(userId);
+		expect((await passkeys.peekChallenge(token, 'register'))?.userId).toBe(userId);
 	});
 
-	it('consume is single-use and returns the bound user', () => {
-		const { passkeys, userId } = setup();
+	it('consume is single-use and returns the bound user', async () => {
+		const { passkeys, userId } = await setup();
 		const token = randomToken();
-		passkeys.putChallenge(token, 'login', userId, 60_000);
-		expect(passkeys.consumeChallenge(token, 'login')?.userId).toBe(userId);
-		expect(passkeys.consumeChallenge(token, 'login')).toBeNull();
-		expect(passkeys.peekChallenge(token, 'login')).toBeNull();
+		await passkeys.putChallenge(token, 'login', userId, 60_000);
+		expect((await passkeys.consumeChallenge(token, 'login'))?.userId).toBe(userId);
+		expect(await passkeys.consumeChallenge(token, 'login')).toBeNull();
+		expect(await passkeys.peekChallenge(token, 'login')).toBeNull();
 	});
 
-	it('kinds do not cross-consume', () => {
-		const { passkeys, userId } = setup();
+	it('kinds do not cross-consume', async () => {
+		const { passkeys, userId } = await setup();
 		const token = randomToken();
-		passkeys.putChallenge(token, 'register', userId, 60_000);
-		expect(passkeys.consumeChallenge(token, 'login')).toBeNull();
-		expect(passkeys.consumeChallenge(token, 'register')?.userId).toBe(userId);
+		await passkeys.putChallenge(token, 'register', userId, 60_000);
+		expect(await passkeys.consumeChallenge(token, 'login')).toBeNull();
+		expect((await passkeys.consumeChallenge(token, 'register'))?.userId).toBe(userId);
 	});
 
-	it('supports discoverable challenges with no bound user', () => {
-		const { passkeys } = setup();
+	it('supports discoverable challenges with no bound user', async () => {
+		const { passkeys } = await setup();
 		const token = randomToken();
-		passkeys.putChallenge(token, 'login', null, 60_000);
-		const pending = passkeys.peekChallenge(token, 'login');
+		await passkeys.putChallenge(token, 'login', null, 60_000);
+		const pending = await passkeys.peekChallenge(token, 'login');
 		expect(pending?.userId).toBeNull();
 	});
 
-	it('rejects expired challenges on peek, consume, and prune', () => {
-		const { passkeys, userId } = setup();
+	it('rejects expired challenges on peek, consume, and prune', async () => {
+		const { passkeys, userId } = await setup();
 		const now = Date.now();
 		const token = randomToken();
-		passkeys.putChallenge(token, 'login', userId, 1000, now);
-		expect(passkeys.peekChallenge(token, 'login', now + 2000)).toBeNull();
-		expect(passkeys.consumeChallenge(token, 'login', now + 2000)).toBeNull();
-		expect(passkeys.prune(now + 2000)).toBe(1);
+		await passkeys.putChallenge(token, 'login', userId, 1000, now);
+		expect(await passkeys.peekChallenge(token, 'login', now + 2000)).toBeNull();
+		expect(await passkeys.consumeChallenge(token, 'login', now + 2000)).toBeNull();
+		expect(await passkeys.prune(now + 2000)).toBe(1);
 	});
 
-	it('rejects unknown tokens', () => {
-		const { passkeys } = setup();
-		expect(passkeys.peekChallenge('nope', 'login')).toBeNull();
-		expect(passkeys.consumeChallenge('nope', 'login')).toBeNull();
+	it('rejects unknown tokens', async () => {
+		const { passkeys } = await setup();
+		expect(await passkeys.peekChallenge('nope', 'login')).toBeNull();
+		expect(await passkeys.consumeChallenge('nope', 'login')).toBeNull();
 	});
 });
 
 describe('webauthn credentials', () => {
-	it('inserts, lists, and looks up credentials', () => {
-		const { passkeys, userId } = setup();
-		insertCred(passkeys, userId);
-		const cred = passkeys.byCredentialId('cred-1');
+	it('inserts, lists, and looks up credentials', async () => {
+		const { passkeys, userId } = await setup();
+		await insertCred(passkeys, userId);
+		const cred = await passkeys.byCredentialId('cred-1');
 		expect(cred?.userId).toBe(userId);
 		expect(cred?.transports).toEqual(['usb', 'nfc']);
 		expect(cred?.name).toBe('YubiKey 5');
 		expect(cred?.backedUp).toBe(false);
-		expect(passkeys.forUser(userId)).toHaveLength(1);
+		expect(await passkeys.forUser(userId)).toHaveLength(1);
 	});
 
-	it('refuses a duplicate credential id', () => {
-		const { passkeys, users, userId } = setup();
-		const other = users.create('bob', 'a-very-long-password', 'admin').id;
-		insertCred(passkeys, userId);
-		expect(insertCred(passkeys, other)).toBeNull();
-		expect(passkeys.forUser(other)).toHaveLength(0);
+	it('refuses a duplicate credential id', async () => {
+		const { passkeys, users, userId } = await setup();
+		const other = (await users.create('bob', 'a-very-long-password', 'admin')).id;
+		await insertCred(passkeys, userId);
+		expect(await insertCred(passkeys, other)).toBeNull();
+		expect(await passkeys.forUser(other)).toHaveLength(0);
 	});
 
-	it('renames and removes only owner-scoped rows', () => {
-		const { passkeys, users, userId } = setup();
-		const other = users.create('bob', 'a-very-long-password', 'admin').id;
-		const cred = insertCred(passkeys, userId);
+	it('renames and removes only owner-scoped rows', async () => {
+		const { passkeys, users, userId } = await setup();
+		const other = (await users.create('bob', 'a-very-long-password', 'admin')).id;
+		const cred = await insertCred(passkeys, userId);
 		expect(cred).not.toBeNull();
-		expect(passkeys.rename(cred?.id ?? 0, other, 'hijack')).toBe(false);
-		expect(passkeys.rename(cred?.id ?? 0, userId, 'MacBook')).toBe(true);
-		expect(passkeys.byCredentialId('cred-1')?.name).toBe('MacBook');
-		expect(passkeys.remove(cred?.id ?? 0, other)).toBeNull();
-		expect(passkeys.remove(cred?.id ?? 0, userId)?.credentialId).toBe('cred-1');
-		expect(passkeys.byCredentialId('cred-1')).toBeNull();
+		expect(await passkeys.rename(cred?.id ?? 0, other, 'hijack')).toBe(false);
+		expect(await passkeys.rename(cred?.id ?? 0, userId, 'MacBook')).toBe(true);
+		expect((await passkeys.byCredentialId('cred-1'))?.name).toBe('MacBook');
+		expect(await passkeys.remove(cred?.id ?? 0, other)).toBeNull();
+		expect((await passkeys.remove(cred?.id ?? 0, userId))?.credentialId).toBe('cred-1');
+		expect(await passkeys.byCredentialId('cred-1')).toBeNull();
 	});
 
-	it('cascades credential and challenge rows when the user is deleted', () => {
-		const { db, users, passkeys, userId } = setup();
-		insertCred(passkeys, userId);
-		passkeys.putChallenge(randomToken(), 'register', userId, 60_000);
-		users.remove(userId);
+	it('cascades credential and challenge rows when the user is deleted', async () => {
+		const { db, users, passkeys, userId } = await setup();
+		await insertCred(passkeys, userId);
+		await passkeys.putChallenge(randomToken(), 'register', userId, 60_000);
+		await users.remove(userId);
 		const creds = db.prepare('SELECT COUNT(*) AS n FROM webauthn_credentials').get() as {
 			n: number;
 		};
@@ -144,70 +149,70 @@ describe('webauthn credentials', () => {
 		expect(challenges.n).toBe(0);
 	});
 
-	it('survives malformed transports json', () => {
-		const { db, passkeys, userId } = setup();
-		const cred = insertCred(passkeys, userId);
+	it('survives malformed transports json', async () => {
+		const { db, passkeys, userId } = await setup();
+		const cred = await insertCred(passkeys, userId);
 		db.prepare('UPDATE webauthn_credentials SET transports = ? WHERE id = ?').run(
 			'not json',
 			cred?.id ?? 0
 		);
-		expect(passkeys.byCredentialId('cred-1')?.transports).toEqual([]);
+		expect((await passkeys.byCredentialId('cred-1'))?.transports).toEqual([]);
 	});
 });
 
 describe('sign counter', () => {
-	it('accepts a first nonzero counter and stamps last_used', () => {
-		const { passkeys, userId } = setup();
-		const cred = insertCred(passkeys, userId);
-		expect(passkeys.recordUse(cred?.id ?? 0, 5, true, 1000)).toBe('ok');
-		const after = passkeys.byCredentialId('cred-1');
+	it('accepts a first nonzero counter and stamps last_used', async () => {
+		const { passkeys, userId } = await setup();
+		const cred = await insertCred(passkeys, userId);
+		expect(await passkeys.recordUse(cred?.id ?? 0, 5, true, 1000)).toBe('ok');
+		const after = await passkeys.byCredentialId('cred-1');
 		expect(after?.counter).toBe(5);
 		expect(after?.lastUsedAt).toBe(1000);
 		expect(after?.backedUp).toBe(true);
 	});
 
-	it('accepts an advancing counter', () => {
-		const { passkeys, userId } = setup();
-		const cred = insertCred(passkeys, userId);
-		passkeys.recordUse(cred?.id ?? 0, 5, false);
-		expect(passkeys.recordUse(cred?.id ?? 0, 6, false)).toBe('ok');
-		expect(passkeys.byCredentialId('cred-1')?.counter).toBe(6);
+	it('accepts an advancing counter', async () => {
+		const { passkeys, userId } = await setup();
+		const cred = await insertCred(passkeys, userId);
+		await passkeys.recordUse(cred?.id ?? 0, 5, false);
+		expect(await passkeys.recordUse(cred?.id ?? 0, 6, false)).toBe('ok');
+		expect((await passkeys.byCredentialId('cred-1'))?.counter).toBe(6);
 	});
 
-	it('rejects and deletes the credential on counter regression', () => {
-		const { passkeys, userId } = setup();
-		const cred = insertCred(passkeys, userId);
-		passkeys.recordUse(cred?.id ?? 0, 5, false);
-		expect(passkeys.recordUse(cred?.id ?? 0, 5, false)).toBe('cloned');
-		expect(passkeys.byCredentialId('cred-1')).toBeNull();
+	it('rejects and deletes the credential on counter regression', async () => {
+		const { passkeys, userId } = await setup();
+		const cred = await insertCred(passkeys, userId);
+		await passkeys.recordUse(cred?.id ?? 0, 5, false);
+		expect(await passkeys.recordUse(cred?.id ?? 0, 5, false)).toBe('cloned');
+		expect(await passkeys.byCredentialId('cred-1')).toBeNull();
 	});
 
-	it('rejects a backwards jump too', () => {
-		const { passkeys, userId } = setup();
-		const cred = insertCred(passkeys, userId);
-		passkeys.recordUse(cred?.id ?? 0, 10, false);
-		expect(passkeys.recordUse(cred?.id ?? 0, 3, false)).toBe('cloned');
+	it('rejects a backwards jump too', async () => {
+		const { passkeys, userId } = await setup();
+		const cred = await insertCred(passkeys, userId);
+		await passkeys.recordUse(cred?.id ?? 0, 10, false);
+		expect(await passkeys.recordUse(cred?.id ?? 0, 3, false)).toBe('cloned');
 	});
 
-	it('ignores authenticators that never report a counter', () => {
-		const { passkeys, userId } = setup();
-		const cred = insertCred(passkeys, userId);
-		expect(passkeys.recordUse(cred?.id ?? 0, 0, false)).toBe('ok');
-		expect(passkeys.recordUse(cred?.id ?? 0, 0, false)).toBe('ok');
-		expect(passkeys.byCredentialId('cred-1')?.counter).toBe(0);
+	it('ignores authenticators that never report a counter', async () => {
+		const { passkeys, userId } = await setup();
+		const cred = await insertCred(passkeys, userId);
+		expect(await passkeys.recordUse(cred?.id ?? 0, 0, false)).toBe('ok');
+		expect(await passkeys.recordUse(cred?.id ?? 0, 0, false)).toBe('ok');
+		expect((await passkeys.byCredentialId('cred-1'))?.counter).toBe(0);
 	});
 
-	it('does not flag a stored nonzero counter when the new one is zero', () => {
-		const { passkeys, userId } = setup();
-		const cred = insertCred(passkeys, userId);
-		passkeys.recordUse(cred?.id ?? 0, 7, false);
-		expect(passkeys.recordUse(cred?.id ?? 0, 0, false)).toBe('ok');
-		expect(passkeys.byCredentialId('cred-1')?.counter).toBe(7);
+	it('does not flag a stored nonzero counter when the new one is zero', async () => {
+		const { passkeys, userId } = await setup();
+		const cred = await insertCred(passkeys, userId);
+		await passkeys.recordUse(cred?.id ?? 0, 7, false);
+		expect(await passkeys.recordUse(cred?.id ?? 0, 0, false)).toBe('ok');
+		expect((await passkeys.byCredentialId('cred-1'))?.counter).toBe(7);
 	});
 
-	it('reports missing credentials', () => {
-		const { passkeys } = setup();
-		expect(passkeys.recordUse(999, 1, false)).toBe('missing');
+	it('reports missing credentials', async () => {
+		const { passkeys } = await setup();
+		expect(await passkeys.recordUse(999, 1, false)).toBe('missing');
 	});
 });
 

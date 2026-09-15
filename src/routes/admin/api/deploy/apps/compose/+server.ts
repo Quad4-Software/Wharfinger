@@ -26,7 +26,7 @@ export const POST: RequestHandler = async (event) => {
 	const text = typeof body.compose === 'string' ? body.compose : '';
 	if (!text.trim()) return apiError(422, 'compose yaml required');
 	const agentId = typeof body.agentId === 'string' ? body.agentId : '';
-	if (!rt.agents.get(agentId)) return apiError(422, 'target agent not found');
+	if (!(await rt.agents.get(agentId))) return apiError(422, 'target agent not found');
 	const project =
 		typeof body.project === 'string' && body.project.trim()
 			? body.project.trim().toLowerCase()
@@ -55,18 +55,18 @@ export const POST: RequestHandler = async (event) => {
 	try {
 		for (const svc of plan.services) {
 			const name = plan.project ? `${plan.project}-${svc.name}` : svc.name;
-			const { app } = rt.deploys.createApp({
+			const { app } = await rt.deploys.createApp({
 				name,
 				agentId,
 				source: svc.source,
 				ports: svc.ports,
 				healthcheck: svc.healthcheck.kind ? (svc.healthcheck as Healthcheck) : undefined
 			});
-			if (Object.keys(svc.env).length > 0) rt.deploys.setEnv(app.id, svc.env);
+			if (Object.keys(svc.env).length > 0) await rt.deploys.setEnv(app.id, svc.env);
 			created.push({ id: app.id, name: app.name });
 		}
 	} catch (err) {
-		for (const c of created) rt.deploys.deleteApp(c.id);
+		for (const c of created) await rt.deploys.deleteApp(c.id);
 		if (err instanceof DeployError) return apiError(err.status, err.message, { plan });
 		throw err;
 	}
@@ -77,23 +77,23 @@ export const POST: RequestHandler = async (event) => {
 	if (plan.project) {
 		const groups = getGroupStore(rt.db);
 		try {
-			group = groups.create(plan.project);
+			group = await groups.create(plan.project);
 		} catch (err) {
 			if (err instanceof GroupError && err.status === 409) {
-				group = groups.list().find((g) => g.name === plan.project) ?? null;
+				group = (await groups.list()).find((g) => g.name === plan.project) ?? null;
 			} else {
 				throw err;
 			}
 		}
 		if (group) {
-			groups.setMembers(
+			await groups.setMembers(
 				group.id,
 				created.map((c) => ({ memberKind: 'app' as const, memberId: c.id })),
 				[]
 			);
 		}
 	}
-	audit(
+	await audit(
 		rt,
 		event,
 		'deploy.compose.import',

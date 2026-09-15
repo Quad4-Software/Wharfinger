@@ -22,7 +22,11 @@ export const OPTIONS: RequestHandler = () => new Response(null, { status: 204, h
 
 export const POST: RequestHandler = async (event) => {
 	const rt = getRuntime();
-	const project = resolveProject(rt.telemetry, event.params.project, sentryKey(event.request));
+	const project = await resolveProject(
+		rt.telemetry,
+		event.params.project,
+		sentryKey(event.request)
+	);
 	if (!project) return err(401, 'invalid DSN key or project');
 
 	const len = Number(event.request.headers.get('content-length') ?? 0);
@@ -40,7 +44,7 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	const e = normalizeEvent(raw as Record<string, unknown>);
-	rt.telemetry.record({
+	await rt.telemetry.record({
 		projectId: project.id,
 		fingerprint: e.fingerprint,
 		title: e.title,

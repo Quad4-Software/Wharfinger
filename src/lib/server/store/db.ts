@@ -1,12 +1,43 @@
 import { chmodSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import * as v from 'valibot';
 import { AUDIT_GENESIS, auditRowHash, type AuditHashRow } from '../admin/audit';
+import { StorageSection } from '../config/schema';
+import { SqliteDb, type Db } from './driver';
+import { SurrealDb } from './surreal';
 
 const DEFAULT_DATA_DIR = 'data';
 
 export function dataDir(): string {
 	return resolve(process.env.WHARFINGER_DATA_DIR ?? DEFAULT_DATA_DIR);
+}
+
+/**
+ * Picks the storage backend from [storage]. sqlite is the default and
+ * keeps the zero-dependency embedded path; surreal talks to a remote
+ * SurrealDB over websocket RPC. SurrealDb connects lazily on first
+ * statement so this stays synchronous like openDb.
+ */
+export function openStorage(raw: unknown, dir = dataDir()): Db {
+	const cfg = v.parse(StorageSection, raw ?? {});
+	if (cfg.driver === 'surreal') {
+		if (!cfg.url) throw new Error('[storage].url is required when driver = "surreal"');
+		if (cfg.url.startsWith('ws://') || cfg.url.startsWith('http://')) {
+			console.warn(
+				'[storage] surreal url is plaintext; signin credentials cross the wire unencrypted, use wss://'
+			);
+		}
+		return new SurrealDb({
+			url: cfg.url,
+			ns: cfg.ns,
+			db: cfg.db,
+			user: cfg.user,
+			pass: cfg.pass,
+			timeoutMs: cfg.timeout_ms
+		});
+	}
+	return new SqliteDb(openDb(dir));
 }
 
 const SCHEMA = `

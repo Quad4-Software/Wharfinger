@@ -3,10 +3,10 @@ import { getRuntime } from '$lib/server/runtime';
 import { apiError, apiJson, audit, readJson, requirePerm } from '$lib/server/admin/http';
 import { getGroupStore, GroupError } from '$lib/server/groups/store';
 
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	requirePerm(event, 'groups.manage');
 	const rt = getRuntime();
-	return apiJson({ groups: getGroupStore(rt.db).list() });
+	return apiJson({ groups: await getGroupStore(rt.db).list() });
 };
 
 interface CreateBody {
@@ -24,11 +24,11 @@ export const POST: RequestHandler = async (event) => {
 	// null clears the color; format is validated by the store.
 	const color = typeof body.color === 'string' ? body.color : null;
 	try {
-		const group = getGroupStore(rt.db).create(
+		const group = await getGroupStore(rt.db).create(
 			typeof body.name === 'string' ? body.name : '',
 			color
 		);
-		audit(rt, event, 'group.create', `id=${group.id} name=${group.name}`);
+		await audit(rt, event, 'group.create', `id=${group.id} name=${group.name}`);
 		rt.snapshot.invalidate();
 		return apiJson({ ok: true, group }, 201);
 	} catch (err) {

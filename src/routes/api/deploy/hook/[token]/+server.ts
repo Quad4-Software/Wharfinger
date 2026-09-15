@@ -16,13 +16,13 @@ const MAX_BODY = 256 * 1024;
  */
 export const POST: RequestHandler = async (event) => {
 	const rt = getRuntime();
-	const app = rt.deploys.byWebhook(event.params.token);
+	const app = await rt.deploys.byWebhook(event.params.token);
 	if (!app) return apiError(404, 'not found');
 
 	const text = await event.request.text();
 	if (text.length > MAX_BODY) return apiError(413, 'body too large');
 
-	const secret = rt.deploys.hookSecret(app.id);
+	const secret = await rt.deploys.hookSecret(app.id);
 	if (secret && !hookSignatureOk(event.request.headers, text, secret)) {
 		return apiError(401, 'invalid webhook signature');
 	}
@@ -44,11 +44,11 @@ export const POST: RequestHandler = async (event) => {
 	const commit = push.commit;
 
 	try {
-		const { job, releaseId, deduped } = triggerDeploy(rt, app, {
+		const { job, releaseId, deduped } = await triggerDeploy(rt, app, {
 			jobKey: `deploy:${app.id}:hook:${delivery.slice(0, 80)}`
 		});
 		if (deduped) return apiJson({ ok: true, deduped: true, jobId: job.id });
-		if (commit && releaseId) rt.deploys.noteCommit(releaseId, commit);
+		if (commit && releaseId) await rt.deploys.noteCommit(releaseId, commit);
 		return apiJson({ ok: true, jobId: job.id, releaseId });
 	} catch (err) {
 		if (err instanceof DeployError) return apiError(err.status, err.message);

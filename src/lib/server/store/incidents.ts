@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { asDb, type Db } from './driver';
 
 export interface IncidentRow {
 	id: number;
@@ -9,13 +10,25 @@ export interface IncidentRow {
 	endedAt: number | null;
 }
 
-export class IncidentStore {
-	constructor(private readonly db: DatabaseSync) {}
+const COLS =
+	'id, service_id AS serviceId, severity, title, started_at AS startedAt, ended_at AS endedAt';
 
-	open(serviceId: string, severity: 'minor' | 'major', title: string, now = Date.now()): number {
-		const existing = this.openFor(serviceId);
+export class IncidentStore {
+	private readonly db: Db;
+
+	constructor(db: Db | DatabaseSync) {
+		this.db = asDb(db);
+	}
+
+	async open(
+		serviceId: string,
+		severity: 'minor' | 'major',
+		title: string,
+		now = Date.now()
+	): Promise<number> {
+		const existing = await this.openFor(serviceId);
 		if (existing) return existing.id;
-		const r = this.db
+		const r = await this.db
 			.prepare(
 				'INSERT INTO incidents (service_id, severity, title, started_at) VALUES (?, ?, ?, ?)'
 			)
@@ -23,61 +36,61 @@ export class IncidentStore {
 		return Number(r.lastInsertRowid);
 	}
 
-	close(serviceId: string, now = Date.now()): void {
-		this.db
+	async close(serviceId: string, now = Date.now()): Promise<void> {
+		await this.db
 			.prepare('UPDATE incidents SET ended_at = ? WHERE service_id = ? AND ended_at IS NULL')
 			.run(now, serviceId);
 	}
 
-	openFor(serviceId: string): IncidentRow | null {
-		return (
-			(this.db
-				.prepare(
-					'SELECT id, service_id AS serviceId, severity, title, started_at AS startedAt, ended_at AS endedAt FROM incidents WHERE service_id = ? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1'
-				)
-				.get(serviceId) as IncidentRow | undefined) ?? null
-		);
-	}
-
-	allOpen(): IncidentRow[] {
-		return this.db
+	async openFor(serviceId: string): Promise<IncidentRow | null> {
+		const row = (await this.db
 			.prepare(
-				'SELECT id, service_id AS serviceId, severity, title, started_at AS startedAt, ended_at AS endedAt FROM incidents WHERE ended_at IS NULL ORDER BY started_at DESC'
+				`SELECT ${COLS} FROM incidents WHERE service_id = ? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1`
 			)
-			.all() as unknown as IncidentRow[];
+			.get(serviceId)) as IncidentRow | undefined;
+		return row ?? null;
 	}
 
-	recent(limit: number): IncidentRow[] {
-		return this.db
+	async allOpen(): Promise<IncidentRow[]> {
+		return (await this.db
+			.prepare(`SELECT ${COLS} FROM incidents WHERE ended_at IS NULL ORDER BY started_at DESC`)
+			.all()) as unknown as IncidentRow[];
+	}
+
+	async recent(limit: number): Promise<IncidentRow[]> {
+		return (await this.db
 			.prepare(
-				'SELECT id, service_id AS serviceId, severity, title, started_at AS startedAt, ended_at AS endedAt FROM incidents WHERE ended_at IS NOT NULL ORDER BY started_at DESC LIMIT ?'
+				`SELECT ${COLS} FROM incidents WHERE ended_at IS NOT NULL ORDER BY started_at DESC LIMIT ?`
 			)
-			.all(limit) as unknown as IncidentRow[];
+			.all(limit)) as unknown as IncidentRow[];
 	}
 
-	byId(id: number): IncidentRow | null {
-		return (
-			(this.db
-				.prepare(
-					'SELECT id, service_id AS serviceId, severity, title, started_at AS startedAt, ended_at AS endedAt FROM incidents WHERE id = ?'
-				)
-				.get(id) as IncidentRow | undefined) ?? null
-		);
+	async byId(id: number): Promise<IncidentRow | null> {
+		const row = (await this.db.prepare(`SELECT ${COLS} FROM incidents WHERE id = ?`).get(id)) as
+			IncidentRow | undefined;
+		return row ?? null;
 	}
 
 	/** Manually close an open incident regardless of monitor state. */
-	resolve(id: number, now = Date.now()): boolean {
+	async resolve(id: number, now = Date.now()): Promise<boolean> {
 		return (
 			Number(
-				this.db
-					.prepare('UPDATE incidents SET ended_at = ? WHERE id = ? AND ended_at IS NULL')
-					.run(now, id).changes
+				(
+					await this.db
+						.prepare('UPDATE incidents SET ended_at = ? WHERE id = ? AND ended_at IS NULL')
+						.run(now, id)
+				).changes
 			) > 0
 		);
 	}
 
-	addUpdate(incidentId: number, message: string, author: string | null, now = Date.now()): void {
-		this.db
+	async addUpdate(
+		incidentId: number,
+		message: string,
+		author: string | null,
+		now = Date.now()
+	): Promise<void> {
+		await this.db
 			.prepare(
 				'INSERT INTO incident_updates (incident_id, at, message, author) VALUES (?, ?, ?, ?)'
 			)
@@ -85,14 +98,16 @@ export class IncidentStore {
 	}
 
 	/** Operator-posted updates, keyed by incident row id. */
-	updatesFor(ids: number[]): Map<number, { at: number; message: string; author: string | null }[]> {
+	async updatesFor(
+		ids: number[]
+	): Promise<Map<number, { at: number; message: string; author: string | null }[]>> {
 		const out = new Map<number, { at: number; message: string; author: string | null }[]>();
 		if (ids.length === 0) return out;
-		const rows = this.db
+		const rows = (await this.db
 			.prepare(
 				`SELECT incident_id AS incidentId, at, message, author FROM incident_updates WHERE incident_id IN (${ids.map(() => '?').join(',')}) ORDER BY at DESC`
 			)
-			.all(...ids) as unknown as {
+			.all(...ids)) as unknown as {
 			incidentId: number;
 			at: number;
 			message: string;

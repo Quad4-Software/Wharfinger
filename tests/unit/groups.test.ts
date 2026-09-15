@@ -101,89 +101,89 @@ function seedApp(id: string): void {
 }
 
 describe('GroupStore', () => {
-	it('creates, lists, updates, and removes groups', () => {
+	it('creates, lists, updates, and removes groups', async () => {
 		const store = getGroupStore(ref.db);
-		const g = store.create('Production', '#3b82f6');
+		const g = await store.create('Production', '#3b82f6');
 		expect(g.id).toMatch(/^grp_/);
 		expect(g.memberCount).toBe(0);
 
-		expect(store.get(g.id)?.name).toBe('Production');
-		expect(store.list().map((x) => x.name)).toContain('Production');
+		expect((await store.get(g.id))?.name).toBe('Production');
+		expect((await store.list()).map((x) => x.name)).toContain('Production');
 
-		const updated = store.update(g.id, { name: 'Prod', color: null });
+		const updated = await store.update(g.id, { name: 'Prod', color: null });
 		expect(updated?.name).toBe('Prod');
 		expect(updated?.color).toBeNull();
 
-		expect(store.remove(g.id)).toBe(true);
-		expect(store.get(g.id)).toBeNull();
-		expect(store.remove(g.id)).toBe(false);
+		expect(await store.remove(g.id)).toBe(true);
+		expect(await store.get(g.id)).toBeNull();
+		expect(await store.remove(g.id)).toBe(false);
 	});
 
-	it('rejects bad names and colors', () => {
+	it('rejects bad names and colors', async () => {
 		const store = getGroupStore(ref.db);
-		expect(() => store.create('', null)).toThrow(GroupError);
-		expect(() => store.create('x'.repeat(65), null)).toThrow(GroupError);
-		expect(() => store.create('ok', 'red')).toThrow(GroupError);
-		expect(() => store.create('ok', '#FFF')).toThrow(GroupError);
+		await expect(store.create('', null)).rejects.toThrow(GroupError);
+		await expect(store.create('x'.repeat(65), null)).rejects.toThrow(GroupError);
+		await expect(store.create('ok', 'red')).rejects.toThrow(GroupError);
+		await expect(store.create('ok', '#FFF')).rejects.toThrow(GroupError);
 		try {
-			store.create('', null);
+			await store.create('', null);
 		} catch (e) {
 			expect((e as GroupError).status).toBe(422);
 		}
 	});
 
-	it('dedupes members and removes them', () => {
+	it('dedupes members and removes them', async () => {
 		const store = getGroupStore(ref.db);
-		const g = store.create('members-test', null);
+		const g = await store.create('members-test', null);
 		const svc = { memberKind: 'service' as const, memberId: 'web-1' };
-		const once = store.setMembers(g.id, [svc], []);
+		const once = await store.setMembers(g.id, [svc], []);
 		expect(once.memberCount).toBe(1);
-		const twice = store.setMembers(g.id, [svc, svc], []);
+		const twice = await store.setMembers(g.id, [svc, svc], []);
 		expect(twice.memberCount).toBe(1);
-		const after = store.setMembers(g.id, [], [svc]);
+		const after = await store.setMembers(g.id, [], [svc]);
 		expect(after.memberCount).toBe(0);
 	});
 
-	it('validates member shape and app existence', () => {
+	it('validates member shape and app existence', async () => {
 		const store = getGroupStore(ref.db);
-		const g = store.create('validate-test', null);
+		const g = await store.create('validate-test', null);
 		seedApp('app_abc');
-		expect(() =>
+		await expect(
 			store.setMembers(g.id, [{ memberKind: 'service', memberId: 'bad id!' }], [])
-		).toThrow(GroupError);
-		expect(() =>
+		).rejects.toThrow(GroupError);
+		await expect(
 			store.setMembers(g.id, [{ memberKind: 'app', memberId: 'app_missing' }], [])
-		).toThrow(GroupError);
-		const ok = store.setMembers(g.id, [{ memberKind: 'app', memberId: 'app_abc' }], []);
+		).rejects.toThrow(GroupError);
+		const ok = await store.setMembers(g.id, [{ memberKind: 'app', memberId: 'app_abc' }], []);
 		expect(ok.memberCount).toBe(1);
 	});
 
-	it('cascades member rows on delete', () => {
+	it('deletes member rows on delete', async () => {
 		const store = getGroupStore(ref.db);
-		const g = store.create('cascade-test', null);
-		store.setMembers(g.id, [{ memberKind: 'service', memberId: 'web-2' }], []);
-		store.remove(g.id);
+		const g = await store.create('cascade-test', null);
+		await store.setMembers(g.id, [{ memberKind: 'service', memberId: 'web-2' }], []);
+		await store.remove(g.id);
 		const n = ref.db
 			.prepare('SELECT COUNT(*) AS n FROM service_group_members WHERE group_id = ?')
 			.get(g.id) as { n: number };
 		expect(n.n).toBe(0);
 	});
 
-	it('maps services to group ids for the snapshot', () => {
+	it('maps services to group ids for the snapshot', async () => {
 		const store = getGroupStore(ref.db);
-		const a = store.create('idx-a', null);
-		const b = store.create('idx-b', null);
-		store.setMembers(a.id, [{ memberKind: 'service', memberId: 'svc-1' }], []);
-		store.setMembers(b.id, [{ memberKind: 'service', memberId: 'svc-1' }], []);
-		const idx = store.serviceGroupIndex();
+		const a = await store.create('idx-a', null);
+		const b = await store.create('idx-b', null);
+		await store.setMembers(a.id, [{ memberKind: 'service', memberId: 'svc-1' }], []);
+		await store.setMembers(b.id, [{ memberKind: 'service', memberId: 'svc-1' }], []);
+		const idx = await store.serviceGroupIndex();
 		expect(idx.get('svc-1')?.sort()).toEqual([a.id, b.id].sort());
 		expect(idx.has('svc-2')).toBe(false);
 	});
 
-	it('throws 404 when editing members of a missing group', () => {
+	it('throws 404 when editing members of a missing group', async () => {
 		const store = getGroupStore(ref.db);
 		try {
-			store.setMembers('grp_none', [{ memberKind: 'service', memberId: 'x' }], []);
+			await store.setMembers('grp_none', [{ memberKind: 'service', memberId: 'x' }], []);
 			expect.unreachable();
 		} catch (e) {
 			expect((e as GroupError).status).toBe(404);

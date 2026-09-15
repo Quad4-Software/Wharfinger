@@ -52,20 +52,20 @@ describe('uptimeFractionInRows', () => {
 		const store = new CheckStore(db);
 		const now = Date.now();
 		for (let i = 0; i < 200; i++) {
-			store.record(
+			await store.record(
 				'svc',
 				{ ok: i % 4 !== 0, latencyMs: 10, status: i % 4 !== 0 ? 'up' : 'down' },
 				now - i * 60_000
 			);
 		}
-		const rows = store.since('svc', now - 3 * 3600_000);
+		const rows = await store.since('svc', now - 3 * 3600_000);
 		for (const w of [3600_000, 2 * 3600_000, 90_000]) {
 			expect(uptimeFractionInRows(rows, now - w)).toBeCloseTo(
-				store.uptimeFraction('svc', now - w) ?? -1,
+				(await store.uptimeFraction('svc', now - w)) ?? -1,
 				10
 			);
 		}
 		expect(uptimeFractionInRows(rows, now + 1000)).toBeNull();
-		expect(store.uptimeFraction('svc', now + 1000)).toBeNull();
+		expect(await store.uptimeFraction('svc', now + 1000)).toBeNull();
 	});
 });

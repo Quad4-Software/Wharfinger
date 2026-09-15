@@ -4,13 +4,13 @@ import { apiError, apiJson, audit, readJson, requirePerm } from '$lib/server/adm
 import { DeployError } from '$lib/server/deploy/store';
 import type { AppSource, DeployRuntime, Healthcheck, PortMap } from '$lib/shared/deploy';
 
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	requirePerm(event, 'deploy.view');
 	const rt = getRuntime();
-	const app = rt.deploys.getApp(event.params.id);
+	const app = await rt.deploys.getApp(event.params.id);
 	if (!app) return apiError(404, 'app not found');
-	const live = rt.deploys.liveRelease(app.id);
-	return apiJson({ app, live, releases: rt.deploys.releases(app.id) });
+	const live = await rt.deploys.liveRelease(app.id);
+	return apiJson({ app, live, releases: await rt.deploys.releases(app.id) });
 };
 
 export const PATCH: RequestHandler = async (event) => {
@@ -30,7 +30,7 @@ export const PATCH: RequestHandler = async (event) => {
 		expectedUpdatedAt?: unknown;
 	}>(event.request, 64 * 1024);
 	try {
-		const app = rt.deploys.updateApp(event.params.id, {
+		const app = await rt.deploys.updateApp(event.params.id, {
 			name: body.name as string | undefined,
 			agentId: body.agentId as string | undefined,
 			source: body.source as AppSource | undefined,
@@ -44,9 +44,9 @@ export const PATCH: RequestHandler = async (event) => {
 				typeof body.expectedUpdatedAt === 'number' ? body.expectedUpdatedAt : undefined
 		});
 		if (typeof body.hookSecret === 'string' && body.hookSecret) {
-			rt.deploys.setHookSecret(app.id, body.hookSecret.slice(0, 256));
+			await rt.deploys.setHookSecret(app.id, body.hookSecret.slice(0, 256));
 		}
-		audit(rt, event, 'deploy.app.update', `app=${app.id} actor=${actor.id}`);
+		await audit(rt, event, 'deploy.app.update', `app=${app.id} actor=${actor.id}`);
 		return apiJson({ ok: true, app });
 	} catch (err) {
 		if (err instanceof DeployError) return apiError(err.status, err.message);
@@ -54,10 +54,10 @@ export const PATCH: RequestHandler = async (event) => {
 	}
 };
 
-export const DELETE: RequestHandler = (event) => {
+export const DELETE: RequestHandler = async (event) => {
 	requirePerm(event, 'deploy.manage');
 	const rt = getRuntime();
-	if (!rt.deploys.deleteApp(event.params.id)) return apiError(404, 'app not found');
-	audit(rt, event, 'deploy.app.delete', `app=${event.params.id}`);
+	if (!(await rt.deploys.deleteApp(event.params.id))) return apiError(404, 'app not found');
+	await audit(rt, event, 'deploy.app.delete', `app=${event.params.id}`);
 	return apiJson({ ok: true });
 };

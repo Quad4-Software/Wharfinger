@@ -39,7 +39,7 @@ export class AgentAlerter {
 	) {}
 
 	/** Evaluate threshold rules against a fresh, already-recorded sample. */
-	onSample(agent: AgentRow, p: AgentPayload): void {
+	async onSample(agent: AgentRow, p: AgentPayload): Promise<void> {
 		const ing = this.config().ingress;
 		const alerts = { ...agent.alerts };
 		let dirty = false;
@@ -84,19 +84,19 @@ export class AgentAlerter {
 				);
 			}
 		}
-		if (dirty) this.agents.setAlerts(agent.id, alerts);
+		if (dirty) await this.agents.setAlerts(agent.id, alerts);
 	}
 
 	/** Periodic silence detector; run on a ~1min timer from the runtime. */
-	tick(): void {
+	async tick(): Promise<void> {
 		const offMin = this.config().ingress.alert_offline_minutes;
 		const now = Date.now();
-		for (const agent of this.agents.scan()) {
+		for (const agent of await this.agents.scan()) {
 			const alerts = { ...agent.alerts };
 			if (offMin <= 0) {
 				if ('offline' in alerts) {
 					delete alerts.offline;
-					this.agents.setAlerts(agent.id, alerts);
+					await this.agents.setAlerts(agent.id, alerts);
 				}
 				continue;
 			}
@@ -104,7 +104,7 @@ export class AgentAlerter {
 			const silentMs = now - agent.lastSeenAt;
 			if (silentMs <= offMin * 60_000) continue;
 			alerts.offline = now;
-			this.agents.setAlerts(agent.id, alerts);
+			await this.agents.setAlerts(agent.id, alerts);
 			this.fire(agent, 'down', `no metrics for ${Math.round(silentMs / 60_000)} min`);
 		}
 	}

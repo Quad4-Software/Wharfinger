@@ -36,30 +36,30 @@ function verifyRaw(pubB64: string, msg: Buffer, sigB64: string): boolean {
 }
 
 describe('hub key rotation', () => {
-	it('rotates with a proof the old key verifies', () => {
+	it('rotates with a proof the old key verifies', async () => {
 		const db = freshDb();
-		const oldPub = publicKeyB64(db);
-		const info = rotateHubKey(db);
+		const oldPub = await publicKeyB64(db);
+		const info = await rotateHubKey(db);
 		expect(info.pub).not.toBe(oldPub);
 		expect(info.prev_pub).toBe(oldPub);
 		expect(info.rotated_at).toBeTypeOf('number');
 		// Proof covers the raw new pubkey bytes, signed by the OLD key.
 		expect(verifyRaw(oldPub, Buffer.from(info.pub, 'base64'), info.proof!)).toBe(true);
 		// The new key now signs handshake tokens.
-		const sig = signToken(db, 'st_tok');
+		const sig = await signToken(db, 'st_tok');
 		expect(verifyRaw(info.pub, Buffer.from('st_tok'), sig)).toBe(true);
 		// publicKeyInfo advertises the rotation fields.
-		const adv = publicKeyInfo(db);
+		const adv = await publicKeyInfo(db);
 		expect(adv.pub).toBe(info.pub);
 		expect(adv.prev_pub).toBe(oldPub);
 		expect(adv.proof).toBe(info.proof);
 	});
 
-	it('chains proofs only one rotation deep', () => {
+	it('chains proofs only one rotation deep', async () => {
 		const db = freshDb();
-		const pubA = publicKeyB64(db);
-		const infoB = rotateHubKey(db);
-		const infoC = rotateHubKey(db);
+		const pubA = await publicKeyB64(db);
+		const infoB = await rotateHubKey(db);
+		const infoC = await rotateHubKey(db);
 		// Second proof is made by key B, not key A: an agent pinned to
 		// A cannot verify and must re-pin manually.
 		expect(infoC.prev_pub).toBe(infoB.pub);
@@ -67,16 +67,16 @@ describe('hub key rotation', () => {
 		expect(verifyRaw(pubA, Buffer.from(infoC.pub, 'base64'), infoC.proof!)).toBe(false);
 	});
 
-	it('keeps the derivation secret stable across rotation', () => {
+	it('keeps the derivation secret stable across rotation', async () => {
 		const db = freshDb();
-		const before = hubSecret(db);
-		rotateHubKey(db);
-		expect(hubSecret(db).equals(before)).toBe(true);
+		const before = await hubSecret(db);
+		await rotateHubKey(db);
+		expect((await hubSecret(db)).equals(before)).toBe(true);
 	});
 
-	it('does not advertise proof fields before any rotation', () => {
+	it('does not advertise proof fields before any rotation', async () => {
 		const db = freshDb();
-		const info = publicKeyInfo(db);
+		const info = await publicKeyInfo(db);
 		expect(info.pub).toBeTypeOf('string');
 		expect(info.prev_pub).toBeUndefined();
 		expect(info.proof).toBeUndefined();
@@ -84,21 +84,21 @@ describe('hub key rotation', () => {
 });
 
 describe('agent pubkey binding', () => {
-	it('binds the first key and rejects mismatches', () => {
+	it('binds the first key and rejects mismatches', async () => {
 		const store = new AgentStore(freshDb());
-		const { id } = store.create('a', null);
-		expect(store.checkPubkey(store.get(id)!, 'key_one')).toBe('bound');
-		expect(store.checkPubkey(store.get(id)!, 'key_one')).toBe('ok');
-		expect(store.checkPubkey(store.get(id)!, 'key_two')).toBe('mismatch');
+		const { id } = await store.create('a', null);
+		expect(await store.checkPubkey((await store.get(id))!, 'key_one')).toBe('bound');
+		expect(await store.checkPubkey((await store.get(id))!, 'key_one')).toBe('ok');
+		expect(await store.checkPubkey((await store.get(id))!, 'key_two')).toBe('mismatch');
 	});
 
-	it('stores and clears the bind nonce', () => {
+	it('stores and clears the bind nonce', async () => {
 		const store = new AgentStore(freshDb());
-		const { id } = store.create('a', null);
-		store.setBindNonce(id, 'nonce123');
-		expect(store.get(id)!.bindNonce).toBe('nonce123');
-		store.clearBindNonce(id);
-		expect(store.get(id)!.bindNonce).toBeNull();
+		const { id } = await store.create('a', null);
+		await store.setBindNonce(id, 'nonce123');
+		expect((await store.get(id))!.bindNonce).toBe('nonce123');
+		await store.clearBindNonce(id);
+		expect((await store.get(id))!.bindNonce).toBeNull();
 	});
 });
 

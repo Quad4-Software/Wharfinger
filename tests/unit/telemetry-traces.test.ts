@@ -51,10 +51,10 @@ function store() {
 	return new TelemetryStore(openDb(mkdtempSync(join(tmpdir(), 'wharfinger-tr-'))));
 }
 
-function recordTx(ts: TelemetryStore, projectId: number, raw = tx()) {
+async function recordTx(ts: TelemetryStore, projectId: number, raw = tx()) {
 	const t = normalizeTransaction(raw);
 	if (!t) throw new Error('normalizeTransaction returned null');
-	ts.recordTrace({ projectId, ...t });
+	await ts.recordTrace({ projectId, ...t });
 	return t;
 }
 
@@ -166,10 +166,10 @@ describe('TelemetryStore traces', () => {
 		ts = store();
 	});
 
-	it('round-trips a trace with ordered spans', () => {
-		const p = ts.createProject('app');
-		recordTx(ts, p.id);
-		const r = ts.trace(p.id, TRACE_ID);
+	it('round-trips a trace with ordered spans', async () => {
+		const p = await ts.createProject('app');
+		await recordTx(ts, p.id);
+		const r = await ts.trace(p.id, TRACE_ID);
 		expect(r).not.toBeNull();
 		expect(r!.trace.name).toBe('GET /api/users');
 		expect(r!.trace.durationMs).toBe(500);
@@ -179,36 +179,36 @@ describe('TelemetryStore traces', () => {
 		expect(r!.spans[0].description).toBe('SELECT * FROM users');
 	});
 
-	it('a recorded trace never creates an issue', () => {
-		const p = ts.createProject('app');
-		recordTx(ts, p.id);
-		expect(ts.issues(p.id, { limit: 10 }).total).toBe(0);
-		expect(ts.traces(p.id, { limit: 10 }).total).toBe(1);
+	it('a recorded trace never creates an issue', async () => {
+		const p = await ts.createProject('app');
+		await recordTx(ts, p.id);
+		expect((await ts.issues(p.id, { limit: 10 })).total).toBe(0);
+		expect((await ts.traces(p.id, { limit: 10 })).total).toBe(1);
 	});
 
-	it('lists traces paginated and filters by name', () => {
-		const p = ts.createProject('app');
+	it('lists traces paginated and filters by name', async () => {
+		const p = await ts.createProject('app');
 		for (let i = 0; i < 5; i++) {
-			recordTx(
+			await recordTx(
 				ts,
 				p.id,
 				tx({ transaction: i < 3 ? 'GET /a' : 'POST /b', start_timestamp: 1700000000 + i })
 			);
 		}
-		const all = ts.traces(p.id, { limit: 2 });
+		const all = await ts.traces(p.id, { limit: 2 });
 		expect(all.total).toBe(5);
 		expect(all.entries).toHaveLength(2);
-		expect(ts.traces(p.id, { limit: 50, name: 'POST /b' }).total).toBe(2);
-		expect(ts.traces(p.id, { limit: 50, q: 'post' }).total).toBe(2);
+		expect((await ts.traces(p.id, { limit: 50, name: 'POST /b' })).total).toBe(2);
+		expect((await ts.traces(p.id, { limit: 50, q: 'post' })).total).toBe(2);
 	});
 
-	it('computes per-name stats with percentiles', () => {
-		const p = ts.createProject('app');
+	it('computes per-name stats with percentiles', async () => {
+		const p = await ts.createProject('app');
 		for (let i = 1; i <= 10; i++) {
-			recordTx(ts, p.id, tx({ start_timestamp: 1700000000, timestamp: 1700000000 + i / 10 }));
+			await recordTx(ts, p.id, tx({ start_timestamp: 1700000000, timestamp: 1700000000 + i / 10 }));
 		}
-		recordTx(ts, p.id, tx({ transaction: 'other', timestamp: 1700000000.2 }));
-		const stats = ts.transactionStats(p.id);
+		await recordTx(ts, p.id, tx({ transaction: 'other', timestamp: 1700000000.2 }));
+		const stats = await ts.transactionStats(p.id);
 		const main = stats.find((s) => s.name === 'GET /api/users')!;
 		expect(main.count).toBe(10);
 		expect(main.avg).toBe(550);
@@ -218,10 +218,10 @@ describe('TelemetryStore traces', () => {
 		expect(stats.find((s) => s.name === 'other')!.count).toBe(1);
 	});
 
-	it('prune keeps traces bounded and spans consistent', () => {
+	it('prune keeps traces bounded and spans consistent', async () => {
 		const db = openDb(mkdtempSync(join(tmpdir(), 'wharfinger-tr-')));
 		const s = new TelemetryStore(db);
-		const p = s.createProject('app');
+		const p = await s.createProject('app');
 		const insT = db.prepare(
 			`INSERT INTO telemetry_traces
 			(project_id, trace_id, span_id, name, op, ts, duration_ms, span_count, status, release, environment)
@@ -236,7 +236,7 @@ describe('TelemetryStore traces', () => {
 			insS.run(Number(r.lastInsertRowid), 'a'.repeat(16));
 		}
 		db.exec('COMMIT');
-		s.prune();
+		await s.prune();
 		const traces = (db.prepare('SELECT COUNT(*) AS n FROM telemetry_traces').get() as { n: number })
 			.n;
 		const spans = (db.prepare('SELECT COUNT(*) AS n FROM telemetry_spans').get() as { n: number })
@@ -246,11 +246,11 @@ describe('TelemetryStore traces', () => {
 		db.close();
 	});
 
-	it('deleting a project removes traces and spans', () => {
-		const p = ts.createProject('app');
-		recordTx(ts, p.id);
-		ts.deleteProject(p.id);
-		expect(ts.traces(p.id, { limit: 10 }).total).toBe(0);
-		expect(ts.trace(p.id, TRACE_ID)).toBeNull();
+	it('deleting a project removes traces and spans', async () => {
+		const p = await ts.createProject('app');
+		await recordTx(ts, p.id);
+		await ts.deleteProject(p.id);
+		expect((await ts.traces(p.id, { limit: 10 })).total).toBe(0);
+		expect(await ts.trace(p.id, TRACE_ID)).toBeNull();
 	});
 });

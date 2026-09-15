@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { asDb, rawSqlite, type Db } from '$lib/server/store/driver';
 import {
 	MAX_FINDINGS_PER_REPORT,
 	MAX_PKG,
@@ -186,27 +187,41 @@ function normSeverity(v: unknown): Severity {
 	return (SEVERITIES as readonly string[]).includes(s) ? (s as Severity) : 'unknown';
 }
 
+// CASE-based severity ordering is not portable SQL, so findings are
+// ranked in memory after the fetch.
+const SEV_RANK = new Map<string, number>([
+	['critical', 0],
+	['high', 1],
+	['medium', 2],
+	['low', 3]
+]);
+
 /**
  * Scan reports, findings, and hardening recommendations. Created via
  * getScanStore so the tables initialize lazily on whatever db handle
  * the runtime hands over.
  */
 export class ScanStore {
-	constructor(private readonly db: DatabaseSync) {
-		this.db.exec(SCHEMA);
+	private readonly db: Db;
+
+	constructor(db: Db | DatabaseSync) {
+		this.db = asDb(db);
+		// Lazy DDL is a sqlite-only path; under surreal the shared schema
+		// (store/schema.ts) already defines these tables.
+		rawSqlite(this.db)?.exec(SCHEMA);
 	}
 
-	createReport(opts: {
+	async createReport(opts: {
 		appId: string;
 		target: string;
 		releaseId?: string;
 		scanner?: string;
 		id?: string;
 		now?: number;
-	}): ScanReport {
+	}): Promise<ScanReport> {
 		const id = opts.id ?? `scan_${randomBytes(9).toString('base64url')}`;
 		const now = opts.now ?? Date.now();
-		this.db
+		await this.db
 			.prepare(
 				`INSERT INTO scan_reports (id, app_id, release_id, target, scanner, status, started_at)
 				 VALUES (?, ?, ?, ?, ?, 'queued', ?)`
@@ -219,59 +234,63 @@ export class ScanStore {
 				opts.scanner ?? 'trivy',
 				now
 			);
-		const report = this.report(id);
+		const report = await this.report(id);
 		if (!report) throw new DeployError(500, 'scan report missing after create');
 		return report;
 	}
 
-	report(id: string): ScanReport | null {
-		const row = this.db.prepare('SELECT * FROM scan_reports WHERE id = ?').get(id) as
+	async report(id: string): Promise<ScanReport | null> {
+		const row = (await this.db.prepare('SELECT * FROM scan_reports WHERE id = ?').get(id)) as
 			ReportRow | undefined;
 		return row ? toReport(row) : null;
 	}
 
-	listForApp(appId: string, limit = 50): ScanReport[] {
+	async listForApp(appId: string, limit = 50): Promise<ScanReport[]> {
 		return (
-			this.db
+			(await this.db
 				.prepare('SELECT * FROM scan_reports WHERE app_id = ? ORDER BY started_at DESC LIMIT ?')
-				.all(appId, Math.min(Math.max(limit, 1), 200)) as unknown as ReportRow[]
+				.all(appId, Math.min(Math.max(limit, 1), 200))) as unknown as ReportRow[]
 		).map(toReport);
 	}
 
-	latestForApp(appId: string): ScanReport | null {
-		const row = this.db
+	async latestForApp(appId: string): Promise<ScanReport | null> {
+		const row = (await this.db
 			.prepare('SELECT * FROM scan_reports WHERE app_id = ? ORDER BY started_at DESC LIMIT 1')
-			.get(appId) as ReportRow | undefined;
+			.get(appId)) as ReportRow | undefined;
 		return row ? toReport(row) : null;
 	}
 
 	/** Most recent report per app, for the fleet view. */
-	latestPerApp(limit = 200): ScanReport[] {
+	async latestPerApp(limit = 200): Promise<ScanReport[]> {
+		// Correlated subquery stands in for the JOIN the surreal
+		// translator cannot express; ties on started_at return every
+		// matching report just like the original join.
 		return (
-			this.db
+			(await this.db
 				.prepare(
 					`SELECT r.* FROM scan_reports r
-					 JOIN (SELECT app_id, MAX(started_at) AS latest FROM scan_reports GROUP BY app_id) m
-					   ON m.app_id = r.app_id AND m.latest = r.started_at
+					 WHERE r.started_at = (
+					   SELECT MAX(started_at) FROM scan_reports WHERE app_id = r.app_id
+					 )
 					 ORDER BY r.started_at DESC LIMIT ?`
 				)
-				.all(Math.min(Math.max(limit, 1), 500)) as unknown as ReportRow[]
+				.all(Math.min(Math.max(limit, 1), 500))) as unknown as ReportRow[]
 		).map(toReport);
 	}
 
 	/** The in-flight report for an app, used to dedupe scan triggers. */
-	activeForApp(appId: string): ScanReport | null {
-		const row = this.db
+	async activeForApp(appId: string): Promise<ScanReport | null> {
+		const row = (await this.db
 			.prepare(
 				`SELECT * FROM scan_reports WHERE app_id = ? AND status IN ('queued', 'running')
 				 ORDER BY started_at DESC LIMIT 1`
 			)
-			.get(appId) as ReportRow | undefined;
+			.get(appId)) as ReportRow | undefined;
 		return row ? toReport(row) : null;
 	}
 
-	markRunning(id: string, now = Date.now()): void {
-		this.db
+	async markRunning(id: string, now = Date.now()): Promise<void> {
+		await this.db
 			.prepare(
 				`UPDATE scan_reports SET status = 'running', started_at = ?
 				 WHERE id = ? AND status = 'queued'`
@@ -284,12 +303,12 @@ export class ScanStore {
 	 * summary rollup is recomputed from what actually landed, so a
 	 * malformed agent summary cannot inflate the stored counts.
 	 */
-	complete(
+	async complete(
 		id: string,
 		outcome: 'done' | 'failed',
 		opts: { finishedAt?: number; error?: string; findings?: Omit<ScanFinding, 'reportId'>[] } = {}
-	): ScanReport | null {
-		const existing = this.report(id);
+	): Promise<ScanReport | null> {
+		const existing = await this.report(id);
 		if (!existing) return null;
 		if (existing.status === 'done' || existing.status === 'failed') return existing;
 		const finishedAt = opts.finishedAt ?? Date.now();
@@ -319,11 +338,10 @@ export class ScanStore {
 					: null
 			]);
 		}
-		this.db.exec('BEGIN IMMEDIATE');
-		try {
+		return this.db.tx(async (tx) => {
 			// Conditional transition first: a second completion for the
 			// same report (retried result post) must not rewrite it.
-			const changed = this.db
+			const changed = await tx
 				.prepare(
 					`UPDATE scan_reports SET status = ?, finished_at = ?, duration_ms = ?,
 						critical = ?, high = ?, medium = ?, low = ?, unknown = ?, error = ?
@@ -340,85 +358,81 @@ export class ScanStore {
 					summary.unknown,
 					clip(opts.error, MAX_SCAN_ERROR) ?? null,
 					id
-				).changes;
-			if (!Number(changed)) {
-				this.db.exec('ROLLBACK');
-				return this.report(id);
+				);
+			if (!Number(changed.changes)) {
+				const row = (await tx.prepare('SELECT * FROM scan_reports WHERE id = ?').get(id)) as
+					ReportRow | undefined;
+				return row ? toReport(row) : null;
 			}
-			this.db.prepare('DELETE FROM scan_findings WHERE report_id = ?').run(id);
-			const ins = this.db.prepare(
+			await tx.prepare('DELETE FROM scan_findings WHERE report_id = ?').run(id);
+			const ins = tx.prepare(
 				`INSERT INTO scan_findings (report_id, vuln_id, pkg, installed, fixed, severity, title, cvss)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 			);
-			for (const r of rows) ins.run(...r);
-			this.db.exec('COMMIT');
-		} catch (err) {
-			this.db.exec('ROLLBACK');
-			throw err;
-		}
-		return this.report(id);
+			for (const r of rows) await ins.run(...r);
+			const row = (await tx.prepare('SELECT * FROM scan_reports WHERE id = ?').get(id)) as
+				ReportRow | undefined;
+			return row ? toReport(row) : null;
+		});
 	}
 
-	findings(reportId: string, limit = MAX_FINDINGS_PER_REPORT): ScanFinding[] {
-		return (
-			this.db
-				.prepare(
-					`SELECT * FROM scan_findings WHERE report_id = ?
-					 ORDER BY CASE severity
-						WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2
-						WHEN 'low' THEN 3 ELSE 4 END, vuln_id
-					 LIMIT ?`
-				)
-				.all(
-					reportId,
-					Math.min(Math.max(limit, 1), MAX_FINDINGS_PER_REPORT)
-				) as unknown as FindingRow[]
-		).map(toFinding);
+	async findings(reportId: string, limit = MAX_FINDINGS_PER_REPORT): Promise<ScanFinding[]> {
+		// Stored findings are already capped at MAX_FINDINGS_PER_REPORT
+		// by complete(), so the fetch bound cannot drop a row the
+		// caller asked for; severity ranking happens in memory.
+		const rows = (await this.db
+			.prepare('SELECT * FROM scan_findings WHERE report_id = ? ORDER BY vuln_id LIMIT ?')
+			.all(reportId, MAX_FINDINGS_PER_REPORT)) as unknown as FindingRow[];
+		rows.sort((a, b) => (SEV_RANK.get(a.severity) ?? 4) - (SEV_RANK.get(b.severity) ?? 4));
+		return rows.slice(0, Math.min(Math.max(limit, 1), MAX_FINDINGS_PER_REPORT)).map(toFinding);
 	}
 
-	rec(id: string): Recommendation | null {
-		const row = this.db.prepare('SELECT * FROM recommendations WHERE id = ?').get(id) as
+	async rec(id: string): Promise<Recommendation | null> {
+		const row = (await this.db.prepare('SELECT * FROM recommendations WHERE id = ?').get(id)) as
 			RecRow | undefined;
 		return row ? toRec(row) : null;
 	}
 
-	recsForApp(appId: string, opts: { openOnly?: boolean; limit?: number } = {}): Recommendation[] {
+	async recsForApp(
+		appId: string,
+		opts: { openOnly?: boolean; limit?: number } = {}
+	): Promise<Recommendation[]> {
 		const limit = Math.min(Math.max(opts.limit ?? 200, 1), 500);
 		const rows =
 			opts.openOnly === false
-				? (this.db
+				? ((await this.db
 						.prepare(
 							'SELECT * FROM recommendations WHERE app_id = ? ORDER BY created_at DESC LIMIT ?'
 						)
-						.all(appId, limit) as unknown as RecRow[])
-				: (this.db
+						.all(appId, limit)) as unknown as RecRow[])
+				: ((await this.db
 						.prepare(
 							`SELECT * FROM recommendations WHERE app_id = ? AND status = 'open'
 						 ORDER BY created_at DESC LIMIT ?`
 						)
-						.all(appId, limit) as unknown as RecRow[]);
+						.all(appId, limit)) as unknown as RecRow[]);
 		return rows.map(toRec);
 	}
 
 	/** Every open recommendation, fleet view. */
-	allOpen(limit = 500): Recommendation[] {
+	async allOpen(limit = 500): Promise<Recommendation[]> {
 		return (
-			this.db
+			(await this.db
 				.prepare(
 					`SELECT * FROM recommendations WHERE status = 'open'
 					 ORDER BY created_at DESC LIMIT ?`
 				)
-				.all(Math.min(Math.max(limit, 1), 1000)) as unknown as RecRow[]
+				.all(Math.min(Math.max(limit, 1), 1000))) as unknown as RecRow[]
 		).map(toRec);
 	}
 
 	/** Open recommendation counts per app. */
-	openCounts(): Map<string, number> {
-		const rows = this.db
+	async openCounts(): Promise<Map<string, number>> {
+		const rows = (await this.db
 			.prepare(
 				`SELECT app_id, COUNT(*) AS c FROM recommendations WHERE status = 'open' GROUP BY app_id`
 			)
-			.all() as unknown as { app_id: string; c: number }[];
+			.all()) as unknown as { app_id: string; c: number }[];
 		return new Map(rows.map((r) => [r.app_id, r.c]));
 	}
 
@@ -428,24 +442,27 @@ export class ScanStore {
 	 * applied rows reopen when the condition regresses; open rows
 	 * whose condition cleared are deleted outright.
 	 */
-	sync(appId: string, recs: NewRecommendation[], now = Date.now()): Recommendation[] {
+	async sync(
+		appId: string,
+		recs: NewRecommendation[],
+		now = Date.now()
+	): Promise<Recommendation[]> {
 		const seen = new Set(recs.map((r) => `${r.kind}${r.dedupeKey}`));
-		this.db.exec('BEGIN IMMEDIATE');
-		try {
-			const existing = this.db
+		await this.db.tx(async (tx) => {
+			const existing = (await tx
 				.prepare('SELECT * FROM recommendations WHERE app_id = ?')
-				.all(appId) as unknown as RecRow[];
+				.all(appId)) as unknown as RecRow[];
 			const byKey = new Map(existing.map((r) => [`${r.kind}${r.dedupe_key}`, r]));
-			const insert = this.db.prepare(
+			const insert = tx.prepare(
 				`INSERT INTO recommendations
 					(id, app_id, kind, dedupe_key, severity, title, detail, data, auto_fixable, status, created_at)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`
 			);
-			const refresh = this.db.prepare(
+			const refresh = tx.prepare(
 				`UPDATE recommendations SET severity = ?, title = ?, detail = ?, data = ?, auto_fixable = ?
 				 WHERE id = ?`
 			);
-			const reopen = this.db.prepare(
+			const reopen = tx.prepare(
 				`UPDATE recommendations SET status = 'open', applied_at = NULL, created_at = ?,
 					severity = ?, title = ?, detail = ?, data = ?, auto_fixable = ?
 				 WHERE id = ?`
@@ -457,7 +474,7 @@ export class ScanStore {
 				const data = rec.data ? JSON.stringify(rec.data).slice(0, 4096) : null;
 				const cur = byKey.get(key);
 				if (!cur) {
-					insert.run(
+					await insert.run(
 						`rec_${randomBytes(9).toString('base64url')}`,
 						appId,
 						rec.kind,
@@ -470,23 +487,19 @@ export class ScanStore {
 						now
 					);
 				} else if (cur.status === 'open') {
-					refresh.run(rec.severity, title, detail, data, rec.autoFixable ? 1 : 0, cur.id);
+					await refresh.run(rec.severity, title, detail, data, rec.autoFixable ? 1 : 0, cur.id);
 				} else if (cur.status === 'applied') {
-					reopen.run(now, rec.severity, title, detail, data, rec.autoFixable ? 1 : 0, cur.id);
+					await reopen.run(now, rec.severity, title, detail, data, rec.autoFixable ? 1 : 0, cur.id);
 				}
 				// dismissed and wontfix stay untouched: user intent wins.
 			}
-			const del = this.db.prepare("DELETE FROM recommendations WHERE id = ? AND status = 'open'");
+			const del = tx.prepare("DELETE FROM recommendations WHERE id = ? AND status = 'open'");
 			for (const cur of existing) {
 				if (cur.status === 'open' && !seen.has(`${cur.kind}${cur.dedupe_key}`)) {
-					del.run(cur.id);
+					await del.run(cur.id);
 				}
 			}
-			this.db.exec('COMMIT');
-		} catch (err) {
-			this.db.exec('ROLLBACK');
-			throw err;
-		}
+		});
 		return this.recsForApp(appId);
 	}
 
@@ -495,49 +508,45 @@ export class ScanStore {
 	 * currently open, which makes double-apply and double-dismiss a
 	 * single statement instead of a read-check-write race.
 	 */
-	setStatus(id: string, status: 'applied' | 'dismissed' | 'wontfix', now = Date.now()): boolean {
-		return (
-			Number(
-				this.db
-					.prepare(
-						`UPDATE recommendations SET status = ?, applied_at = ?
-						 WHERE id = ? AND status = 'open'`
-					)
-					.run(status, status === 'applied' ? now : null, id).changes
-			) === 1
-		);
+	async setStatus(
+		id: string,
+		status: 'applied' | 'dismissed' | 'wontfix',
+		now = Date.now()
+	): Promise<boolean> {
+		const res = await this.db
+			.prepare(
+				`UPDATE recommendations SET status = ?, applied_at = ?
+				 WHERE id = ? AND status = 'open'`
+			)
+			.run(status, status === 'applied' ? now : null, id);
+		return Number(res.changes) === 1;
 	}
 
 	/** Drop old reports (and their findings) plus resolved recs. */
-	prune(olderThan: number): number {
-		this.db.exec('BEGIN IMMEDIATE');
-		try {
-			const stale = this.db
+	async prune(olderThan: number): Promise<number> {
+		return this.db.tx(async (tx) => {
+			const stale = (await tx
 				.prepare('SELECT id FROM scan_reports WHERE started_at < ?')
-				.all(olderThan) as unknown as { id: string }[];
-			const delF = this.db.prepare('DELETE FROM scan_findings WHERE report_id = ?');
-			const delR = this.db.prepare('DELETE FROM scan_reports WHERE id = ?');
+				.all(olderThan)) as unknown as { id: string }[];
+			const delF = tx.prepare('DELETE FROM scan_findings WHERE report_id = ?');
+			const delR = tx.prepare('DELETE FROM scan_reports WHERE id = ?');
 			for (const { id } of stale) {
-				delF.run(id);
-				delR.run(id);
+				await delF.run(id);
+				await delR.run(id);
 			}
-			this.db
+			await tx
 				.prepare("DELETE FROM recommendations WHERE status != 'open' AND created_at < ?")
 				.run(olderThan);
-			this.db.exec('COMMIT');
 			return stale.length;
-		} catch (err) {
-			this.db.exec('ROLLBACK');
-			throw err;
-		}
+		});
 	}
 }
 
 // One store per db handle so tests on fresh temp databases never see
 // a stale singleton pointing at a closed file.
-const stores = new WeakMap<DatabaseSync, ScanStore>();
+const stores = new WeakMap<Db | DatabaseSync, ScanStore>();
 
-export function getScanStore(db: DatabaseSync): ScanStore {
+export function getScanStore(db: Db | DatabaseSync): ScanStore {
 	let s = stores.get(db);
 	if (!s) {
 		s = new ScanStore(db);

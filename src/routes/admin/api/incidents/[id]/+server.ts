@@ -29,10 +29,10 @@ export const POST: RequestHandler = async (event) => {
 	const ip = clientIp(event);
 
 	if (id.kind === 'auto') {
-		const row = rt.incidents.byId(id.n);
+		const row = await rt.incidents.byId(id.n);
 		if (!row) return apiError(404, 'unknown incident');
-		rt.incidents.addUpdate(id.n, message, user.username);
-		rt.audit.log({
+		await rt.incidents.addUpdate(id.n, message, user.username);
+		await rt.audit.log({
 			userId: user.id,
 			username: user.username,
 			action: 'incident.update',
@@ -48,7 +48,7 @@ export const POST: RequestHandler = async (event) => {
 		updates.push({ at: new Date().toISOString(), message });
 		incidents[id.n] = { ...entry, updates };
 		try {
-			saveSectionValue(rt, user, ip, 'incidents', incidents, undefined, 'incident.update');
+			await saveSectionValue(rt, user, ip, 'incidents', incidents, undefined, 'incident.update');
 		} catch (err) {
 			if (err instanceof SectionError) {
 				return apiError(err.status, err.message, err.issues ? { issues: err.issues } : undefined);
@@ -61,7 +61,7 @@ export const POST: RequestHandler = async (event) => {
 };
 
 /** Resolve an open incident. */
-export const PATCH: RequestHandler = (event) => {
+export const PATCH: RequestHandler = async (event) => {
 	const rt = getRuntime();
 	const user = requirePerm(event, 'status.manage');
 	const id = parseId(event.params.id);
@@ -69,8 +69,10 @@ export const PATCH: RequestHandler = (event) => {
 	const ip = clientIp(event);
 
 	if (id.kind === 'auto') {
-		if (!rt.incidents.resolve(id.n)) return apiError(409, 'incident is already resolved');
-		rt.audit.log({
+		if (!(await rt.incidents.resolve(id.n))) {
+			return apiError(409, 'incident is already resolved');
+		}
+		await rt.audit.log({
 			userId: user.id,
 			username: user.username,
 			action: 'incident.resolve',
@@ -85,7 +87,7 @@ export const PATCH: RequestHandler = (event) => {
 		if (entry.resolved_at) return apiError(409, 'incident is already resolved');
 		incidents[id.n] = { ...entry, resolved_at: new Date().toISOString() };
 		try {
-			saveSectionValue(rt, user, ip, 'incidents', incidents, undefined, 'incident.resolve');
+			await saveSectionValue(rt, user, ip, 'incidents', incidents, undefined, 'incident.resolve');
 		} catch (err) {
 			if (err instanceof SectionError) {
 				return apiError(err.status, err.message, err.issues ? { issues: err.issues } : undefined);
@@ -98,7 +100,7 @@ export const PATCH: RequestHandler = (event) => {
 };
 
 /** Remove a manual incident entirely. Auto incidents cannot be deleted. */
-export const DELETE: RequestHandler = (event) => {
+export const DELETE: RequestHandler = async (event) => {
 	const rt = getRuntime();
 	const user = requirePerm(event, 'status.manage');
 	const id = parseId(event.params.id);
@@ -111,7 +113,7 @@ export const DELETE: RequestHandler = (event) => {
 	if (!incidents[id.n]) return apiError(404, 'unknown incident');
 	incidents.splice(id.n, 1);
 	try {
-		saveSectionValue(
+		await saveSectionValue(
 			rt,
 			user,
 			clientIp(event),

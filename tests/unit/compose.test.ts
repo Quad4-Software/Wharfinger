@@ -189,7 +189,7 @@ describe('compose import route', () => {
 		const body = await json(res);
 		expect(res.status).toBe(200);
 		expect((body.plan as { services: unknown[] }).services).toHaveLength(2);
-		expect(ref.rt.deploys.listApps()).toHaveLength(0);
+		expect(await ref.rt.deploys.listApps()).toHaveLength(0);
 	});
 
 	it('creates one app per service plus a project group', async () => {
@@ -198,15 +198,13 @@ describe('compose import route', () => {
 		expect(res.status).toBe(201);
 		const apps = body.apps as { id: string; name: string }[];
 		expect(apps.map((a) => a.name).sort()).toEqual(['shop-db', 'shop-web']);
-		const stored = ref.rt.deploys.byName('shop-web')!;
+		const stored = (await ref.rt.deploys.byName('shop-web'))!;
 		expect(stored.source).toEqual({ kind: 'image', url: 'ghcr.io/acme/web:1.2.3' });
 		expect(stored.hasEnv).toBe(true);
 		expect(stored.ports[0]).toEqual({ host: 8080, container: 80 });
 		const group = (body.group as { name: string }).name;
 		expect(group).toBe('shop');
-		const members = getGroupStore(ref.db)
-			.list()
-			.find((g) => g.name === 'shop')!.members;
+		const members = (await getGroupStore(ref.db).list()).find((g) => g.name === 'shop')!.members;
 		expect(members).toHaveLength(2);
 	});
 
@@ -218,7 +216,7 @@ describe('compose import route', () => {
 			}) as never
 		);
 		expect(res.status).toBe(422);
-		expect(ref.rt.deploys.byName('good')).toBeNull();
+		expect(await ref.rt.deploys.byName('good')).toBeNull();
 	});
 
 	it('rejects a missing agent and missing yaml', async () => {

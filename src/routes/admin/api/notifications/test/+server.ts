@@ -9,7 +9,7 @@ export const POST: RequestHandler = async (event) => {
 	const name = typeof body.target === 'string' ? body.target : '';
 	if (!name) return apiError(422, 'target is required');
 	const result = await rt.dispatcher.sendTest(name);
-	audit(rt, event, 'notifications.test', `target=${name} ok=${String(result.ok)}`);
+	void audit(rt, event, 'notifications.test', `target=${name} ok=${String(result.ok)}`);
 	if (!result.ok) return apiError(502, result.error ?? 'delivery failed');
 	return apiJson({ ok: true });
 };

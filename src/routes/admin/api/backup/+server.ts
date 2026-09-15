@@ -102,7 +102,7 @@ export const POST: RequestHandler = async (event) => {
 			valueToWrite = [...byId.values()];
 		}
 		try {
-			saveSectionValue(
+			await saveSectionValue(
 				rt,
 				user,
 				clientIp(event),
@@ -119,7 +119,7 @@ export const POST: RequestHandler = async (event) => {
 			});
 		}
 	}
-	audit(
+	await audit(
 		rt,
 		event,
 		'config.backup.import',

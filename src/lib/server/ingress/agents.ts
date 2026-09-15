@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { asDb, type Db } from '$lib/server/store/driver';
 import type { AgentPayload } from './schema';
 import type { AgentMeta } from '$lib/shared/agents';
 
@@ -77,12 +78,16 @@ function toRow(r: AgentDbRow): AgentRow {
  * how session cookies are stored.
  */
 export class AgentStore {
-	constructor(private readonly db: DatabaseSync) {}
+	private readonly db: Db;
 
-	create(name: string, createdBy: string | null): { id: string; token: string } {
+	constructor(db: Db | DatabaseSync) {
+		this.db = asDb(db);
+	}
+
+	async create(name: string, createdBy: string | null): Promise<{ id: string; token: string }> {
 		const id = 'ag_' + randomBytes(9).toString('base64url');
 		const token = newToken();
-		this.db
+		await this.db
 			.prepare(
 				'INSERT INTO agents (id, name, token_hash, created_at, created_by) VALUES (?, ?, ?, ?, ?)'
 			)
@@ -91,11 +96,11 @@ export class AgentStore {
 	}
 
 	/** Resolve a bearer token to an active agent row, or null. */
-	resolveToken(token: string): (AgentRow & { tokenHash: string }) | null {
+	async resolveToken(token: string): Promise<(AgentRow & { tokenHash: string }) | null> {
 		if (typeof token !== 'string' || token.length < 8 || token.length > 256) return null;
-		const r = this.db
+		const r = (await this.db
 			.prepare('SELECT * FROM agents WHERE token_hash = ? AND revoked_at IS NULL LIMIT 1')
-			.get(hashToken(token)) as AgentDbRow | undefined;
+			.get(hashToken(token))) as AgentDbRow | undefined;
 		if (!r) return null;
 		return { ...toRow(r), tokenHash: r.token_hash };
 	}
@@ -106,17 +111,18 @@ export class AgentStore {
 	 * fingerprint (host without stable ids) is never bound and never
 	 * rejected.
 	 */
-	checkFingerprint(agent: AgentRow, fp: string): 'ok' | 'bound' | 'mismatch' {
+	async checkFingerprint(agent: AgentRow, fp: string): Promise<'ok' | 'bound' | 'mismatch'> {
 		if (!fp) return 'ok';
 		if (agent.fingerprint === null) {
 			// Conditional write: two concurrent first payloads cannot
 			// both bind. Whoever loses the race re-reads and must match.
-			const r = this.db
+			const r = await this.db
 				.prepare('UPDATE agents SET fingerprint = ? WHERE id = ? AND fingerprint IS NULL')
 				.run(fp, agent.id);
 			if (Number(r.changes) > 0) return 'bound';
-			const cur = this.db.prepare('SELECT fingerprint FROM agents WHERE id = ?').get(agent.id) as
-				{ fingerprint: string | null } | undefined;
+			const cur = (await this.db
+				.prepare('SELECT fingerprint FROM agents WHERE id = ?')
+				.get(agent.id)) as { fingerprint: string | null } | undefined;
 			return cur?.fingerprint === fp ? 'ok' : 'mismatch';
 		}
 		return agent.fingerprint === fp ? 'ok' : 'mismatch';
@@ -129,14 +135,15 @@ export class AgentStore {
 	 * binding only ever happens for a key that just produced a valid
 	 * signature.
 	 */
-	checkPubkey(agent: AgentRow, pubkey: string): 'ok' | 'bound' | 'mismatch' {
+	async checkPubkey(agent: AgentRow, pubkey: string): Promise<'ok' | 'bound' | 'mismatch'> {
 		if (agent.pubkey === null) {
-			const r = this.db
+			const r = await this.db
 				.prepare('UPDATE agents SET pubkey = ? WHERE id = ? AND pubkey IS NULL')
 				.run(pubkey, agent.id);
 			if (Number(r.changes) > 0) return 'bound';
-			const cur = this.db.prepare('SELECT pubkey FROM agents WHERE id = ?').get(agent.id) as
-				{ pubkey: string | null } | undefined;
+			const cur = (await this.db
+				.prepare('SELECT pubkey FROM agents WHERE id = ?')
+				.get(agent.id)) as { pubkey: string | null } | undefined;
 			return cur?.pubkey === pubkey ? 'ok' : 'mismatch';
 		}
 		return agent.pubkey === pubkey ? 'ok' : 'mismatch';
@@ -145,27 +152,22 @@ export class AgentStore {
 	// The hello nonce is issued by /ingress/handshake and consumed by
 	// /ingress/hello, so the proof an agent signs is always a fresh
 	// hub-chosen value and cannot be replayed across connections.
-	setBindNonce(id: string, nonce: string): void {
-		this.db.prepare('UPDATE agents SET bind_nonce = ? WHERE id = ?').run(nonce, id);
+	async setBindNonce(id: string, nonce: string): Promise<void> {
+		await this.db.prepare('UPDATE agents SET bind_nonce = ? WHERE id = ?').run(nonce, id);
 	}
 
-	clearBindNonce(id: string): void {
-		this.db.prepare('UPDATE agents SET bind_nonce = NULL WHERE id = ?').run(id);
+	async clearBindNonce(id: string): Promise<void> {
+		await this.db.prepare('UPDATE agents SET bind_nonce = NULL WHERE id = ?').run(id);
 	}
 
 	/** Persist a validated payload: latest blob, meta, and a sample row. */
-	record(agentId: string, p: AgentPayload): void {
-		this.db.exec('BEGIN IMMEDIATE');
-		try {
-			this.recordInner(agentId, p);
-			this.db.exec('COMMIT');
-		} catch (err) {
-			this.db.exec('ROLLBACK');
-			throw err;
-		}
+	async record(agentId: string, p: AgentPayload): Promise<void> {
+		await this.db.tx(async (tx) => {
+			await this.recordInner(tx, agentId, p);
+		});
 	}
 
-	private recordInner(agentId: string, p: AgentPayload): void {
+	private async recordInner(tx: Db, agentId: string, p: AgentPayload): Promise<void> {
 		const meta = JSON.stringify({
 			version: p.agent.version,
 			hostname: p.agent.hostname,
@@ -181,10 +183,10 @@ export class AgentStore {
 			p.temps && p.temps.length > 0 ? Math.max(...p.temps.map((t) => t.celsius)) : null;
 		// OR IGNORE: a replayed backfill sample with a duplicate
 		// (agent_id, ts) is dropped instead of failing the payload.
-		const tx = this.db.prepare(
+		const ins = tx.prepare(
 			'INSERT OR IGNORE INTO agent_samples (agent_id, ts, cpu, mem_pct, disk_pct, rx_bps, tx_bps, load1, temp_max, mem_used, disk_used) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 		);
-		tx.run(
+		await ins.run(
 			agentId,
 			p.ts,
 			p.cpu.pct,
@@ -200,9 +202,9 @@ export class AgentStore {
 		if (p.backfill) {
 			// Late data fills the series but must not regress the
 			// latest-payload blob or meta to an older sample.
-			this.db.prepare('UPDATE agents SET last_seen_at = ? WHERE id = ?').run(Date.now(), agentId);
+			await tx.prepare('UPDATE agents SET last_seen_at = ? WHERE id = ?').run(Date.now(), agentId);
 		} else {
-			this.db
+			await tx
 				.prepare('UPDATE agents SET last_seen_at = ?, last_payload = ?, meta = ? WHERE id = ?')
 				.run(Date.now(), JSON.stringify(p), meta, agentId);
 		}
@@ -211,22 +213,24 @@ export class AgentStore {
 	// Touch marks the registration alive without replacing the payload
 	// blob; used by auxiliary feeds like edge reports that carry no
 	// system metrics of their own.
-	touch(agentId: string): void {
-		this.db.prepare('UPDATE agents SET last_seen_at = ? WHERE id = ?').run(Date.now(), agentId);
+	async touch(agentId: string): Promise<void> {
+		await this.db
+			.prepare('UPDATE agents SET last_seen_at = ? WHERE id = ?')
+			.run(Date.now(), agentId);
 	}
 
-	list(): (AgentRow & { lastPayload: unknown })[] {
-		const rows = this.db
+	async list(): Promise<(AgentRow & { lastPayload: unknown })[]> {
+		const rows = (await this.db
 			.prepare('SELECT * FROM agents ORDER BY created_at ASC')
-			.all() as unknown as AgentDbRow[];
+			.all()) as unknown as AgentDbRow[];
 		return rows.map((r) => ({
 			...toRow(r),
 			lastPayload: safeJson<unknown>(r.last_payload, null)
 		}));
 	}
 
-	get(id: string): (AgentRow & { lastPayload: unknown }) | null {
-		const r = this.db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as
+	async get(id: string): Promise<(AgentRow & { lastPayload: unknown }) | null> {
+		const r = (await this.db.prepare('SELECT * FROM agents WHERE id = ?').get(id)) as
 			AgentDbRow | undefined;
 		if (!r) return null;
 		return {
@@ -235,17 +239,17 @@ export class AgentStore {
 		};
 	}
 
-	revoke(id: string): void {
+	async revoke(id: string): Promise<void> {
 		// Clearing alerts silences a revoked agent without a bogus
 		// recovery notification; the alerter never scans revoked rows.
-		this.db
+		await this.db
 			.prepare('UPDATE agents SET revoked_at = ?, alerts = NULL WHERE id = ?')
 			.run(Date.now(), id);
 	}
 
 	/** Persist the active-alert map after the alerter mutates it. */
-	setAlerts(id: string, alerts: Record<string, number>): void {
-		this.db
+	async setAlerts(id: string, alerts: Record<string, number>): Promise<void> {
+		await this.db
 			.prepare('UPDATE agents SET alerts = ? WHERE id = ?')
 			.run(Object.keys(alerts).length > 0 ? JSON.stringify(alerts) : null, id);
 	}
@@ -254,15 +258,17 @@ export class AgentStore {
 	 * Lightweight rows for the periodic offline scan: no last_payload
 	 * parsing, just what the alerter needs.
 	 */
-	scan(): {
-		id: string;
-		name: string;
-		lastSeenAt: number | null;
-		alerts: Record<string, number>;
-	}[] {
-		const rows = this.db
+	async scan(): Promise<
+		{
+			id: string;
+			name: string;
+			lastSeenAt: number | null;
+			alerts: Record<string, number>;
+		}[]
+	> {
+		const rows = (await this.db
 			.prepare('SELECT id, name, last_seen_at, alerts FROM agents WHERE revoked_at IS NULL')
-			.all() as unknown as Pick<AgentDbRow, 'id' | 'name' | 'last_seen_at' | 'alerts'>[];
+			.all()) as unknown as Pick<AgentDbRow, 'id' | 'name' | 'last_seen_at' | 'alerts'>[];
 		return rows.map((r) => ({
 			id: r.id,
 			name: r.name,
@@ -271,9 +277,13 @@ export class AgentStore {
 		}));
 	}
 
-	remove(id: string): void {
-		this.db.prepare('DELETE FROM agent_samples WHERE agent_id = ?').run(id);
-		this.db.prepare('DELETE FROM agents WHERE id = ?').run(id);
+	async remove(id: string): Promise<void> {
+		// Samples are children of the agent row; surreal has no FK
+		// cascade, so both deletes live in one transaction.
+		await this.db.tx(async (tx) => {
+			await tx.prepare('DELETE FROM agent_samples WHERE agent_id = ?').run(id);
+			await tx.prepare('DELETE FROM agents WHERE id = ?').run(id);
+		});
 	}
 
 	/**
@@ -281,13 +291,17 @@ export class AgentStore {
 	 * ranges stay cheap to query, transfer, and render. Buckets are
 	 * fixed-width averages aligned to epoch ms.
 	 */
-	history(agentId: string, sinceMs: number, maxPoints = 600): Record<string, unknown>[] {
+	async history(
+		agentId: string,
+		sinceMs: number,
+		maxPoints = 600
+	): Promise<Record<string, unknown>[]> {
 		// Bucket off the real data span, not the query span: a 30d
 		// range on an agent with 1h of data must not collapse into one
 		// bucket, and vice versa the cap still holds at maxPoints.
-		const first = this.db
+		const first = (await this.db
 			.prepare('SELECT MIN(ts) AS m FROM agent_samples WHERE agent_id = ? AND ts >= ?')
-			.get(agentId, sinceMs) as { m: number | null } | undefined;
+			.get(agentId, sinceMs)) as { m: number | null } | undefined;
 		const span = Math.max(Date.now() - Math.max(sinceMs, first?.m ?? Date.now()), 1);
 		const bucket = Math.max(1, Math.ceil(span / maxPoints));
 		return this.db
@@ -302,7 +316,7 @@ export class AgentStore {
 			.all(bucket, bucket, agentId, sinceMs, bucket);
 	}
 
-	prune(olderThanMs: number): void {
-		this.db.prepare('DELETE FROM agent_samples WHERE ts < ?').run(olderThanMs);
+	async prune(olderThanMs: number): Promise<void> {
+		await this.db.prepare('DELETE FROM agent_samples WHERE ts < ?').run(olderThanMs);
 	}
 }

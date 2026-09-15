@@ -2,7 +2,7 @@ import type { RequestHandler } from './$types';
 import { getRuntime } from '$lib/server/runtime';
 import { buildLatencySeries, LATENCY_RANGES, type LatencyRange } from '$lib/shared/uptime';
 
-export const GET: RequestHandler = ({ params, url }) => {
+export const GET: RequestHandler = async ({ params, url }) => {
 	const rt = getRuntime();
 	const id = params.service;
 	if (!rt.config.services.some((s) => s.id === id)) {
@@ -15,9 +15,9 @@ export const GET: RequestHandler = ({ params, url }) => {
 	const now = Date.now();
 	const start = now - spec.ms;
 
-	const rows = rt.checks.since(id, start);
+	const rows = await rt.checks.since(id, start);
 	const series = buildLatencySeries({ checks: rows, start, end: now, buckets: spec.buckets });
-	const frac = rt.checks.uptimeFraction(id, start);
+	const frac = await rt.checks.uptimeFraction(id, start);
 
 	return Response.json(
 		{
@@ -25,9 +25,11 @@ export const GET: RequestHandler = ({ params, url }) => {
 			range,
 			uptime: frac === null ? null : Math.round(frac * 10000) / 100,
 			series,
-			markers: rt.markers
-				.between(start, now, id)
-				.map((m) => ({ ts: m.ts, title: m.title, kind: m.kind }))
+			markers: (await rt.markers.between(start, now, id)).map((m) => ({
+				ts: m.ts,
+				title: m.title,
+				kind: m.kind
+			}))
 		},
 		{ headers: { 'cache-control': 'public, max-age=60, stale-while-revalidate=120' } }
 	);

@@ -97,8 +97,8 @@ async function status(fn: (e: never) => unknown, ev: RequestEvent): Promise<numb
 
 const IMAGE = { kind: 'image' as const, url: 'registry.example.com/app:latest' };
 
-function mkApp(name: string) {
-	return ref.rt.deploys.createApp({ name, agentId: 'agent-1', source: IMAGE }).app;
+async function mkApp(name: string) {
+	return (await ref.rt.deploys.createApp({ name, agentId: 'agent-1', source: IMAGE })).app;
 }
 
 describe('admin scan routes', () => {
@@ -123,7 +123,7 @@ describe('admin scan routes', () => {
 	});
 
 	it('runs a scan, lists reports, and serves findings', async () => {
-		const app = mkApp('route-app');
+		const app = await mkApp('route-app');
 		const res = await json(
 			await runScan(event('/admin/api/scan/run', { body: { appId: app.id } }) as never)
 		);
@@ -188,10 +188,10 @@ describe('admin scan routes', () => {
 	});
 
 	it('applies a fixable rec through the app update path and audits it', async () => {
-		const app = mkApp('fix-app');
+		const app = await mkApp('fix-app');
 		const scans = getScanStore(ref.rt.db);
 		const digest = `registry.example.com/app@sha256:${'d'.repeat(64)}`;
-		const [rec] = scans.sync(app.id, [
+		const [rec] = await scans.sync(app.id, [
 			{
 				kind: 'pin-image-tag',
 				dedupeKey: '',
@@ -221,7 +221,7 @@ describe('admin scan routes', () => {
 		);
 		expect(res.ok).toBe(true);
 		expect((res.rec as { status: string }).status).toBe('applied');
-		expect(ref.rt.deploys.getApp(app.id)?.source.url).toBe(digest);
+		expect((await ref.rt.deploys.getApp(app.id))?.source.url).toBe(digest);
 		expect(
 			ref.audit.some((a) => a.action === 'deploy.app.autofix' && a.detail?.includes(digest))
 		).toBe(true);
@@ -236,7 +236,7 @@ describe('admin scan routes', () => {
 		expect(again.status).toBe(409);
 
 		// A non-fixable rec cannot be applied.
-		const noFix = scans.recsForApp(app.id).find((r) => r.kind === 'run-non-root')!;
+		const noFix = (await scans.recsForApp(app.id)).find((r) => r.kind === 'run-non-root')!;
 		const nf = await recAction(
 			event(`/admin/api/scan/recommendations/${noFix.id}`, {
 				body: { action: 'apply' },
@@ -260,9 +260,9 @@ describe('admin scan routes', () => {
 	});
 
 	it('settles a scan through the ingress job lifecycle route', async () => {
-		const app = mkApp('ing-app');
+		const app = await mkApp('ing-app');
 		const scans = getScanStore(ref.rt.db);
-		const { job, report } = enqueueScan(ref.rt.deploys, ref.rt.jobs, scans, app.id, {});
+		const { job, report } = await enqueueScan(ref.rt.deploys, ref.rt.jobs, scans, app.id, {});
 
 		const claim = await json(
 			await claimJobs(event('/ingress/jobs/claim', { body: { kinds: ['scan'] } }) as never)
@@ -276,7 +276,7 @@ describe('admin scan routes', () => {
 				params: { id: String(job!.id) }
 			}) as never
 		);
-		expect(scans.report(report.id)?.status).toBe('running');
+		expect((await scans.report(report.id))?.status).toBe('running');
 
 		const res = await json(
 			await jobAction(
@@ -294,11 +294,11 @@ describe('admin scan routes', () => {
 			)
 		);
 		expect(res.ok).toBe(true);
-		const done = scans.report(report.id)!;
+		const done = (await scans.report(report.id))!;
 		expect(done.status).toBe('done');
 		expect(done.summary.critical).toBe(1);
 		// The settle pass also refreshes recommendations for the app.
-		expect(scans.recsForApp(app.id).length).toBeGreaterThan(0);
+		expect((await scans.recsForApp(app.id)).length).toBeGreaterThan(0);
 
 		const list = await json(
 			await listRecs(event(`/admin/api/scan/recommendations?appId=${app.id}`) as never)

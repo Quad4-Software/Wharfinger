@@ -7,7 +7,7 @@ import { DeployError } from '$lib/server/deploy/store';
 export const PUT: RequestHandler = async (event) => {
 	requirePerm(event, 'deploy.manage');
 	const rt = getRuntime();
-	if (!rt.deploys.getApp(event.params.id)) return apiError(404, 'app not found');
+	if (!(await rt.deploys.getApp(event.params.id))) return apiError(404, 'app not found');
 	const body = await readJson<{ env?: unknown; expectedUpdatedAt?: unknown }>(
 		event.request,
 		256 * 1024
@@ -16,7 +16,7 @@ export const PUT: RequestHandler = async (event) => {
 		return apiError(422, 'expected an env object');
 	}
 	try {
-		rt.deploys.setEnv(
+		await rt.deploys.setEnv(
 			event.params.id,
 			body.env as Record<string, string>,
 			typeof body.expectedUpdatedAt === 'number' ? body.expectedUpdatedAt : undefined
@@ -25,6 +25,6 @@ export const PUT: RequestHandler = async (event) => {
 		if (err instanceof DeployError) return apiError(err.status, err.message);
 		throw err;
 	}
-	audit(rt, event, 'deploy.app.env', `app=${event.params.id}`);
+	await audit(rt, event, 'deploy.app.env', `app=${event.params.id}`);
 	return apiJson({ ok: true });
 };

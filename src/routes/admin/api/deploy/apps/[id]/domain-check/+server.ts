@@ -11,7 +11,7 @@ import { domainCheck } from '$lib/server/deploy/dns';
 export const GET: RequestHandler = async (event) => {
 	requirePerm(event, 'deploy.view');
 	const rt = getRuntime();
-	const app = rt.deploys.getApp(event.params.id);
+	const app = await rt.deploys.getApp(event.params.id);
 	if (!app) return apiError(404, 'app not found');
 	const checks = await domainCheck(rt, app);
 	return apiJson({ checks });

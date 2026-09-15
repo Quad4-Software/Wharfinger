@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { Cookies } from '@sveltejs/kit';
 import { SESSION_COOKIE } from '$lib/server/constants';
+import { asDb, type Db } from '$lib/server/store/driver';
 import { hashToken, randomToken } from './crypto';
 import type { User, UserStore } from './users';
 
@@ -25,16 +26,28 @@ interface SessionRow {
 	user_agent: string | null;
 }
 
-export class SessionStore {
-	constructor(
-		private readonly db: DatabaseSync,
-		private readonly users: UserStore
-	) {}
+const SELECT =
+	'SELECT token_hash, user_id, created_at, expires_at, last_seen_at, ip, user_agent FROM sessions';
 
-	create(userId: number, ttlMs: number, ip: string | null, userAgent: string | null): string {
+export class SessionStore {
+	private readonly db: Db;
+
+	constructor(
+		db: Db | DatabaseSync,
+		private readonly users: UserStore
+	) {
+		this.db = asDb(db);
+	}
+
+	async create(
+		userId: number,
+		ttlMs: number,
+		ip: string | null,
+		userAgent: string | null
+	): Promise<string> {
 		const token = randomToken();
 		const now = Date.now();
-		this.db
+		await this.db
 			.prepare(
 				'INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_seen_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?)'
 			)
@@ -47,42 +60,37 @@ export class SessionStore {
 	 * sessions past half their TTL get extended so active users are not
 	 * logged out mid-work.
 	 */
-	resolve(token: string, ttlMs: number): { user: User; tokenHash: string } | null {
+	async resolve(token: string, ttlMs: number): Promise<{ user: User; tokenHash: string } | null> {
 		const tokenHash = hashToken(token);
-		const row = this.db
-			.prepare(
-				'SELECT token_hash, user_id, created_at, expires_at, last_seen_at, ip, user_agent FROM sessions WHERE token_hash = ?'
-			)
-			.get(tokenHash) as SessionRow | undefined;
+		const row = (await this.db.prepare(`${SELECT} WHERE token_hash = ?`).get(tokenHash)) as
+			SessionRow | undefined;
 		if (!row) return null;
 		const now = Date.now();
 		if (row.expires_at <= now) {
-			this.db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash);
+			await this.db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash);
 			return null;
 		}
-		const user = this.users.byId(row.user_id);
+		const user = await this.users.byId(row.user_id);
 		if (user?.disabledAt !== null) {
-			this.revokeUserSessions(row.user_id);
+			await this.revokeUserSessions(row.user_id);
 			return null;
 		}
 		if (row.expires_at - now < ttlMs / 2) {
-			this.db
+			await this.db
 				.prepare('UPDATE sessions SET expires_at = ?, last_seen_at = ? WHERE token_hash = ?')
 				.run(now + ttlMs, now, tokenHash);
 		} else {
-			this.db
+			await this.db
 				.prepare('UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?')
 				.run(now, tokenHash);
 		}
 		return { user, tokenHash };
 	}
 
-	forUser(userId: number, currentHash?: string): SessionInfo[] {
-		const rows = this.db
-			.prepare(
-				'SELECT token_hash, user_id, created_at, expires_at, last_seen_at, ip, user_agent FROM sessions WHERE user_id = ? ORDER BY last_seen_at DESC'
-			)
-			.all(userId) as unknown as SessionRow[];
+	async forUser(userId: number, currentHash?: string): Promise<SessionInfo[]> {
+		const rows = (await this.db
+			.prepare(`${SELECT} WHERE user_id = ? ORDER BY last_seen_at DESC`)
+			.all(userId)) as unknown as SessionRow[];
 		return rows.map((r) => ({
 			tokenHash: r.token_hash,
 			userId: r.user_id,
@@ -95,22 +103,24 @@ export class SessionStore {
 		}));
 	}
 
-	revoke(tokenHash: string): void {
-		this.db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash);
+	async revoke(tokenHash: string): Promise<void> {
+		await this.db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash);
 	}
 
-	revokeUserSessions(userId: number, exceptHash?: string): void {
+	async revokeUserSessions(userId: number, exceptHash?: string): Promise<void> {
 		if (exceptHash) {
-			this.db
+			await this.db
 				.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?')
 				.run(userId, exceptHash);
 		} else {
-			this.db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+			await this.db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
 		}
 	}
 
-	prune(now = Date.now()): number {
-		return Number(this.db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(now).changes);
+	async prune(now = Date.now()): Promise<number> {
+		return Number(
+			(await this.db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(now)).changes
+		);
 	}
 }
 

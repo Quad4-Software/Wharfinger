@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { asDb, type Db } from '$lib/server/store/driver';
 import { ALL_PERMISSIONS, isPermission, type Permission } from './authz';
 import type { UserStore } from './users';
 
@@ -17,7 +18,8 @@ interface RoleRow {
 	name: string;
 	label: string;
 	permissions: string;
-	builtin: number;
+	/** 0/1 on sqlite, boolean on surreal. */
+	builtin: number | boolean;
 	created_at: number;
 }
 
@@ -79,27 +81,39 @@ function toInfo(r: RoleRow): RoleInfo {
 		name: r.name,
 		label: r.label,
 		permissions: parsePerms(r.permissions),
-		builtin: r.builtin === 1,
+		builtin: Boolean(r.builtin),
 		createdAt: r.created_at
 	};
 }
 
 export class RoleStore {
+	private readonly db: Db;
 	private cache: Map<string, ReadonlySet<Permission>> | null = null;
+	// Builtin seeding used to run in the constructor; statement calls
+	// are async now, so the seed runs once on first use instead.
+	private seeded: Promise<void> | null = null;
 
 	constructor(
-		private readonly db: DatabaseSync,
+		db: Db | DatabaseSync,
 		private readonly users: Pick<UserStore, 'countByRole'>
 	) {
+		this.db = asDb(db);
+	}
+
+	private ensureSeeded(): Promise<void> {
+		return (this.seeded ??= this.seed());
+	}
+
+	private async seed(): Promise<void> {
 		const insert = this.db.prepare(
 			'INSERT OR IGNORE INTO roles (name, label, permissions, builtin, created_at) VALUES (?, ?, ?, 1, ?)'
 		);
 		const now = Date.now();
 		for (const b of BUILTINS) {
-			insert.run(b.name, b.label, JSON.stringify(b.permissions), now);
+			await insert.run(b.name, b.label, JSON.stringify(b.permissions), now);
 			const legacy = LEGACY_BUILTIN_PERMS[b.name];
 			if (legacy !== undefined) {
-				this.db
+				await this.db
 					.prepare(
 						'UPDATE roles SET permissions = ? WHERE name = ? AND builtin = 1 AND permissions = ?'
 					)
@@ -108,32 +122,37 @@ export class RoleStore {
 		}
 	}
 
-	list(): RoleInfo[] {
-		const rows = this.db.prepare(`${SELECT} ORDER BY name`).all() as unknown as RoleRow[];
+	async list(): Promise<RoleInfo[]> {
+		await this.ensureSeeded();
+		const rows = (await this.db.prepare(`${SELECT} ORDER BY name`).all()) as unknown as RoleRow[];
 		return rows.map(toInfo);
 	}
 
-	get(name: string): RoleInfo | null {
-		const r = this.db.prepare(`${SELECT} WHERE name = ?`).get(name) as RoleRow | undefined;
+	async get(name: string): Promise<RoleInfo | null> {
+		await this.ensureSeeded();
+		const r = (await this.db.prepare(`${SELECT} WHERE name = ?`).get(name)) as RoleRow | undefined;
 		return r ? toInfo(r) : null;
 	}
 
-	exists(name: string): boolean {
-		return this.db.prepare('SELECT 1 AS x FROM roles WHERE name = ?').get(name) !== undefined;
+	async exists(name: string): Promise<boolean> {
+		await this.ensureSeeded();
+		return (
+			(await this.db.prepare('SELECT 1 AS x FROM roles WHERE name = ?').get(name)) !== undefined
+		);
 	}
 
 	/**
 	 * Resolved permission set for a role name. Unknown roles fail closed
 	 * to an empty set; admin always returns the full set.
 	 */
-	permsFor(name: string): ReadonlySet<Permission> {
+	async permsFor(name: string): Promise<ReadonlySet<Permission>> {
 		if (name === 'admin') return ADMIN_PERMS;
+		await this.ensureSeeded();
 		if (this.cache === null) {
 			this.cache = new Map();
-			const rows = this.db.prepare('SELECT name, permissions FROM roles').all() as unknown as Pick<
-				RoleRow,
-				'name' | 'permissions'
-			>[];
+			const rows = (await this.db
+				.prepare('SELECT name, permissions FROM roles')
+				.all()) as unknown as Pick<RoleRow, 'name' | 'permissions'>[];
 			for (const r of rows) {
 				this.cache.set(r.name, new Set(parsePerms(r.permissions)));
 			}
@@ -141,35 +160,36 @@ export class RoleStore {
 		return this.cache.get(name) ?? NO_PERMS;
 	}
 
-	create(name: string, label: string, permissions: Permission[]): RoleInfo {
-		this.db
+	async create(name: string, label: string, permissions: Permission[]): Promise<RoleInfo> {
+		await this.ensureSeeded();
+		await this.db
 			.prepare(
 				'INSERT INTO roles (name, label, permissions, builtin, created_at) VALUES (?, ?, ?, 0, ?)'
 			)
 			.run(name, label, JSON.stringify(permissions), Date.now());
 		this.cache = null;
-		const info = this.get(name);
+		const info = await this.get(name);
 		if (!info) throw new Error('role insert failed');
 		return info;
 	}
 
-	update(name: string, label: string, permissions: Permission[]): UpdateResult {
+	async update(name: string, label: string, permissions: Permission[]): Promise<UpdateResult> {
 		if (name === 'admin') return 'protected';
-		if (!this.exists(name)) return 'missing';
-		this.db
+		if (!(await this.exists(name))) return 'missing';
+		await this.db
 			.prepare('UPDATE roles SET label = ?, permissions = ? WHERE name = ?')
 			.run(label, JSON.stringify(permissions), name);
 		this.cache = null;
 		return 'ok';
 	}
 
-	remove(name: string): RemoveResult {
+	async remove(name: string): Promise<RemoveResult> {
 		if (name === 'admin') return 'protected';
-		const info = this.get(name);
+		const info = await this.get(name);
 		if (!info) return 'missing';
 		if (info.builtin) return 'protected';
-		if (this.users.countByRole(name) > 0) return 'in_use';
-		this.db.prepare('DELETE FROM roles WHERE name = ?').run(name);
+		if ((await this.users.countByRole(name)) > 0) return 'in_use';
+		await this.db.prepare('DELETE FROM roles WHERE name = ?').run(name);
 		this.cache = null;
 		return 'ok';
 	}

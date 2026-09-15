@@ -11,16 +11,16 @@ const RANGES: Record<string, number> = {
 
 // Edge traffic series plus the latest full report (top clients,
 // paths, recent errors) for the system detail page.
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	requirePerm(event, 'agents.manage');
 	const rt = getRuntime();
-	const agent = rt.agents.get(event.params.id);
+	const agent = await rt.agents.get(event.params.id);
 	if (!agent) return apiError(404, 'agent not found');
 	const range = event.url.searchParams.get('range') ?? '1h';
 	const ms = RANGES[range] ?? RANGES['1h'];
 	return apiJson({
 		range,
-		samples: rt.edge.history(agent.id, Date.now() - ms),
-		latest: rt.edge.latest(agent.id)
+		samples: await rt.edge.history(agent.id, Date.now() - ms),
+		latest: await rt.edge.latest(agent.id)
 	});
 };

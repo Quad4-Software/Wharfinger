@@ -8,18 +8,18 @@ import { getScanStore } from '$lib/server/scan/store';
  * every status with ?status=all); without it, all open recs plus the
  * per-app open counts for the fleet view.
  */
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	requirePerm(event, 'scan.view');
 	const rt = getRuntime();
 	const scans = getScanStore(rt.db);
 	const appId = event.url.searchParams.get('appId');
 	if (!appId) {
 		return apiJson({
-			recommendations: scans.allOpen(),
-			counts: Object.fromEntries(scans.openCounts())
+			recommendations: await scans.allOpen(),
+			counts: Object.fromEntries(await scans.openCounts())
 		});
 	}
-	if (!rt.deploys.getApp(appId)) return apiError(404, 'app not found');
+	if (!(await rt.deploys.getApp(appId))) return apiError(404, 'app not found');
 	const all = event.url.searchParams.get('status') === 'all';
-	return apiJson({ recommendations: scans.recsForApp(appId, { openOnly: !all }) });
+	return apiJson({ recommendations: await scans.recsForApp(appId, { openOnly: !all }) });
 };

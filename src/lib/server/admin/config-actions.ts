@@ -39,7 +39,7 @@ export function sectionView(rt: Runtime, section: SectionKey): SectionView {
  * only when it differs from the file, then pushed through the runtime
  * apply pipeline.
  */
-export function saveSectionValue(
+export async function saveSectionValue(
 	rt: Runtime,
 	user: User,
 	ip: string,
@@ -47,7 +47,7 @@ export function saveSectionValue(
 	value: unknown,
 	expected?: number | null,
 	action = 'config.section.save'
-): { applied: boolean; overridden: boolean; updatedAt: number | null } {
+): Promise<{ applied: boolean; overridden: boolean; updatedAt: number | null }> {
 	const eff = rt.effective();
 	const current = eff.overrides.get(section)?.updatedAt ?? null;
 	if (expected !== undefined && expected !== current) {
@@ -73,27 +73,27 @@ export function saveSectionValue(
 		throw err;
 	}
 
-	if (plan === 'store') rt.configStore.set(section, value, user.username);
-	else if (plan === 'clear') rt.configStore.clear(section);
-	rt.reloadConfig();
+	if (plan === 'store') await rt.configStore.set(section, value, user.username);
+	else if (plan === 'clear') await rt.configStore.clear(section);
+	await rt.reloadConfig();
 
-	rt.audit.log({
+	await rt.audit.log({
 		userId: user.id,
 		username: user.username,
 		action,
 		detail: `section=${section} ${plan}`,
 		ip
 	});
-	const after = rt.configStore.get(section);
+	const after = await rt.configStore.get(section);
 	return { applied: true, overridden: after !== null, updatedAt: after?.updatedAt ?? null };
 }
 
-export function resetSection(
+export async function resetSection(
 	rt: Runtime,
 	user: User,
 	ip: string,
 	section: SectionKey
-): { applied: boolean } {
+): Promise<{ applied: boolean }> {
 	const eff = rt.effective();
 	try {
 		const validated = validateMerged(eff.fileRaw, eff.overrides, section, undefined);
@@ -113,9 +113,9 @@ export function resetSection(
 		}
 		throw err;
 	}
-	rt.configStore.clear(section);
-	rt.reloadConfig();
-	rt.audit.log({
+	await rt.configStore.clear(section);
+	await rt.reloadConfig();
+	await rt.audit.log({
 		userId: user.id,
 		username: user.username,
 		action: 'config.section.reset',

@@ -5,13 +5,13 @@ import { apiError, apiJson, asString, audit, readJson, requirePerm } from '$lib/
 // Deployment markers: manual POSTs (CI, release scripts) plus the
 // automation API. Shown on charts and the dashboard timeline.
 
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	const rt = getRuntime();
 	requirePerm(event, 'status.view');
 	const url = event.url;
 	const limit = Math.min(Number(url.searchParams.get('limit') ?? 50) || 50, 200);
 	const offset = Math.max(Number(url.searchParams.get('offset') ?? 0) || 0, 0);
-	return apiJson(rt.markers.list({ limit, offset }));
+	return apiJson(await rt.markers.list({ limit, offset }));
 };
 
 export const POST: RequestHandler = async (event) => {
@@ -37,23 +37,23 @@ export const POST: RequestHandler = async (event) => {
 	}
 	const ts =
 		typeof body.ts === 'number' && Number.isFinite(body.ts) ? Math.round(body.ts) : undefined;
-	const marker = rt.markers.add({
+	const marker = await rt.markers.add({
 		title,
 		kind,
 		source: asString(body.source, 128) ?? user.username,
 		service,
 		ts
 	});
-	audit(rt, event, 'markers.create', `${title} (${kind})`);
+	await audit(rt, event, 'markers.create', `${title} (${kind})`);
 	return apiJson(marker, 201);
 };
 
-export const DELETE: RequestHandler = (event) => {
+export const DELETE: RequestHandler = async (event) => {
 	const rt = getRuntime();
 	requirePerm(event, 'status.manage');
 	const id = Number(event.url.searchParams.get('id'));
 	if (!Number.isInteger(id) || id <= 0) return apiError(422, 'id is required');
-	if (!rt.markers.remove(id)) return apiError(404, 'marker not found');
-	audit(rt, event, 'markers.delete', `marker ${id}`);
+	if (!(await rt.markers.remove(id))) return apiError(404, 'marker not found');
+	await audit(rt, event, 'markers.delete', `marker ${id}`);
 	return apiJson({ ok: true });
 };

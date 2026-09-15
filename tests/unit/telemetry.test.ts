@@ -15,12 +15,12 @@ function store() {
 	return new TelemetryStore(openDb(mkdtempSync(join(tmpdir(), 'wharfinger-tel-'))));
 }
 
-function rec(
+async function rec(
 	store: TelemetryStore,
 	projectId: number,
 	extra: Partial<Parameters<TelemetryStore['record']>[0]> = {}
 ) {
-	store.record({
+	await store.record({
 		projectId,
 		fingerprint: 'fp_' + Math.random().toString(16).slice(2, 10),
 		title: 'TypeError: boom',
@@ -48,56 +48,60 @@ describe('TelemetryStore', () => {
 		ts = store();
 	});
 
-	it('creates projects with unique keys', () => {
-		const a = ts.createProject('a');
-		const b = ts.createProject('b');
+	it('creates projects with unique keys', async () => {
+		const a = await ts.createProject('a');
+		const b = await ts.createProject('b');
 		expect(a.publicKey).toMatch(/^[a-f0-9]{32}$/);
 		expect(b.publicKey).not.toBe(a.publicKey);
-		expect(ts.projects()).toHaveLength(2);
+		expect(await ts.projects()).toHaveLength(2);
 	});
 
-	it('groups events into issues by fingerprint', () => {
-		const p = ts.createProject('app');
-		rec(ts, p.id, { fingerprint: 'fp_same' });
-		rec(ts, p.id, { fingerprint: 'fp_same' });
-		rec(ts, p.id, { fingerprint: 'fp_other' });
-		const r = ts.issues(p.id, { limit: 50 });
+	it('groups events into issues by fingerprint', async () => {
+		const p = await ts.createProject('app');
+		await rec(ts, p.id, { fingerprint: 'fp_same' });
+		await rec(ts, p.id, { fingerprint: 'fp_same' });
+		await rec(ts, p.id, { fingerprint: 'fp_other' });
+		const r = await ts.issues(p.id, { limit: 50 });
 		expect(r.total).toBe(2);
 		const same = r.entries.find((e) => e.fingerprint === 'fp_same')!;
 		expect(same.count).toBe(2);
 	});
 
-	it('re-resolves an issue when a new event lands', () => {
-		const p = ts.createProject('app');
-		rec(ts, p.id, { fingerprint: 'fp_x' });
-		ts.setIssueResolved(p.id, 'fp_x', true);
-		expect(ts.issue(p.id, 'fp_x')!.resolvedAt).not.toBeNull();
-		rec(ts, p.id, { fingerprint: 'fp_x' });
-		expect(ts.issue(p.id, 'fp_x')!.resolvedAt).toBeNull();
+	it('re-resolves an issue when a new event lands', async () => {
+		const p = await ts.createProject('app');
+		await rec(ts, p.id, { fingerprint: 'fp_x' });
+		await ts.setIssueResolved(p.id, 'fp_x', true);
+		expect((await ts.issue(p.id, 'fp_x'))!.resolvedAt).not.toBeNull();
+		await rec(ts, p.id, { fingerprint: 'fp_x' });
+		expect((await ts.issue(p.id, 'fp_x'))!.resolvedAt).toBeNull();
 	});
 
-	it('searches issues by title and culprit', () => {
-		const p = ts.createProject('app');
-		rec(ts, p.id, { fingerprint: 'fp_1', title: 'NullPointer in cart', culprit: 'CartService' });
-		rec(ts, p.id, { fingerprint: 'fp_2', title: 'Timeout in auth' });
-		expect(ts.issues(p.id, { limit: 50, q: 'cart' }).total).toBe(1);
-		expect(ts.issues(p.id, { limit: 50, q: 'CartService' }).total).toBe(1);
+	it('searches issues by title and culprit', async () => {
+		const p = await ts.createProject('app');
+		await rec(ts, p.id, {
+			fingerprint: 'fp_1',
+			title: 'NullPointer in cart',
+			culprit: 'CartService'
+		});
+		await rec(ts, p.id, { fingerprint: 'fp_2', title: 'Timeout in auth' });
+		expect((await ts.issues(p.id, { limit: 50, q: 'cart' })).total).toBe(1);
+		expect((await ts.issues(p.id, { limit: 50, q: 'CartService' })).total).toBe(1);
 	});
 
-	it('enforces the per-project event cap', () => {
-		const p = ts.createProject('app');
-		for (let i = 0; i < 60; i++) rec(ts, p.id, { fingerprint: `fp_c${i}` });
-		ts.prune();
+	it('enforces the per-project event cap', async () => {
+		const p = await ts.createProject('app');
+		for (let i = 0; i < 60; i++) await rec(ts, p.id, { fingerprint: `fp_c${i}` });
+		await ts.prune();
 		// cap is 50k in production; prune with default does nothing at 60,
 		// but the oldest-first trim path must not error.
-		expect(ts.events(p.id, 'fp_c59', { limit: 5 }).total).toBe(1);
+		expect((await ts.events(p.id, 'fp_c59', { limit: 5 })).total).toBe(1);
 	});
 
-	it('deleting a project removes issues and events', () => {
-		const p = ts.createProject('app');
-		rec(ts, p.id, { fingerprint: 'fp_d' });
-		ts.deleteProject(p.id);
-		expect(ts.issues(p.id, { limit: 10 }).total).toBe(0);
+	it('deleting a project removes issues and events', async () => {
+		const p = await ts.createProject('app');
+		await rec(ts, p.id, { fingerprint: 'fp_d' });
+		await ts.deleteProject(p.id);
+		expect((await ts.issues(p.id, { limit: 10 })).total).toBe(0);
 	});
 });
 
@@ -122,15 +126,15 @@ describe('ingest: sentryKey', () => {
 });
 
 describe('ingest: resolveProject', () => {
-	it('matches project id + key and rejects wrong/disabled', () => {
+	it('matches project id + key and rejects wrong/disabled', async () => {
 		const ts = store();
-		const p = ts.createProject('app');
-		expect(resolveProject(ts, String(p.id), p.publicKey)?.id).toBe(p.id);
-		expect(resolveProject(ts, String(p.id), 'deadbeef')).toBeNull();
-		expect(resolveProject(ts, '999', p.publicKey)).toBeNull();
-		expect(resolveProject(ts, 'notanumber', p.publicKey)).toBeNull();
-		ts.setProjectDisabled(p.id, true);
-		expect(resolveProject(ts, String(p.id), p.publicKey)).toBeNull();
+		const p = await ts.createProject('app');
+		expect((await resolveProject(ts, String(p.id), p.publicKey))?.id).toBe(p.id);
+		expect(await resolveProject(ts, String(p.id), 'deadbeef')).toBeNull();
+		expect(await resolveProject(ts, '999', p.publicKey)).toBeNull();
+		expect(await resolveProject(ts, 'notanumber', p.publicKey)).toBeNull();
+		await ts.setProjectDisabled(p.id, true);
+		expect(await resolveProject(ts, String(p.id), p.publicKey)).toBeNull();
 	});
 });
 

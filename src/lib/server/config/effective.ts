@@ -36,12 +36,12 @@ export interface EffectiveConfig {
  * arbitrary process env vars, so override values stay literal.
  * Placeholders must live in wharfinger.toml.
  */
-export function resolveEffective(
+export async function resolveEffective(
 	fileRaw: Record<string, unknown>,
 	store: ConfigStore,
 	source = 'runtime config'
-): EffectiveConfig {
-	const overrides = new Map(store.all().map((o) => [o.section, o]));
+): Promise<EffectiveConfig> {
+	const overrides = new Map((await store.all()).map((o) => [o.section, o]));
 	const merged = validateMergedDoc(
 		fileRaw,
 		new Map([...overrides.entries()].map(([k, o]) => [k, o.raw])),

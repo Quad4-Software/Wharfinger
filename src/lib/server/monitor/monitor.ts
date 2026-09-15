@@ -54,10 +54,10 @@ export class Monitor extends EventEmitter {
 		this.stopped = false;
 		for (const s of this.config.services) this.schedule(s, this.jitteredDelay(s));
 		this.pruneTimer = setInterval(() => {
-			this.prune();
+			void this.prune();
 		}, 3600_000);
 		this.pruneTimer.unref();
-		this.prune();
+		void this.prune();
 	}
 
 	stop(): void {
@@ -140,7 +140,7 @@ export class Monitor extends EventEmitter {
 				userAgent: this.userAgent,
 				certWarnDays: this.config.monitor.cert_warn_days,
 				egress: this.egress,
-				lastBeat: (id: string) => this.pushBeats?.lastBeat(id) ?? null
+				lastBeat: async (id: string) => (await this.pushBeats?.lastBeat(id)) ?? null
 			};
 			const outcome = await runCheck(s, ctx);
 			const status: 'up' | 'down' | 'degraded' = outcome.ok
@@ -148,7 +148,7 @@ export class Monitor extends EventEmitter {
 					? 'degraded'
 					: 'up'
 				: 'down';
-			this.checks.record(s.id, {
+			await this.checks.record(s.id, {
 				ok: outcome.ok,
 				latencyMs: outcome.latencyMs,
 				status,
@@ -158,7 +158,7 @@ export class Monitor extends EventEmitter {
 
 			const state = this.states.get(s.id);
 			const next = state?.apply(outcome);
-			if (next) this.onTransition(s, next);
+			if (next) await this.onTransition(s, next);
 			this.emit('update');
 		} catch (err) {
 			console.error(`[monitor] check ${s.id} crashed:`, err);
@@ -167,31 +167,31 @@ export class Monitor extends EventEmitter {
 		}
 	}
 
-	private onTransition(s: ServiceConfig, next: ServiceStatus): void {
+	private async onTransition(s: ServiceConfig, next: ServiceStatus): Promise<void> {
 		const prev = this.serviceStatus.get(s.id);
 		this.serviceStatus.set(s.id, next);
 
 		const wasDown = prev === 'major_outage' || prev === 'partial_outage' || prev === 'degraded';
 		const isDown = next === 'major_outage' || next === 'partial_outage' || next === 'degraded';
 		if (!wasDown && isDown) {
-			this.incidents.open(
+			await this.incidents.open(
 				s.id,
 				next === 'degraded' ? 'minor' : 'major',
 				`${s.name} is ${next === 'degraded' ? 'degraded' : 'down'}`
 			);
 		} else if (wasDown && !isDown) {
-			this.incidents.close(s.id);
+			await this.incidents.close(s.id);
 		}
 		this.emit('transition', { service: s, prev: prev ?? 'unknown', next });
 		this.emit('change');
 	}
 
-	private prune(): void {
+	private async prune(): Promise<void> {
 		const cutoff = Date.now() - this.config.monitor.retention_days * 86_400_000;
 		try {
-			const n = this.checks.prune(cutoff);
+			const n = await this.checks.prune(cutoff);
 			if (n > 0) console.log(`[monitor] pruned ${n} check rows`);
-			this.checks.pruneIncidents(cutoff);
+			await this.checks.pruneIncidents(cutoff);
 		} catch (err) {
 			console.error('[monitor] prune failed:', err);
 		}

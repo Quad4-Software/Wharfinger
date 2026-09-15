@@ -12,11 +12,11 @@ export const PATCH: RequestHandler = async (event) => {
 	requirePerm(event, 'telemetry.manage');
 	const rt = getRuntime();
 	const id = projectId(event.params.id);
-	const p = id === null ? null : rt.telemetry.project(id);
+	const p = id === null ? null : await rt.telemetry.project(id);
 	if (!p) return apiError(404, 'unknown project');
 	const body = await readJson<{ disabled?: unknown }>(event.request, 2048);
-	rt.telemetry.setProjectDisabled(p.id, body.disabled === true);
-	audit(
+	await rt.telemetry.setProjectDisabled(p.id, body.disabled === true);
+	await audit(
 		rt,
 		event,
 		'telemetry.project.toggle',
@@ -26,13 +26,13 @@ export const PATCH: RequestHandler = async (event) => {
 };
 
 /** Delete a project and all its events. */
-export const DELETE: RequestHandler = (event) => {
+export const DELETE: RequestHandler = async (event) => {
 	requirePerm(event, 'telemetry.manage');
 	const rt = getRuntime();
 	const id = projectId(event.params.id);
-	const p = id === null ? null : rt.telemetry.project(id);
+	const p = id === null ? null : await rt.telemetry.project(id);
 	if (!p) return apiError(404, 'unknown project');
-	rt.telemetry.deleteProject(p.id);
-	audit(rt, event, 'telemetry.project.delete', p.name);
+	await rt.telemetry.deleteProject(p.id);
+	await audit(rt, event, 'telemetry.project.delete', p.name);
 	return apiJson({ ok: true });
 };

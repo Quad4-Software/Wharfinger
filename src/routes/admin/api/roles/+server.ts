@@ -4,11 +4,13 @@ import { ALL_PERMISSIONS } from '$lib/server/admin/authz';
 import { ROLE_NAME_RE, parsePermissions } from '$lib/server/admin/roles';
 import { apiError, apiJson, asString, audit, readJson, requirePerm } from '$lib/server/admin/http';
 
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	const rt = getRuntime();
 	requirePerm(event, 'roles.manage');
+	const roles = await rt.roles.list();
+	const members = await Promise.all(roles.map((r) => rt.users.countByRole(r.name)));
 	return apiJson({
-		roles: rt.roles.list().map((r) => ({ ...r, members: rt.users.countByRole(r.name) })),
+		roles: roles.map((r, i) => ({ ...r, members: members[i] })),
 		permissions: ALL_PERMISSIONS
 	});
 };
@@ -29,8 +31,8 @@ export const POST: RequestHandler = async (event) => {
 	if (!permissions) {
 		return apiError(422, 'permissions must be an array of known permission names');
 	}
-	if (rt.roles.exists(name)) return apiError(409, 'a role with that name already exists');
-	const role = rt.roles.create(name, label, permissions);
-	audit(rt, event, 'roles.create', `name=${name} perms=${permissions.join(',')}`);
+	if (await rt.roles.exists(name)) return apiError(409, 'a role with that name already exists');
+	const role = await rt.roles.create(name, label, permissions);
+	await audit(rt, event, 'roles.create', `name=${name} perms=${permissions.join(',')}`);
 	return apiJson({ role }, 201);
 };

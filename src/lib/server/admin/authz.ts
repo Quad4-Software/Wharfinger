@@ -59,8 +59,8 @@ export function isPermission(v: unknown): v is Permission {
 	return typeof v === 'string' && PERM_SET.has(v);
 }
 
-export function can(roles: RoleStore, user: User, perm: Permission): boolean {
-	return roles.permsFor(user.role).has(perm);
+export async function can(roles: RoleStore, user: User, perm: Permission): Promise<boolean> {
+	return (await roles.permsFor(user.role)).has(perm);
 }
 
 /**
@@ -68,13 +68,13 @@ export function can(roles: RoleStore, user: User, perm: Permission): boolean {
  * Without this, any users.manage or invites.manage holder could mint
  * an admin account and the granular role model collapses.
  */
-export function canGrantRole(
+export async function canGrantRole(
 	roles: RoleStore,
 	actorPerms: ReadonlySet<Permission> | null,
 	role: string
-): boolean {
-	if (!actorPerms || !roles.exists(role)) return false;
-	for (const p of roles.permsFor(role)) {
+): Promise<boolean> {
+	if (!actorPerms || !(await roles.exists(role))) return false;
+	for (const p of await roles.permsFor(role)) {
 		if (!actorPerms.has(p)) return false;
 	}
 	return true;

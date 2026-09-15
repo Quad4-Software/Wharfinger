@@ -38,55 +38,55 @@ describe('adminEnvDisabled', () => {
 });
 
 describe('bootstrapAdmin', () => {
-	it('creates the first admin from env credentials', () => {
+	it('creates the first admin from env credentials', async () => {
 		const { users, audit } = stores();
-		const r = bootstrapAdmin(
+		const r = await bootstrapAdmin(
 			users,
 			audit,
 			{ WHARFINGER_ADMIN_USERNAME: 'root', WHARFINGER_ADMIN_PASSWORD: 'a-very-long-password' },
 			12
 		);
 		expect(r).toBe('created');
-		expect(users.count()).toBe(1);
-		expect(users.byId(1)?.role).toBe('admin');
-		expect(users.byId(1)?.displayName).toBe('');
+		expect(await users.count()).toBe(1);
+		expect((await users.byId(1))?.role).toBe('admin');
+		expect((await users.byId(1))?.displayName).toBe('');
 	});
 
-	it('never overwrites an existing account', () => {
+	it('never overwrites an existing account', async () => {
 		const { users, audit } = stores();
-		users.create('alice', 'a-very-long-password', 'operator');
-		const r = bootstrapAdmin(
+		await users.create('alice', 'a-very-long-password', 'operator');
+		const r = await bootstrapAdmin(
 			users,
 			audit,
 			{ WHARFINGER_ADMIN_USERNAME: 'root', WHARFINGER_ADMIN_PASSWORD: 'a-very-long-password' },
 			12
 		);
 		expect(r).toBe('exists');
-		expect(users.count()).toBe(1);
-		expect(users.byId(1)?.role).toBe('operator');
+		expect(await users.count()).toBe(1);
+		expect((await users.byId(1))?.role).toBe('operator');
 	});
 
-	it('reports unset when neither variable is present', () => {
+	it('reports unset when neither variable is present', async () => {
 		const { users, audit } = stores();
-		expect(bootstrapAdmin(users, audit, {}, 12)).toBe('unset');
-		expect(users.count()).toBe(0);
+		expect(await bootstrapAdmin(users, audit, {}, 12)).toBe('unset');
+		expect(await users.count()).toBe(0);
 	});
 
-	it('reports incomplete when only one variable is present', () => {
+	it('reports incomplete when only one variable is present', async () => {
 		const { users, audit } = stores();
-		expect(bootstrapAdmin(users, audit, { WHARFINGER_ADMIN_USERNAME: 'root' }, 12)).toBe(
+		expect(await bootstrapAdmin(users, audit, { WHARFINGER_ADMIN_USERNAME: 'root' }, 12)).toBe(
 			'incomplete'
 		);
 		expect(
-			bootstrapAdmin(users, audit, { WHARFINGER_ADMIN_PASSWORD: 'a-very-long-password' }, 12)
+			await bootstrapAdmin(users, audit, { WHARFINGER_ADMIN_PASSWORD: 'a-very-long-password' }, 12)
 		).toBe('incomplete');
-		expect(users.count()).toBe(0);
+		expect(await users.count()).toBe(0);
 	});
 
-	it('rejects usernames that fail policy', () => {
+	it('rejects usernames that fail policy', async () => {
 		const { users, audit } = stores();
 		expect(
-			bootstrapAdmin(
+			await bootstrapAdmin(
 				users,
 				audit,
 				{
@@ -96,13 +96,13 @@ describe('bootstrapAdmin', () => {
 				12
 			)
 		).toBe('invalid');
-		expect(users.count()).toBe(0);
+		expect(await users.count()).toBe(0);
 	});
 
-	it('rejects passwords that fail policy', () => {
+	it('rejects passwords that fail policy', async () => {
 		const { users, audit } = stores();
 		expect(
-			bootstrapAdmin(
+			await bootstrapAdmin(
 				users,
 				audit,
 				{ WHARFINGER_ADMIN_USERNAME: 'root', WHARFINGER_ADMIN_PASSWORD: 'short' },
@@ -111,25 +111,25 @@ describe('bootstrapAdmin', () => {
 		).toBe('invalid');
 		// password containing the username is also rejected
 		expect(
-			bootstrapAdmin(
+			await bootstrapAdmin(
 				users,
 				audit,
 				{ WHARFINGER_ADMIN_USERNAME: 'root', WHARFINGER_ADMIN_PASSWORD: 'root-let-me-in-now' },
 				12
 			)
 		).toBe('invalid');
-		expect(users.count()).toBe(0);
+		expect(await users.count()).toBe(0);
 	});
 
-	it('records the bootstrap in the audit log', () => {
+	it('records the bootstrap in the audit log', async () => {
 		const { users, audit } = stores();
-		bootstrapAdmin(
+		await bootstrapAdmin(
 			users,
 			audit,
 			{ WHARFINGER_ADMIN_USERNAME: 'root', WHARFINGER_ADMIN_PASSWORD: 'a-very-long-password' },
 			12
 		);
-		const { entries } = audit.list({ limit: 10, offset: 0 });
+		const { entries } = await audit.list({ limit: 10, offset: 0 });
 		expect(entries.some((e) => e.action === 'admin.bootstrap')).toBe(true);
 	});
 });

@@ -12,15 +12,15 @@ function ids(event: Parameters<RequestHandler>[0]): { projectId: number; fp: str
 }
 
 /** Issue detail plus a page of its events. */
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	requirePerm(event, 'telemetry.view');
 	const rt = getRuntime();
 	const k = ids(event);
 	if (!k) return apiError(404, 'unknown issue');
-	const issue = rt.telemetry.issue(k.projectId, k.fp);
+	const issue = await rt.telemetry.issue(k.projectId, k.fp);
 	if (!issue) return apiError(404, 'unknown issue');
 	const page = Math.max(1, Number(event.url.searchParams.get('page') ?? 1) || 1);
-	const r = rt.telemetry.events(k.projectId, k.fp, { limit: 20, offset: (page - 1) * 20 });
+	const r = await rt.telemetry.events(k.projectId, k.fp, { limit: 20, offset: (page - 1) * 20 });
 	return apiJson({ issue, events: r.entries, total: r.total, page, pageSize: 20 });
 };
 
@@ -29,9 +29,14 @@ export const PATCH: RequestHandler = async (event) => {
 	requirePerm(event, 'telemetry.manage');
 	const rt = getRuntime();
 	const k = ids(event);
-	if (!k || !rt.telemetry.issue(k.projectId, k.fp)) return apiError(404, 'unknown issue');
+	if (!k || !(await rt.telemetry.issue(k.projectId, k.fp))) return apiError(404, 'unknown issue');
 	const body = await readJson<{ resolved?: unknown }>(event.request, 2048);
-	rt.telemetry.setIssueResolved(k.projectId, k.fp, body.resolved === true);
-	audit(rt, event, 'telemetry.issue.resolve', body.resolved === true ? 'resolved' : 'reopened');
+	await rt.telemetry.setIssueResolved(k.projectId, k.fp, body.resolved === true);
+	await audit(
+		rt,
+		event,
+		'telemetry.issue.resolve',
+		body.resolved === true ? 'resolved' : 'reopened'
+	);
 	return apiJson({ ok: true });
 };

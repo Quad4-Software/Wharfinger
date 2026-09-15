@@ -54,7 +54,7 @@ describe('checkPassword', () => {
 });
 
 describe('can', () => {
-	it('grants admins every permission', () => {
+	it('grants admins every permission', async () => {
 		for (const p of [
 			'status.view',
 			'status.manage',
@@ -66,14 +66,14 @@ describe('can', () => {
 			'audit.view',
 			'config.raw'
 		] as const) {
-			expect(can(roles, admin, p)).toBe(true);
+			expect(await can(roles, admin, p)).toBe(true);
 		}
 	});
 
-	it('limits operators to day-to-day status work', () => {
-		expect(can(roles, operator, 'status.view')).toBe(true);
-		expect(can(roles, operator, 'status.manage')).toBe(true);
-		expect(can(roles, operator, 'notifications.test')).toBe(true);
+	it('limits operators to day-to-day status work', async () => {
+		expect(await can(roles, operator, 'status.view')).toBe(true);
+		expect(await can(roles, operator, 'status.manage')).toBe(true);
+		expect(await can(roles, operator, 'notifications.test')).toBe(true);
 		for (const p of [
 			'admin.settings',
 			'users.manage',
@@ -82,7 +82,7 @@ describe('can', () => {
 			'audit.view',
 			'config.raw'
 		] as const) {
-			expect(can(roles, operator, p)).toBe(false);
+			expect(await can(roles, operator, p)).toBe(false);
 		}
 	});
 });

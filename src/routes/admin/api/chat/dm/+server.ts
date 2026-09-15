@@ -11,7 +11,7 @@ export const POST: RequestHandler = async (event) => {
 	const otherId = Number(body.userId);
 	if (!Number.isInteger(otherId) || otherId <= 0) return apiError(422, 'invalid user id');
 	try {
-		const room = rt.chat.openDm(user.id, otherId);
+		const room = await rt.chat.openDm(user.id, otherId);
 		return apiJson({ ok: true, room });
 	} catch (err) {
 		return chatFail(err);

@@ -13,14 +13,14 @@ import type { DeploySpec } from '$lib/shared/deploy';
  */
 export const POST: RequestHandler = async (event) => {
 	const rt = getRuntime();
-	const g = gate(rt, rt.agents, bearerToken(event.request));
+	const g = await gate(rt, rt.agents, bearerToken(event.request));
 	if (g.err) return g.err;
 
 	const jobId = Number(event.params.id);
 	if (!Number.isInteger(jobId) || jobId <= 0) return apiError(404, 'not found');
 
 	const text = await readText(event.request, 8192);
-	const badProof = proofGate(rt, g.agent, event.request, Buffer.from(text, 'utf8'));
+	const badProof = await proofGate(rt, g.agent, event.request, Buffer.from(text, 'utf8'));
 	if (badProof) return badProof;
 
 	let body: { lease?: unknown };
@@ -32,7 +32,7 @@ export const POST: RequestHandler = async (event) => {
 	const lease = typeof body.lease === 'string' ? body.lease : '';
 	if (!lease) return apiError(422, 'expected lease');
 
-	const job = rt.jobs.get(jobId);
+	const job = await rt.jobs.get(jobId);
 	if (
 		job?.kind !== 'deploy' ||
 		job.leaseOwner !== lease ||
@@ -49,10 +49,10 @@ export const POST: RequestHandler = async (event) => {
 		return apiError(500, 'corrupt job spec');
 	}
 
-	const key = rt.deploys.deployKeyFor(spec.appId);
+	const key = await rt.deploys.deployKeyFor(spec.appId);
 	return apiJson({
 		ok: true,
-		env: rt.deploys.envFor(spec.appId),
+		env: await rt.deploys.envFor(spec.appId),
 		deployKey: key ? { priv: key.priv.toString('base64'), pub: key.pub } : null
 	});
 };

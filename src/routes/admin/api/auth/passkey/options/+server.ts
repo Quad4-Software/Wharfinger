@@ -23,10 +23,10 @@ export const POST: RequestHandler = async (event) => {
 	let userId: number | null = null;
 	let allowCredentials: { id: string; transports?: AuthenticatorTransport[] }[] | undefined;
 	if (username) {
-		const row = rt.users.rowByName(username);
+		const row = await rt.users.rowByName(username);
 		if (row?.disabled_at === null) {
 			userId = row.id;
-			allowCredentials = rt.passkeys.forUser(row.id).map((c) => ({
+			allowCredentials = (await rt.passkeys.forUser(row.id)).map((c) => ({
 				id: c.credentialId,
 				transports: c.transports as AuthenticatorTransport[]
 			}));
@@ -37,6 +37,6 @@ export const POST: RequestHandler = async (event) => {
 		allowCredentials,
 		userVerification: 'preferred'
 	});
-	rt.passkeys.putChallenge(options.challenge, 'login', userId, WEBAUTHN_CHALLENGE_TTL_MS);
+	await rt.passkeys.putChallenge(options.challenge, 'login', userId, WEBAUTHN_CHALLENGE_TTL_MS);
 	return apiJson(options);
 };

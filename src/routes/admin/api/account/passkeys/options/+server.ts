@@ -21,12 +21,12 @@ export const POST: RequestHandler = async (event) => {
 		userName: user.username,
 		userDisplayName: user.displayName || user.username,
 		attestationType: 'none',
-		excludeCredentials: rt.passkeys.forUser(user.id).map((c) => ({
+		excludeCredentials: (await rt.passkeys.forUser(user.id)).map((c) => ({
 			id: c.credentialId,
 			transports: c.transports as AuthenticatorTransport[]
 		})),
 		authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred' }
 	});
-	rt.passkeys.putChallenge(options.challenge, 'register', user.id, WEBAUTHN_CHALLENGE_TTL_MS);
+	await rt.passkeys.putChallenge(options.challenge, 'register', user.id, WEBAUTHN_CHALLENGE_TTL_MS);
 	return apiJson(options);
 };

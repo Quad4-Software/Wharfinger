@@ -5,17 +5,17 @@ import { apiKeyOrResponse } from '$lib/server/apikey';
 
 // Deployment markers from CI/automation: write-scoped keys only.
 // Mirrors the panel route at /admin/api/markers.
-export const GET: RequestHandler = (event) => {
+export const GET: RequestHandler = async (event) => {
 	const rt = getRuntime();
-	const auth = apiKeyOrResponse(rt, event.request, 'read');
+	const auth = await apiKeyOrResponse(rt, event.request, 'read');
 	if ('res' in auth) return auth.res;
 	const limit = Math.min(Number(event.url.searchParams.get('limit') ?? 50) || 50, 200);
-	return json(rt.markers.list({ limit }));
+	return json(await rt.markers.list({ limit }));
 };
 
 export const POST: RequestHandler = async (event) => {
 	const rt = getRuntime();
-	const auth = apiKeyOrResponse(rt, event.request, 'write');
+	const auth = await apiKeyOrResponse(rt, event.request, 'write');
 	if ('res' in auth) return auth.res;
 	let body: { title?: unknown; kind?: unknown; source?: unknown; service?: unknown; ts?: unknown };
 	try {
@@ -35,7 +35,7 @@ export const POST: RequestHandler = async (event) => {
 	}
 	const ts =
 		typeof body.ts === 'number' && Number.isFinite(body.ts) ? Math.round(body.ts) : undefined;
-	const marker = rt.markers.add({
+	const marker = await rt.markers.add({
 		title,
 		kind,
 		source:

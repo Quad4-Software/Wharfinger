@@ -30,14 +30,14 @@ function payload(over: Record<string, unknown> = {}): Record<string, unknown> {
 }
 
 describe('AgentStore', () => {
-	it('issues tokens and resolves them by hash', () => {
+	it('issues tokens and resolves them by hash', async () => {
 		const db = freshDb();
 		const store = new AgentStore(db);
-		const { id, token } = store.create('web-1', '1');
+		const { id, token } = await store.create('web-1', '1');
 		expect(token).toMatch(/^st_/);
-		const agent = store.resolveToken(token);
+		const agent = await store.resolveToken(token);
 		expect(agent?.id).toBe(id);
-		expect(store.resolveToken('st_wrong')).toBeNull();
+		expect(await store.resolveToken('st_wrong')).toBeNull();
 		// Raw token is never stored.
 		const row = db.prepare('SELECT token_hash FROM agents WHERE id = ?').get(id) as {
 			token_hash: string;
@@ -46,87 +46,90 @@ describe('AgentStore', () => {
 		expect(row.token_hash).not.toBe(token);
 	});
 
-	it('rejects revoked tokens', () => {
+	it('rejects revoked tokens', async () => {
 		const store = new AgentStore(freshDb());
-		const { id, token } = store.create('a', null);
-		store.revoke(id);
-		expect(store.resolveToken(token)).toBeNull();
+		const { id, token } = await store.create('a', null);
+		await store.revoke(id);
+		expect(await store.resolveToken(token)).toBeNull();
 	});
 
-	it('binds the first fingerprint and rejects later mismatches', () => {
+	it('binds the first fingerprint and rejects later mismatches', async () => {
 		const store = new AgentStore(freshDb());
-		const { id } = store.create('a', null);
-		const agent = store.get(id)!;
-		expect(store.checkFingerprint(agent, 'fp_one')).toBe('bound');
-		expect(store.checkFingerprint(store.get(id)!, 'fp_one')).toBe('ok');
-		expect(store.checkFingerprint(store.get(id)!, 'fp_two')).toBe('mismatch');
+		const { id } = await store.create('a', null);
+		const agent = (await store.get(id))!;
+		expect(await store.checkFingerprint(agent, 'fp_one')).toBe('bound');
+		expect(await store.checkFingerprint((await store.get(id))!, 'fp_one')).toBe('ok');
+		expect(await store.checkFingerprint((await store.get(id))!, 'fp_two')).toBe('mismatch');
 	});
 
-	it('never binds an empty fingerprint', () => {
+	it('never binds an empty fingerprint', async () => {
 		const store = new AgentStore(freshDb());
-		const { id } = store.create('a', null);
-		expect(store.checkFingerprint(store.get(id)!, '')).toBe('ok');
-		expect(store.get(id)!.fingerprint).toBeNull();
+		const { id } = await store.create('a', null);
+		expect(await store.checkFingerprint((await store.get(id))!, '')).toBe('ok');
+		expect((await store.get(id))!.fingerprint).toBeNull();
 	});
 
-	it('records samples and prunes old rows', () => {
+	it('records samples and prunes old rows', async () => {
 		const store = new AgentStore(freshDb());
-		const { id } = store.create('a', null);
+		const { id } = await store.create('a', null);
 		const p = v.parse(AgentPayload, payload({ ts: Date.now() - 10 * 86_400_000 }));
-		store.record(id, p);
-		store.record(id, v.parse(AgentPayload, payload()));
-		expect(store.history(id, 0)).toHaveLength(2);
-		store.prune(Date.now() - 5 * 86_400_000);
-		const rest = store.history(id, 0);
+		await store.record(id, p);
+		await store.record(id, v.parse(AgentPayload, payload()));
+		expect(await store.history(id, 0)).toHaveLength(2);
+		await store.prune(Date.now() - 5 * 86_400_000);
+		const rest = await store.history(id, 0);
 		expect(rest).toHaveLength(1);
-		const latest = store.get(id)!;
+		const latest = (await store.get(id))!;
 		expect(latest.lastSeenAt).not.toBeNull();
 		expect(latest.meta).toMatchObject({ hostname: 'h1', arch: 'amd64' });
 	});
 
-	it('deletes samples with the agent', () => {
+	it('deletes samples with the agent', async () => {
 		const store = new AgentStore(freshDb());
-		const { id } = store.create('a', null);
-		store.record(id, v.parse(AgentPayload, payload()));
-		store.remove(id);
-		expect(store.get(id)).toBeNull();
-		expect(store.history(id, 0)).toHaveLength(0);
+		const { id } = await store.create('a', null);
+		await store.record(id, v.parse(AgentPayload, payload()));
+		await store.remove(id);
+		expect(await store.get(id)).toBeNull();
+		expect(await store.history(id, 0)).toHaveLength(0);
 	});
 
-	it('dedupes replayed samples on (agent_id, ts)', () => {
+	it('dedupes replayed samples on (agent_id, ts)', async () => {
 		const store = new AgentStore(freshDb());
-		const { id } = store.create('a', null);
+		const { id } = await store.create('a', null);
 		const ts = Date.now() - 60_000;
 		const p = v.parse(AgentPayload, payload({ ts, backfill: true }));
-		store.record(id, p);
-		store.record(id, p); // replay after a reconnect
-		expect(store.history(id, 0)).toHaveLength(1);
+		await store.record(id, p);
+		await store.record(id, p); // replay after a reconnect
+		expect(await store.history(id, 0)).toHaveLength(1);
 	});
 
-	it('backfill fills the series without regressing last_payload', () => {
+	it('backfill fills the series without regressing last_payload', async () => {
 		const store = new AgentStore(freshDb());
-		const { id } = store.create('a', null);
-		store.record(id, v.parse(AgentPayload, payload()));
-		const livePayload = (store.get(id)!.lastPayload as { ts: number }).ts;
+		const { id } = await store.create('a', null);
+		await store.record(id, v.parse(AgentPayload, payload()));
+		const livePayload = ((await store.get(id))!.lastPayload as { ts: number }).ts;
 
-		store.record(id, v.parse(AgentPayload, payload({ ts: Date.now() - 3600_000, backfill: true })));
-		const row = store.get(id)!;
+		await store.record(
+			id,
+			v.parse(AgentPayload, payload({ ts: Date.now() - 3600_000, backfill: true }))
+		);
+		const row = (await store.get(id))!;
 		expect((row.lastPayload as { ts: number }).ts).toBe(livePayload);
-		expect(store.history(id, 0)).toHaveLength(2);
+		expect(await store.history(id, 0)).toHaveLength(2);
 	});
 
-	it('buckets history to a bounded point count', () => {
+	it('buckets history to a bounded point count', async () => {
 		const store = new AgentStore(freshDb());
-		const { id } = store.create('a', null);
+		const { id } = await store.create('a', null);
 		// 100 samples 1min apart over a 100min window.
 		const base = Date.now() - 100 * 60_000;
 		for (let i = 0; i < 100; i++) {
-			store.record(id, v.parse(AgentPayload, payload({ ts: base + i * 60_000 })));
+			await store.record(id, v.parse(AgentPayload, payload({ ts: base + i * 60_000 })));
 		}
-		const wide = store.history(id, base, 10);
+		const wide = await store.history(id, base, 10);
 		expect(wide.length).toBeLessThanOrEqual(11);
 		expect(wide.length).toBeGreaterThan(7);
-		const raw = store.history(id, base, 10000);
+		const raw = await store.history(id, base, 10000);
 		expect(raw).toHaveLength(100);
 	});
 });
@@ -197,10 +200,10 @@ describe('AgentPayload schema', () => {
 });
 
 describe('hub keys', () => {
-	it('signs tokens verifiably and persists the keypair', () => {
+	it('signs tokens verifiably and persists the keypair', async () => {
 		const db = freshDb();
-		const sig = signToken(db, 'st_testtoken');
-		const pub = Buffer.from(publicKeyB64(db), 'base64');
+		const sig = await signToken(db, 'st_testtoken');
+		const pub = Buffer.from(await publicKeyB64(db), 'base64');
 		expect(pub).toHaveLength(32);
 		const ok = verify(
 			null,
@@ -214,6 +217,6 @@ describe('hub keys', () => {
 		);
 		expect(ok).toBe(true);
 		// Stable across calls (same db row).
-		expect(signToken(db, 'x')).toBe(signToken(db, 'x'));
+		expect(await signToken(db, 'x')).toBe(await signToken(db, 'x'));
 	});
 });

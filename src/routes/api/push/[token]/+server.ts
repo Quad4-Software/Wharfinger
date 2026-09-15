@@ -12,7 +12,14 @@ const CORS = { 'access-control-allow-origin': '*' };
 
 async function beat(request: Request, token: string) {
 	const rt = getRuntime();
-	const svc = rt.config.services.find((s) => s.type === 'push' && tokenMatches(rt.db, s.id, token));
+	let svc: (typeof rt.config.services)[number] | undefined;
+	for (const s of rt.config.services) {
+		if (s.type !== 'push') continue;
+		if (await tokenMatches(rt.db, s.id, token)) {
+			svc = s;
+			break;
+		}
+	}
 	if (!svc) return json({ ok: false }, { status: 404, headers: CORS });
 
 	let msg: string | null = request.url.includes('?')
@@ -31,7 +38,7 @@ async function beat(request: Request, token: string) {
 			}
 		}
 	}
-	rt.pushBeats.beat(svc.id, msg?.slice(0, 200) ?? null);
+	await rt.pushBeats.beat(svc.id, msg?.slice(0, 200) ?? null);
 	return json({ ok: true, at: Date.now() }, { headers: CORS });
 }
 

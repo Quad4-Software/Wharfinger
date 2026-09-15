@@ -28,13 +28,13 @@ export function adminEnvDisabled(env: NodeJS.ProcessEnv = process.env): boolean 
  * users table is empty, so existing installs are never touched and the
  * account cannot be overwritten by a later env change.
  */
-export function bootstrapAdmin(
+export async function bootstrapAdmin(
 	users: UserStore,
 	audit: AuditStore,
 	env: NodeJS.ProcessEnv = process.env,
 	minPasswordLength = 12
-): BootstrapResult {
-	if (users.count() > 0) return 'exists';
+): Promise<BootstrapResult> {
+	if ((await users.count()) > 0) return 'exists';
 	const username = env.WHARFINGER_ADMIN_USERNAME?.trim() ?? '';
 	const password = env.WHARFINGER_ADMIN_PASSWORD ?? '';
 	if (!username && !password) return 'unset';
@@ -42,8 +42,8 @@ export function bootstrapAdmin(
 	if (!USERNAME_RE.test(username)) return 'invalid';
 	if (checkPassword(password, username, minPasswordLength)) return 'invalid';
 	const displayName = env.WHARFINGER_ADMIN_DISPLAY_NAME?.slice(0, 80) ?? '';
-	const user = users.create(username, password, 'admin', displayName);
-	audit.log({
+	const user = await users.create(username, password, 'admin', displayName);
+	await audit.log({
 		userId: user.id,
 		username,
 		action: 'admin.bootstrap',

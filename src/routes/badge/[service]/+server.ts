@@ -27,8 +27,8 @@ function textWidth(s: string, size: number): number {
 	return Math.ceil(s.length * size * 0.62) + 10;
 }
 
-export const GET: RequestHandler = ({ params, url }) => {
-	const { snapshot } = getRuntime().snapshot.current();
+export const GET: RequestHandler = async ({ params, url }) => {
+	const { snapshot } = await getRuntime().snapshot.current();
 	const id = params.service.replace(/\.svg$/, '');
 	const svc = snapshot.groups.flatMap((g) => g.services).find((s) => s.id === id);
 	if (!svc) return new Response('unknown service', { status: 404 });

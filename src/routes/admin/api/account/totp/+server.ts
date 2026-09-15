@@ -42,20 +42,20 @@ export const POST: RequestHandler = async (event) => {
 			return apiError(422, 'that code did not match; check your authenticator clock');
 		}
 		const { codes, hashes } = backupCodes();
-		rt.users.setTotp(user.id, secret, hashes);
-		rt.sessions.revokeUserSessions(user.id, event.locals.sessionHash ?? undefined);
-		audit(rt, event, 'account.totp.enable');
+		await rt.users.setTotp(user.id, secret, hashes);
+		await rt.sessions.revokeUserSessions(user.id, event.locals.sessionHash ?? undefined);
+		await audit(rt, event, 'account.totp.enable');
 		return apiJson({ ok: true, backup_codes: codes });
 	}
 
 	if (body.action === 'disable') {
 		const password = typeof body.password === 'string' ? body.password : '';
-		const row = rt.users.rowById(user.id);
+		const row = await rt.users.rowById(user.id);
 		if (!row || !verifyPassword(password, row.password_hash)) {
 			return apiError(403, 'password is incorrect');
 		}
-		rt.users.setTotp(user.id, null, null);
-		audit(rt, event, 'account.totp.disable');
+		await rt.users.setTotp(user.id, null, null);
+		await audit(rt, event, 'account.totp.disable');
 		return apiJson({ ok: true });
 	}
 

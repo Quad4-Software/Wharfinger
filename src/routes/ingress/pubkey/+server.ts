@@ -8,7 +8,7 @@ import { publicKeyInfo } from '$lib/server/ingress/keys';
 // After a hub key rotation the response also carries prev_pub,
 // rotated_at, and proof (the previous key's signature over the new
 // pubkey) so pinned agents can adopt the new key.
-export const GET: RequestHandler = () => {
+export const GET: RequestHandler = async () => {
 	const rt = getRuntime();
-	return apiJson(publicKeyInfo(rt.db));
+	return apiJson(await publicKeyInfo(rt.db));
 };

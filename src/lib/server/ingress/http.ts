@@ -19,14 +19,14 @@ export interface ResolvedAgent extends AgentRow {
  * resolves to a live agent. Returns either an error Response or the
  * resolved agent.
  */
-export function gate(
+export async function gate(
 	rt: Runtime,
 	agents: AgentStore,
 	token: string | null
-): { err: Response } | { err: null; agent: ResolvedAgent } {
+): Promise<{ err: Response } | { err: null; agent: ResolvedAgent }> {
 	if (!rt.config.ingress.enabled) return { err: apiError(404, 'not found') };
 	if (!token) return { err: apiError(401, 'missing bearer token') };
-	const agent = agents.resolveToken(token);
+	const agent = await agents.resolveToken(token);
 	if (!agent) return { err: apiError(401, 'invalid token') };
 	return { err: null, agent };
 }
@@ -40,12 +40,12 @@ export function gate(
  * moment the fingerprint binds); an unbound agent with no proof
  * headers is a legacy client accepted during the compat window.
  */
-export function proofGate(
+export async function proofGate(
 	rt: Runtime,
 	agent: { id: string; pubkey: string | null },
 	request: Request,
 	bodyBytes: Buffer
-): Response | null {
+): Promise<Response | null> {
 	const pubHdr = request.headers.get('x-agent-pubkey');
 	const proofHdr = request.headers.get('x-agent-proof');
 	if (agent.pubkey !== null) {
@@ -66,7 +66,7 @@ export function proofGate(
 	}
 	// First valid proof binds the key (TOFU); the conditional update
 	// inside checkPubkey makes concurrent first posts safe.
-	const bound = rt.agents.checkPubkey(agent as AgentRow, pubHdr);
+	const bound = await rt.agents.checkPubkey(agent as AgentRow, pubHdr);
 	if (bound === 'mismatch') {
 		return apiError(403, 'agent key mismatch: this token is bound to another key');
 	}

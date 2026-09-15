@@ -572,6 +572,22 @@ const NotifyTarget = v.pipe(
 // Error telemetry over the Sentry event protocol. One dsn works for
 // Sentry, GlitchTip, and Bugsink; they all accept the same envelope
 // endpoint. dsn = "" disables delivery without removing the section.
+// [storage] picks the persistence driver. sqlite (default) is the
+// embedded node:sqlite store; surreal points at a remote SurrealDB
+// over websocket JSON-RPC for fleets that outgrow a single file.
+// Boot-time only; not a runtime-editable section.
+export const StorageSection = v.object({
+	driver: v.optional(v.picklist(['sqlite', 'surreal']), 'sqlite'),
+	// ws(s):// or http(s):// host:port; /rpc is appended when absent.
+	url: v.optional(v.string(), ''),
+	ns: v.optional(v.string(), 'wharfinger'),
+	db: v.optional(v.string(), 'wharfinger'),
+	user: v.optional(v.string(), ''),
+	pass: v.optional(v.string(), ''),
+	// per-statement timeout
+	timeout_ms: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1000)), 30_000)
+});
+
 const TelemetrySection = v.object({
 	// Opt-in: a fresh install must not send crash telemetry anywhere
 	// until the operator turns it on and chooses a dsn.
@@ -780,7 +796,8 @@ const ConfigSchema = v.object({
 	ldap: v.optional(LdapSection, {}),
 	ingress: v.optional(IngressSection, {}),
 	notifications: v.optional(NotificationsSection, {}),
-	telemetry: v.optional(TelemetrySection, {})
+	telemetry: v.optional(TelemetrySection, {}),
+	storage: v.optional(StorageSection, {})
 });
 
 // Cross-field checks that need the whole document.

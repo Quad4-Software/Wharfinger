@@ -24,8 +24,8 @@ const warnedRoles = new Set<string>();
  * roles deny the login; each name warns once so a stale config does
  * not spam the log on every attempt.
  */
-export function knownRole(roles: RoleStore, role: Role): Role | null {
-	if (roles.exists(role)) return role;
+export async function knownRole(roles: RoleStore, role: Role): Promise<Role | null> {
+	if (await roles.exists(role)) return role;
 	if (!warnedRoles.has(role)) {
 		warnedRoles.add(role);
 		console.warn(`[auth] external login mapped to unknown role "${role}"; denying`);
@@ -39,7 +39,7 @@ export function knownRole(roles: RoleStore, role: Role): Role | null {
  * a local account never adopts that account, it only renames the
  * external one. Returns null when the account is disabled.
  */
-export function resolveExternalUser(
+export async function resolveExternalUser(
 	users: UserStore,
 	source: string,
 	externalId: string,
@@ -47,14 +47,16 @@ export function resolveExternalUser(
 	displayName: string,
 	role: Role,
 	sync: boolean
-): PublicUser | null {
-	const existing = users.rowByExternal(source, externalId);
+): Promise<PublicUser | null> {
+	const existing = await users.rowByExternal(source, externalId);
 	if (existing) {
 		let nextRole = role;
 		if (sync && existing.role === 'admin' && role !== 'admin') {
 			// An IdP group rename must not lock the panel: keep the last
 			// enabled admin at admin and warn instead of sync-demoting.
-			const others = users.admins().filter((a) => a.id !== existing.id && a.disabledAt === null);
+			const others = (await users.admins()).filter(
+				(a) => a.id !== existing.id && a.disabledAt === null
+			);
 			if (others.length === 0) {
 				console.warn(
 					`[auth] external sync would demote the last admin "${existing.username}"; keeping admin role`
@@ -62,14 +64,14 @@ export function resolveExternalUser(
 				nextRole = 'admin';
 			}
 		}
-		if (sync) users.syncExternal(existing.id, displayName, nextRole);
-		const u = users.byId(existing.id);
+		if (sync) await users.syncExternal(existing.id, displayName, nextRole);
+		const u = await users.byId(existing.id);
 		return u?.disabledAt === null ? u : null;
 	}
 	let uname = username.slice(0, 64) || `${source}-user`;
-	for (let i = 0; i < 10 && users.rowByName(uname); i++) {
+	for (let i = 0; i < 10 && (await users.rowByName(uname)); i++) {
 		uname = `${username.slice(0, 48)}@${source}${i ? `-${i}` : ''}`;
 	}
-	if (users.rowByName(uname)) uname = `${source}-${Date.now().toString(36)}`;
+	if (await users.rowByName(uname)) uname = `${source}-${Date.now().toString(36)}`;
 	return users.createExternal(uname, displayName, role, source, externalId);
 }

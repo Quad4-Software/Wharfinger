@@ -198,6 +198,17 @@ webauthn_origin`/`webauthn_rp_id` overrides
   and header caps; /edgez reports the loaded policy counts (audit:
   ACME challenge path exempt, no regex in list parsing, limiter map
   capped and swept)
+- Pluggable storage: the hub store layer now sits behind an async
+  `Db` driver interface. SQLite over node:sqlite stays the default
+  and is unchanged; `[storage] driver = "surreal"` with url/ns/db/
+  user/pass connects to SurrealDB over websocket JSON-RPC for fleets
+  that outgrow a single file. SQLite-flavored SQL is translated to
+  SurrealQL at prepare() time, non-portable queries (joins, window
+  functions, dynamic LIKE) are hand-ported per backend, and write
+  transactions serialize through db.tx(). The runtime exposes a
+  ready promise so getRuntime() stays synchronous; hooks await it
+  before serving. Design notes and the supported SQL subset live in
+  .agents/references/storage.md
 
 ### Fixed
 

@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { asDb, isUniqueViolation, rawSqlite, type Db } from '$lib/server/store/driver';
 import type { GroupRef, TeamInfo, TeamMember } from '$lib/shared/groups';
 
 export class TeamError extends Error {
@@ -21,11 +22,10 @@ interface TeamRow {
 	created_at: number;
 }
 
-interface MemberJoinRow {
+interface UserRow {
 	id: number;
 	username: string;
 	display_name: string;
-	has_avatar: number;
 }
 
 function validName(name: string): string {
@@ -36,9 +36,18 @@ function validName(name: string): string {
 	return n;
 }
 
+function inMarks(n: number): string {
+	return Array.from({ length: n }, () => '?').join(',');
+}
+
 export class TeamStore {
-	constructor(private readonly db: DatabaseSync) {
-		this.db.exec(`
+	private readonly db: Db;
+
+	constructor(db: Db | DatabaseSync) {
+		this.db = asDb(db);
+		// Lazy DDL is sqlite-only; surreal gets these tables from
+		// store/schema.ts.
+		rawSqlite(this.db)?.exec(`
 			CREATE TABLE IF NOT EXISTS teams (
 				id         TEXT PRIMARY KEY,
 				name       TEXT NOT NULL UNIQUE,
@@ -58,45 +67,80 @@ export class TeamStore {
 		`);
 	}
 
-	private membersFor(teamIds: string[]): Map<string, TeamMember[]> {
+	/**
+	 * Team memberships joined to user rows in memory: JOIN is not
+	 * portable SQL, so membership rows and user rows are fetched in
+	 * separate queries. Avatar presence comes from a dedicated id
+	 * list so avatar blobs never leave the database.
+	 */
+	private async membersFor(teamIds: string[]): Promise<Map<string, TeamMember[]>> {
 		const map = new Map<string, TeamMember[]>();
 		if (teamIds.length === 0) return map;
-		const marks = teamIds.map(() => '?').join(',');
-		const rows = this.db
+		const links = (await this.db
 			.prepare(
-				`SELECT tm.team_id, u.id, u.username, u.display_name, u.avatar IS NOT NULL AS has_avatar
-				 FROM team_members tm JOIN users u ON u.id = tm.user_id
-				 WHERE tm.team_id IN (${marks}) ORDER BY u.username`
+				`SELECT team_id, user_id FROM team_members WHERE team_id IN (${inMarks(teamIds.length)})`
 			)
-			.all(...teamIds) as unknown as (MemberJoinRow & { team_id: string })[];
-		for (const r of rows) {
-			const list = map.get(r.team_id) ?? [];
+			.all(...teamIds)) as unknown as { team_id: string; user_id: number }[];
+		const userIds = [...new Set(links.map((l) => l.user_id))];
+		const users = new Map<number, UserRow>();
+		const withAvatar = new Set<number>();
+		if (userIds.length > 0) {
+			const uMarks = inMarks(userIds.length);
+			const rows = (await this.db
+				.prepare(`SELECT id, username, display_name FROM users WHERE id IN (${uMarks})`)
+				.all(...userIds)) as unknown as UserRow[];
+			for (const r of rows) users.set(r.id, r);
+			const avatars = (await this.db
+				.prepare(`SELECT id FROM users WHERE id IN (${uMarks}) AND avatar IS NOT NULL`)
+				.all(...userIds)) as unknown as { id: number }[];
+			for (const r of avatars) withAvatar.add(r.id);
+		}
+		for (const l of links) {
+			const u = users.get(l.user_id);
+			if (!u) continue;
+			const list = map.get(l.team_id) ?? [];
 			list.push({
-				id: r.id,
-				username: r.username,
-				displayName: r.display_name,
-				hasAvatar: r.has_avatar === 1
+				id: u.id,
+				username: u.username,
+				displayName: u.display_name,
+				hasAvatar: withAvatar.has(u.id)
 			});
-			map.set(r.team_id, list);
+			map.set(l.team_id, list);
+		}
+		for (const list of map.values()) {
+			list.sort((a, b) => a.username.localeCompare(b.username));
 		}
 		return map;
 	}
 
-	private groupsFor(teamIds: string[]): Map<string, GroupRef[]> {
+	/** Same in-memory join for the service groups a team can see. */
+	private async groupsFor(teamIds: string[]): Promise<Map<string, GroupRef[]>> {
 		const map = new Map<string, GroupRef[]>();
 		if (teamIds.length === 0) return map;
-		const marks = teamIds.map(() => '?').join(',');
-		const rows = this.db
+		const links = (await this.db
 			.prepare(
-				`SELECT tg.team_id, g.id, g.name, g.color
-				 FROM team_groups tg JOIN service_groups g ON g.id = tg.group_id
-				 WHERE tg.team_id IN (${marks}) ORDER BY g.name`
+				`SELECT team_id, group_id FROM team_groups WHERE team_id IN (${inMarks(teamIds.length)})`
 			)
-			.all(...teamIds) as unknown as ({ team_id: string } & GroupRef)[];
-		for (const r of rows) {
-			const list = map.get(r.team_id) ?? [];
-			list.push({ id: r.id, name: r.name, color: r.color });
-			map.set(r.team_id, list);
+			.all(...teamIds)) as unknown as { team_id: string; group_id: string }[];
+		const groupIds = [...new Set(links.map((l) => l.group_id))];
+		const groups = new Map<string, GroupRef>();
+		if (groupIds.length > 0) {
+			const rows = (await this.db
+				.prepare(
+					`SELECT id, name, color FROM service_groups WHERE id IN (${inMarks(groupIds.length)})`
+				)
+				.all(...groupIds)) as unknown as GroupRef[];
+			for (const r of rows) groups.set(r.id, r);
+		}
+		for (const l of links) {
+			const g = groups.get(l.group_id);
+			if (!g) continue;
+			const list = map.get(l.team_id) ?? [];
+			list.push({ id: g.id, name: g.name, color: g.color });
+			map.set(l.team_id, list);
+		}
+		for (const list of map.values()) {
+			list.sort((a, b) => a.name.localeCompare(b.name));
 		}
 		return map;
 	}
@@ -105,14 +149,16 @@ export class TeamStore {
 		return { id: r.id, name: r.name, createdAt: r.created_at, members, groups };
 	}
 
-	create(name: string): TeamInfo {
+	async create(name: string): Promise<TeamInfo> {
 		const n = validName(name);
 		const id = `team_${randomBytes(9).toString('base64url')}`;
 		const now = Date.now();
 		try {
-			this.db.prepare('INSERT INTO teams (id, name, created_at) VALUES (?, ?, ?)').run(id, n, now);
+			await this.db
+				.prepare('INSERT INTO teams (id, name, created_at) VALUES (?, ?, ?)')
+				.run(id, n, now);
 		} catch (err) {
-			if (String(err).includes('UNIQUE')) {
+			if (isUniqueViolation(err)) {
 				throw new TeamError(409, 'a team with that name exists');
 			}
 			throw err;
@@ -120,30 +166,35 @@ export class TeamStore {
 		return { id, name: n, createdAt: now, members: [], groups: [] };
 	}
 
-	get(id: string): TeamInfo | null {
-		const r = this.db.prepare('SELECT id, name, created_at FROM teams WHERE id = ?').get(id) as
-			TeamRow | undefined;
+	async get(id: string): Promise<TeamInfo | null> {
+		const r = (await this.db
+			.prepare('SELECT id, name, created_at FROM teams WHERE id = ?')
+			.get(id)) as TeamRow | undefined;
 		if (!r) return null;
-		return this.toInfo(r, this.membersFor([id]).get(id) ?? [], this.groupsFor([id]).get(id) ?? []);
+		return this.toInfo(
+			r,
+			(await this.membersFor([id])).get(id) ?? [],
+			(await this.groupsFor([id])).get(id) ?? []
+		);
 	}
 
-	list(): TeamInfo[] {
-		const rows = this.db
+	async list(): Promise<TeamInfo[]> {
+		const rows = (await this.db
 			.prepare('SELECT id, name, created_at FROM teams ORDER BY name')
-			.all() as unknown as TeamRow[];
+			.all()) as unknown as TeamRow[];
 		const ids = rows.map((r) => r.id);
-		const members = this.membersFor(ids);
-		const groups = this.groupsFor(ids);
+		const members = await this.membersFor(ids);
+		const groups = await this.groupsFor(ids);
 		return rows.map((r) => this.toInfo(r, members.get(r.id) ?? [], groups.get(r.id) ?? []));
 	}
 
-	update(id: string, name: string): TeamInfo | null {
+	async update(id: string, name: string): Promise<TeamInfo | null> {
 		const n = validName(name);
 		try {
-			const changes = this.db.prepare('UPDATE teams SET name = ? WHERE id = ?').run(n, id).changes;
-			if (Number(changes) === 0) return null;
+			const res = await this.db.prepare('UPDATE teams SET name = ? WHERE id = ?').run(n, id);
+			if (Number(res.changes) === 0) return null;
 		} catch (err) {
-			if (String(err).includes('UNIQUE')) {
+			if (isUniqueViolation(err)) {
 				throw new TeamError(409, 'a team with that name exists');
 			}
 			throw err;
@@ -152,22 +203,17 @@ export class TeamStore {
 	}
 
 	/** Removes the team plus its member and group rows atomically. */
-	remove(id: string): boolean {
-		this.db.exec('BEGIN IMMEDIATE');
-		try {
-			this.db.prepare('DELETE FROM team_members WHERE team_id = ?').run(id);
-			this.db.prepare('DELETE FROM team_groups WHERE team_id = ?').run(id);
-			const n = this.db.prepare('DELETE FROM teams WHERE id = ?').run(id).changes;
-			this.db.exec('COMMIT');
-			return Number(n) === 1;
-		} catch (err) {
-			this.db.exec('ROLLBACK');
-			throw err;
-		}
+	async remove(id: string): Promise<boolean> {
+		return this.db.tx(async (tx) => {
+			await tx.prepare('DELETE FROM team_members WHERE team_id = ?').run(id);
+			await tx.prepare('DELETE FROM team_groups WHERE team_id = ?').run(id);
+			const res = await tx.prepare('DELETE FROM teams WHERE id = ?').run(id);
+			return Number(res.changes) === 1;
+		});
 	}
 
-	private requireTeam(id: string): void {
-		if (!this.db.prepare('SELECT 1 AS x FROM teams WHERE id = ?').get(id)) {
+	private async requireTeam(id: string): Promise<void> {
+		if (!(await this.db.prepare('SELECT 1 AS x FROM teams WHERE id = ?').get(id))) {
 			throw new TeamError(404, 'team not found');
 		}
 	}
@@ -176,65 +222,58 @@ export class TeamStore {
 	 * Add and remove member user ids atomically. Every id must exist in
 	 * the users table; adds dedupe on the composite primary key.
 	 */
-	setMembers(id: string, add: number[], remove: number[]): TeamInfo {
-		this.requireTeam(id);
+	async setMembers(id: string, add: number[], remove: number[]): Promise<TeamInfo> {
+		await this.requireTeam(id);
 		const ids = [...new Set([...add, ...remove])];
 		if (ids.length > MAX_MEMBERS) throw new TeamError(422, 'too many members');
 		if (ids.some((u) => !Number.isInteger(u) || u < 1)) {
 			throw new TeamError(422, 'member ids must be positive integers');
 		}
 		if (ids.length > 0) {
-			const marks = ids.map(() => '?').join(',');
-			const found = this.db
-				.prepare(`SELECT id FROM users WHERE id IN (${marks})`)
-				.all(...ids) as unknown as { id: number }[];
+			const found = (await this.db
+				.prepare(`SELECT id FROM users WHERE id IN (${inMarks(ids.length)})`)
+				.all(...ids)) as unknown as { id: number }[];
 			const have = new Set(found.map((r) => r.id));
 			const missing = ids.find((u) => !have.has(u));
 			if (missing !== undefined) throw new TeamError(422, `user not found: ${missing}`);
 		}
-		this.db.exec('BEGIN IMMEDIATE');
-		try {
-			const ins = this.db.prepare(
-				'INSERT OR IGNORE INTO team_members (team_id, user_id) VALUES (?, ?)'
+		await this.db.tx(async (tx) => {
+			const present = tx.prepare(
+				'SELECT 1 AS x FROM team_members WHERE team_id = ? AND user_id = ?'
 			);
-			for (const u of add) ins.run(id, u);
-			const del = this.db.prepare('DELETE FROM team_members WHERE team_id = ? AND user_id = ?');
-			for (const u of remove) del.run(id, u);
-			this.db.exec('COMMIT');
-		} catch (err) {
-			this.db.exec('ROLLBACK');
-			throw err;
-		}
-		const team = this.get(id);
+			const ins = tx.prepare('INSERT INTO team_members (team_id, user_id) VALUES (?, ?)');
+			// INSERT OR IGNORE is not portable; composite-key rows are
+			// deduped with a pre-check instead.
+			for (const u of add) {
+				if (!(await present.get(id, u))) await ins.run(id, u);
+			}
+			const del = tx.prepare('DELETE FROM team_members WHERE team_id = ? AND user_id = ?');
+			for (const u of remove) await del.run(id, u);
+		});
+		const team = await this.get(id);
 		if (!team) throw new TeamError(500, 'team missing after update');
 		return team;
 	}
 
 	/** Replace the team's assigned service groups atomically. */
-	setGroups(id: string, groupIds: string[]): TeamInfo {
-		this.requireTeam(id);
+	async setGroups(id: string, groupIds: string[]): Promise<TeamInfo> {
+		await this.requireTeam(id);
 		const ids = [...new Set(groupIds)];
 		if (ids.length > MAX_GROUPS) throw new TeamError(422, 'too many groups');
 		if (ids.length > 0) {
-			const marks = ids.map(() => '?').join(',');
-			const found = this.db
-				.prepare(`SELECT id FROM service_groups WHERE id IN (${marks})`)
-				.all(...ids) as unknown as { id: string }[];
+			const found = (await this.db
+				.prepare(`SELECT id FROM service_groups WHERE id IN (${inMarks(ids.length)})`)
+				.all(...ids)) as unknown as { id: string }[];
 			const have = new Set(found.map((r) => r.id));
 			const missing = ids.find((g) => !have.has(g));
 			if (missing !== undefined) throw new TeamError(422, `group not found: ${missing}`);
 		}
-		this.db.exec('BEGIN IMMEDIATE');
-		try {
-			this.db.prepare('DELETE FROM team_groups WHERE team_id = ?').run(id);
-			const ins = this.db.prepare('INSERT INTO team_groups (team_id, group_id) VALUES (?, ?)');
-			for (const g of ids) ins.run(id, g);
-			this.db.exec('COMMIT');
-		} catch (err) {
-			this.db.exec('ROLLBACK');
-			throw err;
-		}
-		const team = this.get(id);
+		await this.db.tx(async (tx) => {
+			await tx.prepare('DELETE FROM team_groups WHERE team_id = ?').run(id);
+			const ins = tx.prepare('INSERT INTO team_groups (team_id, group_id) VALUES (?, ?)');
+			for (const g of ids) await ins.run(id, g);
+		});
+		const team = await this.get(id);
 		if (!team) throw new TeamError(500, 'team missing after update');
 		return team;
 	}
@@ -244,26 +283,28 @@ export class TeamStore {
 	 * endpoint for dashboard visibility; enforcement beyond visibility
 	 * is deferred.
 	 */
-	teamsForUser(userId: number): TeamInfo[] {
-		const rows = this.db
+	async teamsForUser(userId: number): Promise<TeamInfo[]> {
+		const links = (await this.db
+			.prepare('SELECT team_id FROM team_members WHERE user_id = ?')
+			.all(userId)) as unknown as { team_id: string }[];
+		if (links.length === 0) return [];
+		const ids = links.map((l) => l.team_id);
+		const rows = (await this.db
 			.prepare(
-				`SELECT t.id, t.name, t.created_at FROM teams t
-				 JOIN team_members tm ON tm.team_id = t.id
-				 WHERE tm.user_id = ? ORDER BY t.name`
+				`SELECT id, name, created_at FROM teams WHERE id IN (${inMarks(ids.length)}) ORDER BY name`
 			)
-			.all(userId) as unknown as TeamRow[];
-		const ids = rows.map((r) => r.id);
-		const members = this.membersFor(ids);
-		const groups = this.groupsFor(ids);
+			.all(...ids)) as unknown as TeamRow[];
+		const members = await this.membersFor(ids);
+		const groups = await this.groupsFor(ids);
 		return rows.map((r) => this.toInfo(r, members.get(r.id) ?? [], groups.get(r.id) ?? []));
 	}
 }
 
 // Lazy singleton per the runtime-frozen store pattern: routes call
 // getTeamStore(getRuntime().db).
-const stores = new WeakMap<DatabaseSync, TeamStore>();
+const stores = new WeakMap<Db | DatabaseSync, TeamStore>();
 
-export function getTeamStore(db: DatabaseSync): TeamStore {
+export function getTeamStore(db: Db | DatabaseSync): TeamStore {
 	const existing = stores.get(db);
 	if (existing) return existing;
 	const created = new TeamStore(db);

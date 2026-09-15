@@ -17,13 +17,13 @@ const BACKFILL_FUTURE_MS = 60_000;
 /** Metrics ingest. Bearer token in the Authorization header. */
 export const POST: RequestHandler = async (event) => {
 	const rt = getRuntime();
-	const g = gate(rt, rt.agents, bearerToken(event.request));
+	const g = await gate(rt, rt.agents, bearerToken(event.request));
 	if (g.err) return g.err;
 
 	const text = await readText(event.request, rt.config.ingress.max_body_kb * 1024);
 	const bodyBytes = Buffer.from(text, 'utf8');
 
-	const badProof = proofGate(rt, g.agent, event.request, bodyBytes);
+	const badProof = await proofGate(rt, g.agent, event.request, bodyBytes);
 	if (badProof) return badProof;
 
 	let body: unknown;
@@ -47,17 +47,17 @@ export const POST: RequestHandler = async (event) => {
 		return apiError(422, 'payload timestamp out of accepted window');
 	}
 
-	const fp = rt.agents.checkFingerprint(g.agent, p.fingerprint);
+	const fp = await rt.agents.checkFingerprint(g.agent, p.fingerprint);
 	if (fp === 'mismatch') {
 		return apiError(403, 'fingerprint mismatch: this token is bound to another machine');
 	}
 
-	rt.agents.record(g.agent.id, p);
+	await rt.agents.record(g.agent.id, p);
 	// Backfill is stale by definition: it fills the series but must not
 	// drive threshold alerts off old data.
-	if (!p.backfill) rt.alerter.onSample(g.agent, p);
+	if (!p.backfill) await rt.alerter.onSample(g.agent, p);
 	// Piggyback queued-work count so agents learn about pending jobs
 	// on their normal send cadence without a separate poll. The ws
 	// bridge relays this response body verbatim.
-	return apiJson({ ok: true, pending: rt.jobs.pending(g.agent.id) });
+	return apiJson({ ok: true, pending: await rt.jobs.pending(g.agent.id) });
 };

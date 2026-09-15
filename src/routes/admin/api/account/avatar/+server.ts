@@ -15,16 +15,16 @@ export const POST: RequestHandler = async (event) => {
 	if (buf.length > AVATAR_MAX_BYTES) return apiError(413, 'image exceeds 512 KB');
 	const r = validateAvatar(buf);
 	if ('error' in r) return apiError(422, r.error);
-	rt.users.setAvatar(user.id, buf, r.mime);
-	audit(rt, event, 'account.avatar');
+	await rt.users.setAvatar(user.id, buf, r.mime);
+	await audit(rt, event, 'account.avatar');
 	return apiJson({ ok: true });
 };
 
 /** Remove the caller's avatar. */
-export const DELETE: RequestHandler = (event) => {
+export const DELETE: RequestHandler = async (event) => {
 	const rt = getRuntime();
 	const user = requireUser(event);
-	rt.users.clearAvatar(user.id);
-	audit(rt, event, 'account.avatar.remove');
+	await rt.users.clearAvatar(user.id);
+	await audit(rt, event, 'account.avatar.remove');
 	return apiJson({ ok: true });
 };

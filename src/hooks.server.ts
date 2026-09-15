@@ -165,6 +165,10 @@ function isPublicAdminPath(sub: string): boolean {
 export const handle: Handle = async ({ event, resolve }) => {
 	const { pathname } = event.url;
 	const rt = getRuntime();
+	// Storage backend connect + override merge + bootstrap. With sqlite
+	// this resolves immediately; with a remote backend the first request
+	// waits for the wire handshake instead of hitting a cold store.
+	await rt.ready;
 	const base = rt.adminBase();
 
 	event.locals.user = null;
@@ -195,10 +199,10 @@ export const handle: Handle = async ({ event, resolve }) => {
 		// Session resolution, only inside the panel mount.
 		const token = event.cookies.get(SESSION_COOKIE);
 		if (token) {
-			const resolved = rt.sessions.resolve(token, rt.sessionTtlMs());
+			const resolved = await rt.sessions.resolve(token, rt.sessionTtlMs());
 			if (resolved) {
 				event.locals.user = resolved.user;
-				event.locals.perms = rt.roles.permsFor(resolved.user.role);
+				event.locals.perms = await rt.roles.permsFor(resolved.user.role);
 				event.locals.sessionHash = resolved.tokenHash;
 			}
 		}

@@ -58,13 +58,13 @@ function setup(ingress: Partial<StatusConfig['ingress']> = {}) {
 }
 
 describe('AgentAlerter thresholds', () => {
-	it('fires degraded once at the threshold and recovers below hysteresis', () => {
+	it('fires degraded once at the threshold and recovers below hysteresis', async () => {
 		const { agents, sent, alerter } = setup({ alert_cpu_pct: 90 });
-		const { id } = agents.create('web-1', null);
-		const agent = (): AgentRow => agents.get(id)!;
+		const { id } = await agents.create('web-1', null);
+		const agent = async (): Promise<AgentRow> => (await agents.get(id))!;
 
-		alerter.onSample(
-			agent(),
+		await alerter.onSample(
+			await agent(),
 			payload({ cpu: { pct: 95, cores: 8, load1: 1, load5: 1, load15: 1 } })
 		);
 		expect(sent).toHaveLength(1);
@@ -73,27 +73,27 @@ describe('AgentAlerter thresholds', () => {
 		expect(sent[0].detail).toContain('CPU at 95.0%');
 
 		// Still firing: no repeat notification while above the clear line.
-		alerter.onSample(
-			agent(),
+		await alerter.onSample(
+			await agent(),
 			payload({ cpu: { pct: 85, cores: 8, load1: 1, load5: 1, load15: 1 } })
 		);
 		expect(sent).toHaveLength(1);
 
 		// Below threshold - 10 clears with a recovery.
-		alerter.onSample(
-			agent(),
+		await alerter.onSample(
+			await agent(),
 			payload({ cpu: { pct: 50, cores: 8, load1: 1, load5: 1, load15: 1 } })
 		);
 		expect(sent).toHaveLength(2);
 		expect(sent[1].event).toBe('recovered');
-		expect(agents.get(id)!.alerts).toEqual({});
+		expect((await agents.get(id))!.alerts).toEqual({});
 	});
 
-	it('uses the worst disk for the disk rule and ignores unset rules', () => {
+	it('uses the worst disk for the disk rule and ignores unset rules', async () => {
 		const { agents, sent, alerter } = setup({ alert_disk_pct: 80 });
-		const { id } = agents.create('db-1', null);
-		alerter.onSample(
-			agents.get(id)!,
+		const { id } = await agents.create('db-1', null);
+		await alerter.onSample(
+			(await agents.get(id))!,
 			payload({
 				disks: [
 					{ mount: '/', fstype: 'x', total: 10, used: 5, pct: 50 },
@@ -105,15 +105,15 @@ describe('AgentAlerter thresholds', () => {
 		expect(sent[0].detail).toContain('disk at 91.0%');
 
 		// cpu/mem rules are unset: a hot cpu alone notifies nothing.
-		const { id: id2 } = agents.create('hot', null);
-		alerter.onSample(
-			agents.get(id2)!,
+		const { id: id2 } = await agents.create('hot', null);
+		await alerter.onSample(
+			(await agents.get(id2))!,
 			payload({ cpu: { pct: 99, cores: 1, load1: 1, load5: 1, load15: 1 } })
 		);
 		expect(sent).toHaveLength(1);
 	});
 
-	it('clears a firing rule silently when the rule is disabled', () => {
+	it('clears a firing rule silently when the rule is disabled', async () => {
 		const db = freshDb();
 		const agents = new AgentStore(db);
 		const sent: Sent[] = [];
@@ -123,68 +123,68 @@ describe('AgentAlerter thresholds', () => {
 			agents,
 			fakeDispatcher(sent)
 		);
-		const { id } = agents.create('web', null);
-		alerter.onSample(
-			agents.get(id)!,
+		const { id } = await agents.create('web', null);
+		await alerter.onSample(
+			(await agents.get(id))!,
 			payload({ cpu: { pct: 95, cores: 1, load1: 0, load5: 0, load15: 0 } })
 		);
 		expect(sent).toHaveLength(1);
 		on = false;
-		alerter.onSample(
-			agents.get(id)!,
+		await alerter.onSample(
+			(await agents.get(id))!,
 			payload({ cpu: { pct: 95, cores: 1, load1: 0, load5: 0, load15: 0 } })
 		);
 		expect(sent).toHaveLength(1); // no recovery notification for a disabled rule
-		expect(agents.get(id)!.alerts).toEqual({});
+		expect((await agents.get(id))!.alerts).toEqual({});
 	});
 });
 
 describe('AgentAlerter offline detection', () => {
-	it('fires down after the silence window and recovered on the next sample', () => {
+	it('fires down after the silence window and recovered on the next sample', async () => {
 		const { db, agents, sent, alerter } = setup({ alert_offline_minutes: 10 });
-		const { id } = agents.create('nas', null);
+		const { id } = await agents.create('nas', null);
 		db.prepare('UPDATE agents SET last_seen_at = ? WHERE id = ?').run(Date.now() - 11 * 60_000, id);
-		alerter.tick();
+		await alerter.tick();
 		expect(sent).toHaveLength(1);
 		expect(sent[0].event).toBe('down');
 		expect(sent[0].detail).toContain('no metrics for 11 min');
-		expect(agents.get(id)!.alerts.offline).toBeTypeOf('number');
+		expect((await agents.get(id))!.alerts.offline).toBeTypeOf('number');
 
 		// A second tick does not re-fire.
-		alerter.tick();
+		await alerter.tick();
 		expect(sent).toHaveLength(1);
 
 		// The agent reporting again clears the alert with a recovery.
-		alerter.onSample(agents.get(id)!, payload());
+		await alerter.onSample((await agents.get(id))!, payload());
 		expect(sent).toHaveLength(2);
 		expect(sent[1].event).toBe('recovered');
-		expect(agents.get(id)!.alerts).toEqual({});
+		expect((await agents.get(id))!.alerts).toEqual({});
 	});
 
-	it('skips agents inside the window, never-seen agents, and revoked agents', () => {
+	it('skips agents inside the window, never-seen agents, and revoked agents', async () => {
 		const { db, agents, sent, alerter } = setup({ alert_offline_minutes: 10 });
-		const fresh = agents.create('fresh', null);
+		const fresh = await agents.create('fresh', null);
 		db.prepare('UPDATE agents SET last_seen_at = ? WHERE id = ?').run(
 			Date.now() - 60_000,
 			fresh.id
 		);
-		agents.create('never-seen', null); // last_seen_at stays null
-		const dead = agents.create('dead', null);
+		await agents.create('never-seen', null); // last_seen_at stays null
+		const dead = await agents.create('dead', null);
 		db.prepare('UPDATE agents SET last_seen_at = ? WHERE id = ?').run(
 			Date.now() - 3600_000,
 			dead.id
 		);
-		agents.revoke(dead.id);
+		await agents.revoke(dead.id);
 
-		alerter.tick();
+		await alerter.tick();
 		expect(sent).toHaveLength(0);
 	});
 
-	it('does nothing when the offline rule is disabled', () => {
+	it('does nothing when the offline rule is disabled', async () => {
 		const { db, agents, sent, alerter } = setup({ alert_offline_minutes: 0 });
-		const { id } = agents.create('nas', null);
+		const { id } = await agents.create('nas', null);
 		db.prepare('UPDATE agents SET last_seen_at = ? WHERE id = ?').run(Date.now() - 86400_000, id);
-		alerter.tick();
+		await alerter.tick();
 		expect(sent).toHaveLength(0);
 	});
 });
