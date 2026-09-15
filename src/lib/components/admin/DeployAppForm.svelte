@@ -2,7 +2,7 @@
 	import Modal from '$lib/components/admin/Modal.svelte';
 	import Field from '$lib/components/admin/Field.svelte';
 	import type { AppSource, DeployApp, DeployRuntime, Healthcheck } from '$lib/shared/deploy';
-	import { SOURCE_KINDS, RUNTIMES } from '$lib/shared/deploy';
+	import { FORGE_KINDS, SOURCE_KINDS, RUNTIMES } from '$lib/shared/deploy';
 	import type { ServiceGroup } from '$lib/shared/groups';
 	import { api, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
@@ -29,6 +29,11 @@
 	let url = $state('');
 	let ref = $state('main');
 	let subdir = $state('');
+	let forge = $state('auto');
+	let pathsText = $state('');
+	let submodules = $state(false);
+	let lfs = $state(false);
+	let previews = $state(false);
 	let runtime = $state<DeployRuntime>('podman');
 	let namespace = $state('');
 	let replicas = $state(1);
@@ -40,6 +45,8 @@
 	let hcPath = $state('/');
 	let groups = $state<ServiceGroup[]>([]);
 	let groupIds = $state<string[]>([]);
+	let branches = $state<string[]>([]);
+	let branchesBusy = $state(false);
 	let saving = $state(false);
 
 	$effect(() => {
@@ -50,6 +57,11 @@
 		url = app?.source.url ?? '';
 		ref = app?.source.ref ?? 'main';
 		subdir = app?.source.subdir ?? '';
+		forge = app?.source.forge ?? 'auto';
+		pathsText = (app?.source.paths ?? []).join(', ');
+		submodules = app?.source.submodules ?? false;
+		lfs = app?.source.lfs ?? false;
+		previews = app?.source.previews ?? false;
 		runtime = app?.runtime ?? 'podman';
 		namespace = app?.namespace ?? '';
 		replicas = app?.replicas ?? 1;
@@ -60,6 +72,7 @@
 		hcPort = app?.healthcheck.port ?? 3000;
 		hcPath = app?.healthcheck.path ?? '/';
 		groupIds = [];
+		branches = [];
 		// The groups endpoint needs groups.manage; without it the picker
 		// simply stays hidden.
 		void api<{ groups: ServiceGroup[] }>('/groups')
@@ -107,6 +120,22 @@
 		await Promise.all(ops);
 	}
 
+	// Branch browse uses the app's stored forge token server-side, so
+	// it only exists when editing an existing app.
+	async function loadBranches(): Promise<void> {
+		if (!app) return;
+		branchesBusy = true;
+		try {
+			const res = await api<{ branches: string[] }>(`/deploy/apps/${app.id}/branches`);
+			branches = res.branches;
+			if (!res.branches.length) toast('info', 'no branches returned by the forge');
+		} catch (err) {
+			toast('error', errMessage(err, 'branch listing failed').slice(0, 300));
+		} finally {
+			branchesBusy = false;
+		}
+	}
+
 	// "host:container, host2:container2" -> PortMap[]; invalid pairs
 	// abort the save with a toast rather than posting a bad body.
 	function parsePorts(text: string): { host: number; container: number }[] | null {
@@ -136,6 +165,17 @@
 		if (sourceKind === 'git' || sourceKind === 'static') {
 			if (ref.trim()) source.ref = ref.trim();
 			if (subdir.trim()) source.subdir = subdir.trim();
+		}
+		if (sourceKind === 'git') {
+			if (forge !== 'auto') source.forge = forge as AppSource['forge'];
+			const paths = pathsText
+				.split(',')
+				.map((p) => p.trim())
+				.filter(Boolean);
+			if (paths.length) source.paths = paths;
+			if (submodules) source.submodules = true;
+			if (lfs) source.lfs = true;
+			if (previews) source.previews = true;
 		}
 		const healthcheck: Partial<Healthcheck> = hcEnabled
 			? { kind: hcKind, port: hcPort, path: hcPath || '/' }
@@ -231,12 +271,73 @@
 		{#if sourceKind !== 'image'}
 			<div class="grid gap-4 sm:grid-cols-2">
 				<Field label="Ref" hint="Branch, tag, or commit">
-					<input class="input" bind:value={ref} placeholder="main" />
+					<div class="flex gap-2">
+						<input
+							class="input"
+							bind:value={ref}
+							placeholder="main"
+							list={app && branches.length ? 'wf-branches' : undefined}
+						/>
+						{#if app && sourceKind === 'git'}
+							<button
+								type="button"
+								class="btn shrink-0"
+								onclick={() => void loadBranches()}
+								disabled={branchesBusy}
+							>
+								{branchesBusy ? 'loading' : 'browse'}
+							</button>
+							<datalist id="wf-branches">
+								{#each branches as b (b)}
+									<option value={b}></option>
+								{/each}
+							</datalist>
+						{/if}
+					</div>
 				</Field>
 				<Field label="Subdirectory" hint="Optional path inside the repo">
 					<input class="input" bind:value={subdir} placeholder="apps/web" />
 				</Field>
 			</div>
+		{/if}
+
+		{#if sourceKind === 'git'}
+			<div class="grid gap-4 sm:grid-cols-2">
+				<Field
+					label="Forge"
+					hint="Drives commit-status posts; auto detects github/gitlab/gitea hosts"
+				>
+					<select class="input" bind:value={forge}>
+						<option value="auto">auto</option>
+						{#each FORGE_KINDS as f (f)}
+							<option value={f}>{f}</option>
+						{/each}
+					</select>
+				</Field>
+				<Field
+					label="Path filters"
+					hint="Comma-separated globs; push deploys only when a touched path matches"
+				>
+					<input class="input font-mono" bind:value={pathsText} placeholder="apps/web, libs/**" />
+				</Field>
+			</div>
+			<div class="flex gap-5 text-sm">
+				<label class="flex items-center gap-2">
+					<input type="checkbox" bind:checked={submodules} /> Submodules
+				</label>
+				<label class="flex items-center gap-2">
+					<input type="checkbox" bind:checked={lfs} /> Git LFS
+				</label>
+				<label class="flex items-center gap-2">
+					<input type="checkbox" bind:checked={previews} /> PR previews
+				</label>
+			</div>
+			{#if previews}
+				<p class="text-xs text-degraded">
+					PR previews run pull-request code with this app's env, forge token, and deploy key. Enable
+					only for repos whose contributors you trust.
+				</p>
+			{/if}
 		{/if}
 
 		<div class="grid gap-4 sm:grid-cols-2">

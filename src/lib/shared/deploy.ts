@@ -9,6 +9,9 @@ export type DeployRuntime = (typeof RUNTIMES)[number];
 
 export type ReleaseStatus = 'pending' | 'live' | 'failed' | 'rolled_back' | 'superseded';
 
+export const FORGE_KINDS = ['github', 'gitlab', 'gitea', 'generic'] as const;
+export type ForgeKind = (typeof FORGE_KINDS)[number];
+
 export interface AppSource {
 	kind: SourceKind;
 	// git: clone url + ref; image: registry ref; static: dir in repo
@@ -17,6 +20,19 @@ export interface AppSource {
 	url?: string;
 	ref?: string;
 	subdir?: string;
+	// Explicit forge kind for API calls (commit statuses); detected
+	// by hostname when unset. Self-hosted instances need this.
+	forge?: ForgeKind;
+	// Monorepo path filters: a push webhook deploys only when a
+	// touched path matches one of these globs. Empty deploys always.
+	paths?: string[];
+	// Opt-in clone extras; history stays depth-1 either way.
+	submodules?: boolean;
+	lfs?: boolean;
+	// Opt-in PR/MR previews. Off by default because a pull request
+	// runs unreviewed code with this app's env, forge token, and
+	// deploy key; enabling is an explicit trust decision.
+	previews?: boolean;
 }
 
 export interface Healthcheck {
@@ -55,6 +71,13 @@ export interface DeployApp {
 	hasEnv: boolean;
 	hasHookSecret: boolean;
 	hasDeployKey: boolean;
+	hasForgeToken: boolean;
+	// PR preview apps are regular app rows with these set: the parent
+	// app id, the pull/merge request number, and the teardown
+	// deadline the sweep enforces. Null on normal apps.
+	previewOf: string | null;
+	previewPr: number | null;
+	previewExpires: number | null;
 	createdAt: number;
 	updatedAt: number;
 }
@@ -100,6 +123,15 @@ export interface DeploySpec {
 	namespace?: string;
 	prevRelease?: { id: string; container: string; image: string | null };
 	rollbackOf?: string;
+}
+
+// Frozen spec baked into a teardown job. The agent stops and
+// removes every container, k8s object, and checkout dir the app
+// owns; no secrets ride along because the spec only names the app.
+export interface TeardownSpec {
+	appId: string;
+	runtime?: DeployRuntime;
+	namespace?: string;
 }
 
 export interface DomainConflict {

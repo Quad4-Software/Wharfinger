@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import type { Runtime } from '$lib/server/runtime';
-import type { DeployApp, DeploySpec, Healthcheck } from '$lib/shared/deploy';
+import type { DeployApp, DeploySpec, Healthcheck, ReleaseStatus } from '$lib/shared/deploy';
 import { DeployError } from './store';
+import { forgeKind, parseRepoCoords, postCommitStatus } from './forge';
 import type { Job } from '$lib/shared/jobs';
 
 async function buildSpec(
@@ -132,8 +133,49 @@ export async function settleDeployJob(rt: Runtime, jobId: number): Promise<void>
 		container?: string;
 	};
 	const meta = { commit: result.commit, image: result.image };
-	if (job.status === 'succeeded') await rt.deploys.markLive(releaseId, meta);
-	else if (job.status === 'rolled_back')
+	let status: ReleaseStatus | null = null;
+	if (job.status === 'succeeded') {
+		await rt.deploys.markLive(releaseId, meta);
+		status = 'live';
+	} else if (job.status === 'rolled_back') {
 		await rt.deploys.markRelease(releaseId, 'rolled_back', meta);
-	else if (job.status === 'failed') await rt.deploys.markRelease(releaseId, 'failed', meta);
+		status = 'rolled_back';
+	} else if (job.status === 'failed') {
+		await rt.deploys.markRelease(releaseId, 'failed', meta);
+		status = 'failed';
+	}
+	if (status) {
+		const app = await rt.deploys.getApp((JSON.parse(job.spec) as DeploySpec).appId);
+		if (app) {
+			const sha = meta.commit ?? (await rt.deploys.release(releaseId))?.commit ?? null;
+			await postReleaseStatus(rt, app, sha, status);
+		}
+	}
+}
+
+/**
+ * Post a commit status back to the app's forge when a token is
+ * configured. Best-effort: a forge outage or missing config never
+ * breaks the deploy path.
+ */
+export async function postReleaseStatus(
+	rt: Runtime,
+	app: DeployApp,
+	sha: string | null,
+	status: ReleaseStatus | 'pending'
+): Promise<void> {
+	if (!sha || app.source.kind !== 'git' || !app.source.url) return;
+	const coords = parseRepoCoords(app.source.url);
+	if (!coords) return;
+	const kind = forgeKind(app.source.forge, coords);
+	const token = await rt.deploys.forgeToken(app.id);
+	if (!token) return;
+	const domain = app.domains.find((d) => !d.startsWith('*.'));
+	const res = await postCommitStatus(rt.egress, kind, coords, token, sha, status, {
+		description: `wharfinger deploy ${status}`,
+		targetUrl: domain ? `https://${domain}` : null
+	});
+	if (!res.ok) {
+		console.warn(`deploy status post to ${kind} for ${app.name}: ${res.error}`);
+	}
 }

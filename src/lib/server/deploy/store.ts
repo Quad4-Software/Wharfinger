@@ -11,7 +11,7 @@ import type {
 	PortMap,
 	ReleaseStatus
 } from '$lib/shared/deploy';
-import { RUNTIMES, SOURCE_KINDS } from '$lib/shared/deploy';
+import { FORGE_KINDS, RUNTIMES, SOURCE_KINDS } from '$lib/shared/deploy';
 
 export class DeployError extends Error {
 	constructor(
@@ -36,6 +36,10 @@ interface AppRow {
 	replicas: number | null;
 	webhook_hash: string;
 	hook_secret: string | null;
+	forge_token: string | null;
+	preview_of: string | null;
+	preview_pr: number | null;
+	preview_expires: number | null;
 	created_at: number;
 	updated_at: number;
 	has_key?: number;
@@ -76,6 +80,10 @@ function toApp(r: AppRow): DeployApp {
 		hasEnv: r.env !== null,
 		hasHookSecret: r.hook_secret !== null,
 		hasDeployKey: r.has_key === 1,
+		hasForgeToken: r.forge_token !== null,
+		previewOf: r.preview_of ?? null,
+		previewPr: r.preview_pr ?? null,
+		previewExpires: r.preview_expires ?? null,
 		createdAt: r.created_at,
 		updatedAt: r.updated_at
 	};
@@ -202,6 +210,27 @@ export class DeployStore {
 			out.url = source.url;
 			out.ref = typeof source.ref === 'string' ? source.ref.slice(0, 200) : 'main';
 			if (source.subdir) out.subdir = source.subdir.slice(0, 200);
+			if (source.forge !== undefined) {
+				if (!(FORGE_KINDS as readonly string[]).includes(source.forge)) {
+					throw new DeployError(422, `forge must be one of ${FORGE_KINDS.join(', ')}`);
+				}
+				out.forge = source.forge;
+			}
+			if (source.paths !== undefined) {
+				if (!Array.isArray(source.paths) || source.paths.length > 64) {
+					throw new DeployError(422, 'paths must be an array of up to 64 globs');
+				}
+				out.paths = source.paths.map((p: unknown) => {
+					const s = String(p).trim().replace(/^\/+/, '');
+					if (!s || s.length > 200 || s.includes('..')) {
+						throw new DeployError(422, `invalid path filter: ${s || String(p).slice(0, 60)}`);
+					}
+					return s;
+				});
+			}
+			if (source.submodules === true) out.submodules = true;
+			if (source.lfs === true) out.lfs = true;
+			if (source.previews === true) out.previews = true;
 		} else if (source.kind === 'image') {
 			if (typeof source.url !== 'string' || !/^[a-z0-9./:_@-]+$/i.test(source.url)) {
 				throw new DeployError(422, 'image source needs a registry reference');
@@ -435,6 +464,144 @@ export class DeployStore {
 		});
 	}
 
+	/**
+	 * Create a PR preview app under a parent. Sealed columns (env,
+	 * hook secret, forge token) and the deploy key row are copied
+	 * verbatim: same hub key, same repo access, and nothing is ever
+	 * decrypted or logged on this path.
+	 */
+	async createPreviewApp(
+		parent: DeployApp,
+		opts: {
+			name: string;
+			pr: number;
+			source: AppSource;
+			domains: string[];
+			ports: PortMap[];
+			expiresAt: number;
+		}
+	): Promise<DeployApp> {
+		const source = this.validateSource(opts.source);
+		const domains = this.validateDomains(opts.domains);
+		const ports = this.validatePorts(opts.ports);
+		const id = `app_${randomBytes(9).toString('base64url')}`;
+		const webhook = randomToken();
+		const now = Date.now();
+		// A preview for the same parent+PR can be created by two
+		// racing deliveries; inside the serialized tx the second one
+		// sees the first row and returns it instead of duplicating.
+		let appId = id;
+		try {
+			await this.db.tx(async (tx) => {
+				const dup = (await tx
+					.prepare('SELECT id FROM deploy_apps WHERE preview_of = ? AND preview_pr = ?')
+					.get(parent.id, opts.pr)) as { id: string } | undefined;
+				if (dup) {
+					appId = dup.id;
+					return;
+				}
+				const secrets = (await tx
+					.prepare('SELECT env, hook_secret, forge_token FROM deploy_apps WHERE id = ?')
+					.get(parent.id)) as
+					| { env: string | null; hook_secret: string | null; forge_token: string | null }
+					| undefined;
+				if (!secrets) throw new DeployError(404, 'parent app not found');
+				await tx
+					.prepare(
+						`INSERT INTO deploy_apps (id, name, agent_id, source, runtime, env, domains, healthcheck, ports, namespace, replicas, webhook_hash, hook_secret, forge_token, preview_of, preview_pr, preview_expires, created_at, updated_at)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					)
+					.run(
+						id,
+						opts.name,
+						parent.agentId,
+						JSON.stringify(source),
+						parent.runtime,
+						secrets.env,
+						JSON.stringify(domains),
+						JSON.stringify(parent.healthcheck),
+						JSON.stringify(ports),
+						parent.namespace,
+						parent.replicas,
+						hashToken(webhook),
+						secrets.hook_secret,
+						secrets.forge_token,
+						parent.id,
+						opts.pr,
+						opts.expiresAt,
+						now,
+						now
+					);
+				const key = (await tx
+					.prepare('SELECT pub, priv FROM deploy_keys WHERE app_id = ?')
+					.get(parent.id)) as { pub: string; priv: string } | undefined;
+				if (key) {
+					await tx
+						.prepare('INSERT INTO deploy_keys (app_id, pub, priv) VALUES (?, ?, ?)')
+						.run(id, key.pub, key.priv);
+				}
+			});
+		} catch (err) {
+			if (err instanceof DeployError) throw err;
+			if (isUniqueViolation(err)) {
+				throw new DeployError(409, 'an app with that name exists');
+			}
+			throw err;
+		}
+		const app = await this.getApp(appId);
+		if (!app) throw new DeployError(500, 'preview app missing after create');
+		return app;
+	}
+
+	/** The preview app for one pull/merge request on a parent. */
+	async previewFor(parentId: string, pr: number): Promise<DeployApp | null> {
+		const row = (await this.db
+			.prepare(`${appQuery()} WHERE a.preview_of = ? AND a.preview_pr = ?`)
+			.get(parentId, pr)) as AppRow | undefined;
+		return row ? toApp(row) : null;
+	}
+
+	/** All previews under a parent, oldest first. */
+	async previewsFor(parentId: string): Promise<DeployApp[]> {
+		const rows = (await this.db
+			.prepare(`${appQuery()} WHERE a.preview_of = ? ORDER BY a.created_at`)
+			.all(parentId)) as unknown as AppRow[];
+		return rows.map(toApp);
+	}
+
+	/** Previews past their teardown deadline. */
+	async expiredPreviews(now: number): Promise<DeployApp[]> {
+		const rows = (await this.db
+			.prepare(`${appQuery()} WHERE a.preview_expires IS NOT NULL AND a.preview_expires < ?`)
+			.all(now)) as unknown as AppRow[];
+		return rows.map(toApp);
+	}
+
+	/** Extend a preview's teardown deadline on each new push. */
+	async touchPreview(id: string, expiresAt: number): Promise<void> {
+		await this.db
+			.prepare('UPDATE deploy_apps SET preview_expires = ?, updated_at = ? WHERE id = ?')
+			.run(expiresAt, Date.now(), id);
+	}
+
+	/** Host ports already claimed by apps on one agent, for preview allocation. */
+	async usedHostPorts(agentId: string): Promise<Set<number>> {
+		const rows = (await this.db
+			.prepare('SELECT ports FROM deploy_apps WHERE agent_id = ?')
+			.all(agentId)) as { ports: string }[];
+		const used = new Set<number>();
+		for (const r of rows) {
+			try {
+				for (const p of JSON.parse(r.ports) as PortMap[]) {
+					if (Number.isInteger(p.host)) used.add(p.host);
+				}
+			} catch {
+				// A corrupt ports blob cannot block allocation.
+			}
+		}
+		return used;
+	}
+
 	/** Sealed env map; fetched by the bound agent through the secrets endpoint. */
 	async setEnv(id: string, env: Record<string, string>, expectedUpdatedAt?: number): Promise<void> {
 		if (!(await this.getApp(id))) throw new DeployError(404, 'app not found');
@@ -476,6 +643,26 @@ export class DeployStore {
 			.prepare('SELECT hook_secret FROM deploy_apps WHERE id = ?')
 			.get(id)) as { hook_secret: string | null } | undefined;
 		return row?.hook_secret ? (openSecret(row.hook_secret) ?? null) : null;
+	}
+
+	/**
+	 * Forge API token (PAT/app token) for commit status posts. An
+	 * empty string clears it. Sealed like every other secret column.
+	 */
+	async setForgeToken(id: string, token: string): Promise<void> {
+		await this.db
+			.prepare('UPDATE deploy_apps SET forge_token = ?, updated_at = ? WHERE id = ?')
+			.run(token === '' ? null : sealSecret(token), Date.now(), id);
+	}
+
+	async forgeToken(id: string): Promise<string | null> {
+		const row = (await this.db
+			.prepare('SELECT forge_token FROM deploy_apps WHERE id = ?')
+			.get(id)) as { forge_token: string | null } | undefined;
+		if (!row?.forge_token) return null;
+		const plain = openSecret(row.forge_token);
+		if (plain === null) throw new DeployError(500, 'sealed forge token is unreadable');
+		return plain;
 	}
 
 	async rotateWebhook(id: string): Promise<string> {

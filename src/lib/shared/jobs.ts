@@ -12,7 +12,7 @@ export const JOB_STATUSES = [
 ] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
-export const JOB_KINDS = ['deploy', 'agent-task', 'scan'] as const;
+export const JOB_KINDS = ['deploy', 'teardown', 'agent-task', 'scan'] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
 
 const TERMINAL: readonly JobStatus[] = ['succeeded', 'failed', 'rolled_back'];

@@ -217,6 +217,23 @@ webauthn_origin`/`webauthn_rp_id` overrides
   ready promise so getRuntime() stays synchronous; hooks await it
   before serving. Design notes and the supported SQL subset live in
   .agents/references/storage.md
+- Forge integration: per-app forge kind (github, gitlab, gitea/
+  forgejo, generic) with a sealed PAT/app token, commit-status posts
+  on pending/live/failed/rolled_back, monorepo path-filter globs on
+  push webhooks, opt-in submodule and LFS clones, and branch browsing
+  in the app form via a server-side list endpoint routed through the
+  egress guard
+- PR/MR preview deployments: opt-in per app (source.previews), a
+  pull_request or Merge Request Hook event creates an ephemeral app
+  (<parent>-pr<N>) cloned from the parent with the PR head ref, an
+  allocated loopback port, and a 72h TTL. Synchronize pushes redeploy
+  the same preview; close/merge events and the runtime sweep enqueue
+  a durable teardown job, and the agent removes the app's containers,
+  images, k8s resources, and checkout dirs. The panel shows a PR chip
+  in the app list and a preview banner with the expiry on the detail
+  page (audit: previews carry the parent's secrets so the opt-in is
+  explicit; previews cannot spawn previews; forge responses are
+  bounded and unhandled PR actions no longer reach the push path)
 
 ### Fixed
 

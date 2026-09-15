@@ -475,6 +475,7 @@ CREATE TABLE IF NOT EXISTS deploy_apps (
 	replicas    INTEGER,
 	webhook_hash TEXT NOT NULL UNIQUE,
 	hook_secret TEXT,
+	forge_token TEXT,
 	created_at  INTEGER NOT NULL,
 	updated_at  INTEGER NOT NULL
 );
@@ -658,6 +659,21 @@ function migrate(db: DatabaseSync): void {
 		// Published port mappings [{host, container}] baked into the
 		// spec; also the edge-proxy upstream port for the app.
 		db.exec("ALTER TABLE deploy_apps ADD COLUMN ports TEXT NOT NULL DEFAULT '[]'");
+	}
+	if (!appCols.includes('forge_token')) {
+		// Sealed PAT/app token used to post commit statuses back to
+		// the forge API.
+		db.exec('ALTER TABLE deploy_apps ADD COLUMN forge_token TEXT');
+	}
+	if (!appCols.includes('preview_of')) {
+		// PR preview apps: parent app id, the pull/merge request
+		// number, and the teardown deadline the sweep enforces.
+		db.exec('ALTER TABLE deploy_apps ADD COLUMN preview_of TEXT');
+		db.exec('ALTER TABLE deploy_apps ADD COLUMN preview_pr INTEGER');
+		db.exec('ALTER TABLE deploy_apps ADD COLUMN preview_expires INTEGER');
+		db.exec(
+			'CREATE INDEX IF NOT EXISTS idx_deploy_apps_preview ON deploy_apps (preview_of, preview_pr)'
+		);
 	}
 	// Tamper-evident audit chain: each row hashes its canonical fields
 	// plus the previous row's hash. Nullable so pre-chain rows migrate.

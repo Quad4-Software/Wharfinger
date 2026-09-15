@@ -38,12 +38,25 @@ func gitEnv(keyFile string) []string {
 	return env
 }
 
+// CloneOpts carries the opt-in clone extras from the source spec.
+// History stays depth-1 regardless; these only widen what lands in
+// the worktree.
+type CloneOpts struct {
+	Submodules bool // git submodule update --init --depth 1
+	LFS        bool // git lfs pull; requires git-lfs on the host
+}
+
 // CloneOrFetch keeps a per-app checkout under the state dir and
 // moves it to the requested ref with a depth-1 fetch. History is
 // never kept: a deploy needs the tree at ref, nothing more. All
 // argv is fixed; url and ref travel as arguments, never through a
 // shell.
-func (g *Git) CloneOrFetch(ctx context.Context, dir, url, ref, keyFile string, out io.Writer) error {
+func (g *Git) CloneOrFetch(
+	ctx context.Context,
+	dir, url, ref, keyFile string,
+	opts CloneOpts,
+	out io.Writer,
+) error {
 	if ref == "" {
 		ref = "HEAD"
 	}
@@ -52,9 +65,9 @@ func (g *Git) CloneOrFetch(ctx context.Context, dir, url, ref, keyFile string, o
 	}
 	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
-	opts := CmdOpts{Dir: dir, Env: gitEnv(keyFile)}
+	cmd := CmdOpts{Dir: dir, Env: gitEnv(keyFile)}
 	run := func(args ...string) error {
-		return g.runner.Run(ctx, append([]string{g.Bin}, args...), opts, out)
+		return g.runner.Run(ctx, append([]string{g.Bin}, args...), cmd, out)
 	}
 	if err := run("init"); err != nil {
 		return fmt.Errorf("git init: %w", err)
@@ -71,6 +84,16 @@ func (g *Git) CloneOrFetch(ctx context.Context, dir, url, ref, keyFile string, o
 	}
 	if err := run("checkout", "-f", "FETCH_HEAD"); err != nil {
 		return fmt.Errorf("git checkout: %w", err)
+	}
+	if opts.Submodules {
+		if err := run("submodule", "update", "--init", "--depth", "1"); err != nil {
+			return fmt.Errorf("git submodule: %w", err)
+		}
+	}
+	if opts.LFS {
+		if err := run("lfs", "pull"); err != nil {
+			return fmt.Errorf("git lfs pull: %w", err)
+		}
 	}
 	return nil
 }

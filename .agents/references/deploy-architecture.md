@@ -67,3 +67,32 @@ exist and can be reused when its spec digest matches.
   job whose only evidence of death is silence.
 - Agent offline: jobs stay `queued` with `waiting_for_agent`; the
   panel shows the reason.
+
+## Forges, previews, and teardown (implemented)
+
+- `src/lib/server/deploy/forge.ts` resolves the forge kind
+  (github/gitlab/gitea/generic; explicit `source.forge` wins over
+  hostname detection) and owns outbound calls: commit statuses and
+  `listBranches` for the form's repo browse. All forge fetches go
+  through rt.egress with redirect:manual and a 256KB body cap.
+- PR/MR webhooks: `hook.ts` parses pull_request (github, gitea,
+  forgejo) and Merge Request Hook (gitlab) events. `isPRWebhook`
+  gates the route so unhandled actions never reach push parsing.
+- Previews are opt-in via `source.previews`: a PR runs unreviewed
+  code with the app's env, forge token, and deploy key, so the flag
+  is an explicit trust decision and is stripped from preview apps
+  (previews cannot spawn previews).
+- Preview apps are regular deploy_apps rows with preview_of /
+  preview_pr / preview_expires; name is <parent>-pr<N>, the ref is
+  the forge PR head (refs/pull/<n>/head or refs/merge-requests/<n>/
+  head), host ports come from a 30000-39999 loopback range, and the
+  TTL is 72h. createPreviewApp dedupes on (preview_of, preview_pr)
+  inside its transaction.
+- `teardown` is a second claimable job kind. Its spec carries only
+  appId, runtime, and namespace (no secrets). The agent removes
+  <app>-* containers, <app>:* images, k8s objects by app label, and
+  the src/static state dirs. Container-name prefix safety relies on
+  fixed-length app ids; keep `app_` + 9 random bytes.
+- Preview close, TTL sweep (on the 60s job tick), and parent delete
+  all enqueue `teardown:<appId>` before deleting the row; the
+  deterministic job_key dedupes racing enqueues.

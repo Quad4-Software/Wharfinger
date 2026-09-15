@@ -124,6 +124,60 @@ func (r *Runtime) Remove(ctx context.Context, name string) error {
 	return r.run(ctx, rmArgv(r.Bin, name), CmdOpts{}, io.Discard)
 }
 
+// ListByPrefix returns container names that begin with prefix. The
+// runtime name filter is a substring match, so results are
+// prefix-checked here before the caller acts on them.
+func (r *Runtime) ListByPrefix(ctx context.Context, prefix string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, opTimeout)
+	defer cancel()
+	ring := newRingBuf(1 << 20)
+	err := r.run(ctx, []string{
+		r.Bin, "ps", "-a", "--filter", "name=" + prefix, "--format", "{{.Names}}",
+	}, CmdOpts{}, ring)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, name := range strings.Split(ring.String(), "\n") {
+		name = strings.TrimSpace(name)
+		if strings.HasPrefix(name, prefix) {
+			out = append(out, name)
+		}
+	}
+	return out, nil
+}
+
+// ImagesByPrefix returns image refs (repo:tag) under the app's
+// <app>:<release> tag convention, prefix-checked after the runtime's
+// substring reference filter.
+func (r *Runtime) ImagesByPrefix(ctx context.Context, prefix string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, opTimeout)
+	defer cancel()
+	ring := newRingBuf(1 << 20)
+	err := r.run(ctx, []string{
+		r.Bin, "images", "--filter", "reference=" + prefix + "*", "--format", "{{.Repository}}:{{.Tag}}",
+	}, CmdOpts{}, ring)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, ref := range strings.Split(ring.String(), "\n") {
+		ref = strings.TrimSpace(ref)
+		if strings.HasPrefix(ref, prefix) {
+			out = append(out, ref)
+		}
+	}
+	return out, nil
+}
+
+// RemoveImage force-removes one image ref; a missing image is an
+// error the caller may ignore when removing best-effort.
+func (r *Runtime) RemoveImage(ctx context.Context, ref string) error {
+	ctx, cancel := context.WithTimeout(ctx, opTimeout)
+	defer cancel()
+	return r.run(ctx, []string{r.Bin, "rmi", "-f", ref}, CmdOpts{}, io.Discard)
+}
+
 // Inspect returns the observed state of one container. A container
 // that does not exist yields Found=false without an error.
 func (r *Runtime) Inspect(ctx context.Context, name string) (InspectResult, error) {

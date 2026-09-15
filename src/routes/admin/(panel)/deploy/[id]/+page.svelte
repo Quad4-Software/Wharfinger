@@ -1,9 +1,8 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
 	import {
-		Copy,
+		GitBranch,
 		Globe,
-		KeyRound,
 		Pencil,
 		Play,
 		RefreshCw,
@@ -11,8 +10,7 @@
 		RotateCcw,
 		ScanSearch,
 		ShieldCheck,
-		Trash,
-		Webhook
+		Trash
 	} from '@lucide/svelte';
 	import { page } from '$app/state';
 	import PageHeader from '$lib/components/admin/PageHeader.svelte';
@@ -20,6 +18,7 @@
 	import Field from '$lib/components/admin/Field.svelte';
 	import ConfirmDialog from '$lib/components/admin/ConfirmDialog.svelte';
 	import DeployAppForm from '$lib/components/admin/DeployAppForm.svelte';
+	import DeployCredentials from '$lib/components/admin/DeployCredentials.svelte';
 	import type { DeployApp, DeployRelease, DomainReport } from '$lib/shared/deploy';
 	import type { Job } from '$lib/shared/jobs';
 	import type { Recommendation, ScanFinding, ScanReport } from '$lib/shared/scan';
@@ -178,19 +177,6 @@
 		}
 	}
 
-	async function rotate(what: 'webhook' | 'key'): Promise<void> {
-		try {
-			const res = await api<{ webhook?: string; deployKeyPub?: string }>(
-				`/deploy/apps/${appId}/rotate`,
-				{ method: 'POST', body: { what } }
-			);
-			secretBox = { ...secretBox, ...res };
-			toast('success', what === 'webhook' ? 'Webhook rotated' : 'Deploy key rotated');
-		} catch (err) {
-			toast('error', errMessage(err, 'rotate failed').slice(0, 400));
-		}
-	}
-
 	async function checkDomains(): Promise<void> {
 		domainChecking = true;
 		try {
@@ -254,11 +240,6 @@
 		}
 	}
 
-	async function copy(text: string, label: string): Promise<void> {
-		await navigator.clipboard.writeText(text).catch(() => undefined);
-		toast('info', `${label} copied`);
-	}
-
 	function releaseTone(status: string): string {
 		if (status === 'live') return 'chip-on';
 		if (status === 'failed' || status === 'rolled_back') return 'chip-down';
@@ -305,6 +286,18 @@
 			Deploy
 		</button>
 	</PageHeader>
+
+	{#if app.previewOf != null}
+		<div class="card mb-3 flex items-center gap-2 border-degraded px-4 py-2.5 text-sm">
+			<GitBranch class="size-4 shrink-0 text-degraded-fg" />
+			<span class="text-muted">
+				Preview for pull request #{app.previewPr}
+				{#if app.previewExpires}
+					· auto-teardown {fmtDateTime(new Date(app.previewExpires).toISOString())}
+				{/if}
+			</span>
+		</div>
+	{/if}
 
 	<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
 		<StatTile
@@ -393,54 +386,14 @@
 	{/if}
 
 	<div class="mt-4 grid gap-4 lg:grid-cols-2">
-		<div class="card p-4">
-			<h2 class="mb-3 flex items-center gap-2 text-sm font-semibold">
-				<Webhook class="size-4 text-faint" /> Webhook and keys
-			</h2>
-			{#if secretBox.webhook}
-				<div class="mb-3 rounded-lg border border-edge bg-raised p-3">
-					<p class="mb-1 text-xs text-faint">New webhook URL, shown once</p>
-					<div class="flex items-center gap-2">
-						<code class="min-w-0 flex-1 truncate font-mono text-xs">{secretBox.webhook}</code>
-						<button
-							class="btn btn-ghost btn-sm"
-							onclick={() => copy(secretBox.webhook ?? '', 'Webhook')}
-						>
-							<Copy class="size-3.5" />
-						</button>
-					</div>
-				</div>
-			{:else}
-				<p class="mb-3 text-xs text-muted">
-					Webhook endpoint is configured{app.hasHookSecret ? ' with a signing secret' : ''}. The URL
-					is only shown right after creation or rotation.
-				</p>
-			{/if}
-			{#if secretBox.deployKeyPub}
-				<div class="mb-3 rounded-lg border border-edge bg-raised p-3">
-					<p class="mb-1 text-xs text-faint">
-						Deploy key, add as a read-only deploy key on the repo
-					</p>
-					<div class="flex items-center gap-2">
-						<code class="min-w-0 flex-1 truncate font-mono text-xs">{secretBox.deployKeyPub}</code>
-						<button
-							class="btn btn-ghost btn-sm"
-							onclick={() => copy(secretBox.deployKeyPub ?? '', 'Deploy key')}
-						>
-							<Copy class="size-3.5" />
-						</button>
-					</div>
-				</div>
-			{/if}
-			<div class="flex flex-wrap gap-2">
-				<button class="btn btn-sm" onclick={() => rotate('webhook')}>
-					<RotateCcw class="size-3.5" /> Rotate webhook
-				</button>
-				<button class="btn btn-sm" onclick={() => rotate('key')}>
-					<KeyRound class="size-3.5" /> Rotate deploy key
-				</button>
-			</div>
-		</div>
+		<DeployCredentials
+			{app}
+			{secretBox}
+			onrotated={(res: { webhook?: string; deployKeyPub?: string }) => {
+				secretBox = { ...secretBox, ...res };
+			}}
+			onsaved={() => void load()}
+		/>
 
 		<div class="card p-4">
 			<h2 class="mb-3 text-sm font-semibold">Environment</h2>

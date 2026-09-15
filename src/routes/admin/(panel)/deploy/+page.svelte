@@ -108,7 +108,12 @@
 			>
 				<div class="flex items-center justify-between gap-2">
 					<span class="truncate text-sm font-semibold">{app.name}</span>
-					<span class="chip chip-muted">{app.runtime}</span>
+					<span class="flex shrink-0 items-center gap-1.5">
+						{#if app.previewPr != null}
+							<span class="chip chip-warn">PR #{app.previewPr}</span>
+						{/if}
+						<span class="chip chip-muted">{app.runtime}</span>
+					</span>
 				</div>
 				<div class="mt-2 flex items-center gap-2 text-xs text-muted">
 					<GitBranch class="size-3.5 shrink-0 text-faint" />

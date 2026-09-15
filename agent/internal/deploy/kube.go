@@ -157,6 +157,18 @@ func (k *Kube) DeleteDeployment(ctx context.Context, name, ns string, out io.Wri
 	return k.run(ctx, []string{"delete", "deployment", name, "-n", ns, "--ignore-not-found"}, nil, out)
 }
 
+// DeleteApp removes every deployment and service carrying the app
+// label: teardown for previews and deleted apps. Missing objects
+// are fine; the label selector is what scopes the delete.
+func (k *Kube) DeleteApp(ctx context.Context, appLabel, ns string, out io.Writer) error {
+	ctx, cancel := context.WithTimeout(ctx, opTimeout)
+	defer cancel()
+	return k.run(ctx, []string{
+		"delete", "deployment,service", "-l", kubeLabelApp + "=" + appLabel,
+		"-n", ns, "--ignore-not-found",
+	}, nil, out)
+}
+
 // KubeDeployStatus is the observed state of one deployment, used by
 // reconcile to recover job outcomes after an agent restart.
 type KubeDeployStatus struct {

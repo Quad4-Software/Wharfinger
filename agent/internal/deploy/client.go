@@ -53,11 +53,12 @@ func (c *Client) post(ctx context.Context, path string, body any) ([]byte, error
 	return send.PostSigned(cctx, c.ep, c.cfg, c.id, path, raw)
 }
 
-// Claim asks the hub for the next deploy job. A nil job means the
-// queue is empty for this agent.
+// Claim asks the hub for the next job. A nil job means the queue is
+// empty for this agent. Deploys list first so a queued deploy always
+// drains before a teardown for the same app.
 func (c *Client) Claim(ctx context.Context) (*Job, error) {
 	res, err := c.post(ctx, "/ingress/jobs/claim", map[string]any{
-		"kinds": []string{"deploy"},
+		"kinds": []string{"deploy", "teardown"},
 	})
 	if err != nil {
 		return nil, err

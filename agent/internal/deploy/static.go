@@ -79,7 +79,8 @@ func (e *Executor) executeStatic(
 			ref = spec.Source.Commit
 		}
 		fmt.Fprintf(out, "cloning %s @ %s\n", spec.Source.URL, ref)
-		if err := e.git.CloneOrFetch(ctx, repoDir, spec.Source.URL, ref, keyFile, out); err != nil {
+		opts := CloneOpts{Submodules: spec.Source.Submodules, LFS: spec.Source.LFS}
+		if err := e.git.CloneOrFetch(ctx, repoDir, spec.Source.URL, ref, keyFile, opts, out); err != nil {
 			return fail(StepFetch, err)
 		}
 		commit, _ = e.git.RevParse(ctx, repoDir, "HEAD")

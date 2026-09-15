@@ -150,17 +150,17 @@ channel. No SSH anywhere; the agent already proves possession.
 
 ## Phase 3: Git forges and keys
 
-- [ ] Forge abstraction: `forge` interface (clone url, webhook
+- [x] Forge abstraction: `forge` interface (clone url, webhook
       verify, commit status post, repo browse); drivers for github,
       gitlab, gitea/forgejo, generic git+webhook
-- [ ] PAT/app-token auth for API calls (sealed), deploy keys for
+- [x] PAT/app-token auth for API calls (sealed), deploy keys for
       clone; never store OAuth refresh tokens unless needed
-- [ ] Commit status checks posted back to the forge (pending /
+- [x] Commit status checks posted back to the forge (pending /
       success / failure / rolled back)
-- [ ] PR/MR preview deployments: ephemeral app instances per pull
+- [x] PR/MR preview deployments: ephemeral app instances per pull
       request, auto-teardown on merge/close with TTL cap
-- [ ] Monorepo path filters: deploy only when touched paths match
-- [ ] Shallow + partial clone defaults; submodule and LFS opt-in
+- [x] Monorepo path filters: deploy only when touched paths match
+- [x] Shallow + partial clone defaults; submodule and LFS opt-in
 
 ## Phase 4: Server lifecycle
 

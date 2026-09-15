@@ -41,12 +41,14 @@ type Spec struct {
 }
 
 type Source struct {
-	Kind    string `json:"kind"` // git | image | static
-	URL     string `json:"url"`
-	Ref     string `json:"ref"`
-	Commit  string `json:"commit"`
-	Subdir  string `json:"subdir"`
-	KeyFile string `json:"keyFile"` // deploy key path, must live under the state dir
+	Kind       string `json:"kind"` // git | image | static
+	URL        string `json:"url"`
+	Ref        string `json:"ref"`
+	Commit     string `json:"commit"`
+	Subdir     string `json:"subdir"`
+	KeyFile    string `json:"keyFile"`    // deploy key path, must live under the state dir
+	Submodules bool   `json:"submodules"` // opt-in: submodule update --init --depth 1
+	LFS        bool   `json:"lfs"`        // opt-in: git lfs pull after checkout
 }
 
 type Build struct {
@@ -173,27 +175,59 @@ func (s *Spec) effectiveImage() string {
 	return ""
 }
 
+// foldTagName maps characters outside the image tag alphabet to
+// dashes; teardown uses the same fold to find an app's images.
+func foldTagName(v string) string {
+	v = strings.ToLower(v)
+	var b strings.Builder
+	for _, r := range v {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_', r == '.', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	return b.String()
+}
+
 // ImageTag is the local build tag <app>:<release> with characters
 // outside the tag alphabet folded to dashes.
 func (s *Spec) ImageTag() string {
-	fold := func(v string) string {
-		v = strings.ToLower(v)
-		var b strings.Builder
-		for _, r := range v {
-			switch {
-			case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_', r == '.', r == '-':
-				b.WriteRune(r)
-			default:
-				b.WriteByte('-')
-			}
-		}
-		return b.String()
-	}
-	tag := fold(s.ReleaseID)
+	tag := foldTagName(s.ReleaseID)
 	if tag == "" {
 		tag = "latest"
 	}
-	return fold(s.AppID) + ":" + tag
+	return foldTagName(s.AppID) + ":" + tag
+}
+
+// TeardownSpec is the frozen spec for a teardown job: remove every
+// container, image, k8s object, and checkout dir the app owns. It
+// carries no secrets; nothing needs a lease-gated fetch.
+type TeardownSpec struct {
+	AppID     string `json:"appId"`
+	Runtime   string `json:"runtime"`
+	Namespace string `json:"namespace"`
+}
+
+// ParseTeardownSpec decodes and validates a teardown job spec.
+func ParseTeardownSpec(raw string) (*TeardownSpec, error) {
+	var s TeardownSpec
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		return nil, fmt.Errorf("teardown spec json: %w", err)
+	}
+	if !nameRE.MatchString(s.AppID) {
+		return nil, fmt.Errorf("appId %q is not a valid name", s.AppID)
+	}
+	switch s.Runtime {
+	case "", "podman", "docker", "k8s":
+	default:
+		return nil, fmt.Errorf("runtime %q unsupported", s.Runtime)
+	}
+	if s.Namespace != "" && !namespaceRE.MatchString(s.Namespace) {
+		return nil, fmt.Errorf("namespace %q is not a DNS-1123 label", s.Namespace)
+	}
+	return &s, nil
 }
 
 // nameRE restricts names that land in container names and image

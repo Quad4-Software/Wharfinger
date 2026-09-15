@@ -140,6 +140,9 @@ func (e *Executor) runtimeFor(prefer string) (*Runtime, error) {
 // before the replacement passes health, and failures report
 // prevKept so the hub decides whether a rollback job follows.
 func (e *Executor) Execute(ctx context.Context, job *Job) error {
+	if job.Kind == "teardown" {
+		return e.executeTeardown(ctx, job)
+	}
 	spec, err := ParseSpec(job.Spec)
 	if err != nil {
 		return e.finishFail(job, JournalEntry{JobID: job.ID, Lease: job.Lease},
@@ -367,7 +370,8 @@ func (e *Executor) fetch(ctx context.Context, spec *Spec, rt *Runtime, out io.Wr
 			ref = spec.Source.Commit
 		}
 		fmt.Fprintf(out, "cloning %s @ %s\n", spec.Source.URL, ref)
-		if err := e.git.CloneOrFetch(ctx, dir, spec.Source.URL, ref, keyFile, out); err != nil {
+		opts := CloneOpts{Submodules: spec.Source.Submodules, LFS: spec.Source.LFS}
+		if err := e.git.CloneOrFetch(ctx, dir, spec.Source.URL, ref, keyFile, opts, out); err != nil {
 			return "", err
 		}
 		return dir, nil

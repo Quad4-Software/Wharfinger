@@ -46,6 +46,7 @@ import { JobQueue } from './jobs/queue';
 import { start as startAnomaly } from './anomaly/engine';
 import { getScanStore } from './scan/store';
 import { DeployStore } from './deploy/store';
+import { sweepPreviews } from './deploy/preview';
 import { bindTelemetry } from './telemetry';
 
 export interface Runtime {
@@ -225,7 +226,12 @@ export function getRuntime(): Runtime {
 	alertTick.unref();
 
 	const jobSweep = setInterval(() => {
-		jobs.recover().catch((err: unknown) => {
+		void (async () => {
+			await jobs.recover();
+			// Preview TTL sweep rides the same tick: an expired preview
+			// gets a teardown job, which the queue persists across restarts.
+			if (runtime) await sweepPreviews(runtime);
+		})().catch((err: unknown) => {
 			console.error('[jobs] sweep failed:', err);
 		});
 	}, 60_000);

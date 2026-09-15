@@ -280,9 +280,9 @@ func main() {
 						}
 						continue
 					}
-					log.Printf("deploy: running job %d (attempt %d)", job.ID, job.Attempt)
+					log.Printf("%s: running job %d (attempt %d)", job.Kind, job.ID, job.Attempt)
 					if err := ex.Execute(ctx, job); err != nil {
-						log.Printf("deploy job %d: %v", job.ID, err)
+						log.Printf("%s job %d: %v", job.Kind, job.ID, err)
 					}
 					if es != nil {
 						es.Poke()

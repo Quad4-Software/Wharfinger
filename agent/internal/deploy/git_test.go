@@ -39,7 +39,7 @@ func TestCloneOrFetchArgv(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "checkout")
 	f := &fakeRunner{failAt: -1}
 	g := &Git{Bin: "/usr/bin/git", runner: f}
-	if err := g.CloneOrFetch(context.Background(), dir, "git@h:o/r.git", "main", "", nil); err != nil {
+	if err := g.CloneOrFetch(context.Background(), dir, "git@h:o/r.git", "main", "", CloneOpts{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
@@ -82,7 +82,7 @@ func TestCloneOrFetchRetrySetURL(t *testing.T) {
 	// remote add fails on a reused checkout; set-url must follow.
 	f := &fakeRunner{failAt: 1}
 	g := &Git{Bin: "/usr/bin/git", runner: f}
-	if err := g.CloneOrFetch(context.Background(), dir, "git@h:o/r.git", "v2", "", nil); err != nil {
+	if err := g.CloneOrFetch(context.Background(), dir, "git@h:o/r.git", "v2", "", CloneOpts{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	j := joined(f.argv)
@@ -99,7 +99,7 @@ func TestCloneOrFetchKeyFileEnv(t *testing.T) {
 	f := &fakeRunner{failAt: -1}
 	g := &Git{Bin: "/usr/bin/git", runner: f}
 	key := "/state/keys/app_deploy_key"
-	if err := g.CloneOrFetch(context.Background(), dir, "git@h:o/r.git", "", key, nil); err != nil {
+	if err := g.CloneOrFetch(context.Background(), dir, "git@h:o/r.git", "", key, CloneOpts{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	found := false
@@ -121,5 +121,29 @@ func TestCloneOrFetchKeyFileEnv(t *testing.T) {
 	// Empty ref falls back to HEAD.
 	if !strings.Contains(joined(f.argv), "fetch --depth 1 origin HEAD") {
 		t.Fatalf("default ref HEAD missing:\n%s", joined(f.argv))
+	}
+}
+
+func TestCloneOrFetchOptIns(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "checkout")
+	f := &fakeRunner{failAt: -1}
+	g := &Git{Bin: "/usr/bin/git", runner: f}
+	err := g.CloneOrFetch(
+		context.Background(), dir, "git@h:o/r.git", "main", "",
+		CloneOpts{Submodules: true, LFS: true}, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := joined(f.argv)
+	if !strings.Contains(j, "submodule update --init --depth 1") {
+		t.Fatalf("submodule opt-in missing:\n%s", j)
+	}
+	if !strings.Contains(j, "lfs pull") {
+		t.Fatalf("lfs opt-in missing:\n%s", j)
+	}
+	// Opt-ins run after checkout so the worktree exists.
+	if strings.Index(j, "submodule update") < strings.Index(j, "checkout -f") {
+		t.Fatalf("submodule ran before checkout:\n%s", j)
 	}
 }
