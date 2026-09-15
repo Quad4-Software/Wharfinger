@@ -89,7 +89,7 @@ describe('can', () => {
 
 describe('sectionPermission', () => {
 	it('requires admin.settings for auth and admin-facing sections only', () => {
-		const adminOnly = new Set(['admin', 'oidc', 'ldap', 'telemetry', 'ingress']);
+		const adminOnly = new Set(['admin', 'oidc', 'ldap', 'telemetry', 'ingress', 'ai']);
 		for (const s of SECTION_KEYS) {
 			expect(sectionPermission(s)).toBe(adminOnly.has(s) ? 'admin.settings' : 'status.manage');
 			// Sections can carry secrets, so reads sit at the write tier.

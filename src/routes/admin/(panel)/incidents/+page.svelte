@@ -1,15 +1,19 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { CircleCheck, MessageSquarePlus, Plus, Trash } from '@lucide/svelte';
+	import { Bot, CircleCheck, MessageSquarePlus, Plus, Trash } from '@lucide/svelte';
 	import PageHeader from '$lib/components/admin/PageHeader.svelte';
 	import Field from '$lib/components/admin/Field.svelte';
 	import Modal from '$lib/components/admin/Modal.svelte';
 	import ConfirmDialog from '$lib/components/admin/ConfirmDialog.svelte';
 	import ServicePicker from '$lib/components/admin/ServicePicker.svelte';
+	import AiPanel from '$lib/components/admin/AiPanel.svelte';
 	import { api, ApiError } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
 	import { fmtDateTime } from '$lib/utils/format';
 	import type { Incident } from '$lib/shared/types';
+
+	const { data }: { data: { perms: string[] } } = $props();
+	const canAi = $derived(data.perms.includes('ai.use'));
 
 	let incidents = $state<{ active: Incident[]; recent: Incident[] }>({ active: [], recent: [] });
 	let services = $state<{ id: string; name: string }[]>([]);
@@ -23,6 +27,7 @@
 	let resolveOpen = $state(false);
 	let deleteTarget = $state<Incident | null>(null);
 	let deleteOpen = $state(false);
+	let aiFocus = $state<string | null>(null);
 	let busy = $state(false);
 
 	// create form
@@ -124,6 +129,12 @@
 	</button>
 </PageHeader>
 
+{#if canAi}
+	<div class="mb-4">
+		<AiPanel incidentId={aiFocus} />
+	</div>
+{/if}
+
 {#if loading}
 	<div class="space-y-3">
 		<div class="card h-28 animate-pulse"></div>
@@ -158,6 +169,15 @@
 								</p>
 							</div>
 							<div class="flex shrink-0 gap-1">
+								{#if canAi}
+									<button
+										class="btn btn-ghost btn-sm {aiFocus === inc.id ? 'text-accent' : ''}"
+										title="Focus the assistant on this incident"
+										onclick={() => (aiFocus = aiFocus === inc.id ? null : inc.id)}
+									>
+										<Bot class="size-3.5" />
+									</button>
+								{/if}
 								<button
 									class="btn btn-sm"
 									onclick={() => {

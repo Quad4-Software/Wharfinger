@@ -247,6 +247,19 @@ webauthn_origin`/`webauthn_rp_id` overrides
   queries never run per sample); the fleet list chips hosts with
   pending security updates or a required reboot and ranks them toward
   the top
+- AI assistant (opt-in): `[ai]` section wires an OpenAI-compatible
+  provider (Ollama/LM Studio/llama.cpp/OpenAI, `/chat/completions`
+  appended to a versioned base url); the incidents page gains an
+  assistant card that asks questions against a bounded, sanitized
+  snapshot context and proposes actions from a fixed kind catalog
+  that resolve to real audited admin routes behind a confirm click.
+  Provider calls go through the egress dispatcher with a bounded
+  response and per-user rate limits; `ai.use` is a new permission and
+  asks/suggestions are audit-logged
+- MCP endpoint: `POST /api/mcp` serves five pinned read-only tools
+  (list_services, get_service, list_incidents, list_agents,
+  list_jobs) over JSON-RPC to `read`-scoped qs_ keys, gated on
+  `[ai].mcp_enabled`; tool output is sanitized and capped at 32 KiB
 
 ### Fixed
 

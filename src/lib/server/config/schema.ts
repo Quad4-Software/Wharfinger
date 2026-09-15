@@ -588,6 +588,29 @@ export const StorageSection = v.object({
 	timeout_ms: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1000)), 30_000)
 });
 
+// [ai] wires an OpenAI-compatible chat-completions provider into the
+// panel assistant and suggested actions. Off by default; api_key
+// resolves ${VAR} at load like every other config secret. base_url
+// may point at a local model server (Ollama, LM Studio, llama.cpp),
+// which requires monitor.allow_link_local since the egress guard
+// otherwise refuses link-local targets.
+const AiSection = v.object({
+	enabled: v.optional(v.boolean(), false),
+	base_url: v.optional(v.union([v.literal(''), HttpUrl]), ''),
+	api_key: v.optional(v.string(), ''),
+	model: v.optional(v.pipe(v.string(), v.maxLength(128)), ''),
+	// Output bound per call; the context builder keeps prompts small.
+	max_tokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(64), v.maxValue(8192)), 1024),
+	temperature: v.optional(v.pipe(v.number(), v.minValue(0), v.maxValue(2)), 0.2),
+	timeout_ms: v.optional(
+		v.pipe(v.number(), v.integer(), v.minValue(1000), v.maxValue(120000)),
+		30_000
+	),
+	// The MCP endpoint at /api/mcp serves read-only tools to qs_
+	// read-scoped keys. Off unless explicitly enabled.
+	mcp_enabled: v.optional(v.boolean(), false)
+});
+
 const TelemetrySection = v.object({
 	// Opt-in: a fresh install must not send crash telemetry anywhere
 	// until the operator turns it on and chooses a dsn.
@@ -797,7 +820,8 @@ const ConfigSchema = v.object({
 	ingress: v.optional(IngressSection, {}),
 	notifications: v.optional(NotificationsSection, {}),
 	telemetry: v.optional(TelemetrySection, {}),
-	storage: v.optional(StorageSection, {})
+	storage: v.optional(StorageSection, {}),
+	ai: v.optional(AiSection, {})
 });
 
 // Cross-field checks that need the whole document.
@@ -851,6 +875,7 @@ export const SECTION_KEYS = [
 	'ldap',
 	'ingress',
 	'notifications',
-	'telemetry'
+	'telemetry',
+	'ai'
 ] as const;
 export type SectionKey = (typeof SECTION_KEYS)[number];

@@ -321,6 +321,16 @@ describe('maintenance alert suppression', () => {
 				client_reports: true,
 				max_per_minute: 60
 			},
+			ai: {
+				enabled: false,
+				base_url: '',
+				api_key: '',
+				model: '',
+				max_tokens: 1024,
+				temperature: 0.2,
+				timeout_ms: 30_000,
+				mcp_enabled: false
+			},
 			storage: {
 				driver: 'sqlite',
 				url: '',

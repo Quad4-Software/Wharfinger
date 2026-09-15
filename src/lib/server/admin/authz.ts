@@ -28,7 +28,8 @@ export type Permission =
 	| 'groups.manage'
 	| 'teams.manage'
 	| 'secrets.manage'
-	| 'config.raw';
+	| 'config.raw'
+	| 'ai.use';
 
 export const ALL_PERMISSIONS: readonly Permission[] = [
 	'status.view',
@@ -50,7 +51,8 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
 	'groups.manage',
 	'teams.manage',
 	'secrets.manage',
-	'config.raw'
+	'config.raw',
+	'ai.use'
 ];
 
 const PERM_SET: ReadonlySet<string> = new Set(ALL_PERMISSIONS);
@@ -85,7 +87,7 @@ export function sectionPermission(section: SectionKey): Permission {
 	// The admin section controls panel access, oidc/ldap control
 	// authentication, telemetry controls where crash data is sent, and
 	// ingress opens a write path into the db; all stay admin-only.
-	return ['admin', 'oidc', 'ldap', 'telemetry', 'ingress'].includes(section)
+	return ['admin', 'oidc', 'ldap', 'telemetry', 'ingress', 'ai'].includes(section)
 		? 'admin.settings'
 		: 'status.manage';
 }

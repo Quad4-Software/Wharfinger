@@ -181,26 +181,26 @@ calls go through the egress guard, no secrets or raw message bodies
 in prompts, and nothing the model says can mutate state without a
 user-confirmed action path.
 
-- [ ] `[ai]` config section: provider preset (openai-compatible base
+- [x] `[ai]` config section: provider preset (openai-compatible base
       url covers OpenAI/Anthropic-proxy/Ollama/LM Studio/llama.cpp),
       sealed api key, model, max tokens, temperature floor
-- [ ] Provider adapter: OpenAI chat-completions wire format only;
+- [x] Provider adapter: OpenAI chat-completions wire format only;
       other formats behind explicit drivers added later
-- [ ] Panel assistant: incident summarization, check failure
+- [x] Panel assistant: incident summarization, check failure
       explanation, config Q&A against loaded docs context; responses
       labeled as generated, sources cited
-- [ ] Suggested actions, never automatic: AI can propose (restart
+- [x] Suggested actions, never automatic: AI can propose (restart
       service, silence window, rollback) but execution requires an
       authenticated user click with audit entry
-- [ ] MCP server (separate opt-in listener or stdio binary):
+- [x] MCP server (separate opt-in listener or stdio binary):
       read-only tools first (list services, get status, list
       incidents, agent inventory); OAuth 2.1 or scoped `qs_` tokens;
       tool output bounded and sanitized; tool list pinned (no dynamic
       mutation) to blunt rug-pull attacks
-- [ ] Prompt-injection hygiene: strip/quote monitored content fed to
+- [x] Prompt-injection hygiene: strip/quote monitored content fed to
       the model, fixed system prompt, no tool descriptions sourced
       from remote content
-- [ ] Local-model path documented: Ollama on the same host, no
+- [x] Local-model path documented: Ollama on the same host, no
       egress needed, fully offline AI features
 
 ## Phase 6: HA and resilience
