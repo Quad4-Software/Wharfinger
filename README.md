@@ -1,5 +1,8 @@
 # Wharfinger
 
+> [!WARNING]
+> This project is still alpha level software and being actively developed.
+
 Self-hosted ops platform: uptime monitoring, status pages,
 deployments, and infrastructure agents. One SvelteKit app, one
 SQLite file, one small Go binary per host.
