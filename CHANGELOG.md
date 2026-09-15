@@ -260,6 +260,22 @@ webauthn_origin`/`webauthn_rp_id` overrides
   (list_services, get_service, list_incidents, list_agents,
   list_jobs) over JSON-RPC to `read`-scoped qs_ keys, gated on
   `[ai].mcp_enabled`; tool output is sanitized and capped at 32 KiB
+- Full data backups: `admin/api/backup` gains an opt-in `full` flag
+  that exports the durable tables (deploy apps/releases/keys, sealed
+  secret sets, hub keys, agents, api keys) alongside the config;
+  sealed fields stay sealed so restores only open under the same
+  WHARFINGER_SECRET_KEY. Import validates table names, row shapes,
+  and sizes, restores each table in a transaction, and reports
+  applied/failed tables separately; encrypted envelopes carry the
+  data inside the passphrase seal and legacy config-only envelopes
+  still import
+- Queue waiting reasons: the deploy jobs endpoint annotates queued
+  jobs with `waitingReason` (scheduled, agent offline, agent
+  revoked) and the deploy panel shows it as a chip, so a stuck job
+  explains itself instead of looking lost
+- Multi-hub and restore notes: `.agents/references/ha.md` documents
+  the active/passive pattern under the single-writer SQLite
+  constraint plus a backup restore drill
 
 ### Fixed
 

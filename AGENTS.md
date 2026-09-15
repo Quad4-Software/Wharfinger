@@ -36,7 +36,7 @@ deploy-pipeline, safe-breakdown, security-audit, ui-standards), and
 - check types beyond http/tcp/dns/ping: json, a2s, postgres, mysql, redis, rdap (domain expiry), websocket upgrade, push (dead man's switch via `/api/push/<token>`; tokens derive from the hub key per service)
 - `src/lib/server/apikey.ts` Bearer auth for `/api/v1/*` (status, incidents, markers) with read/write scopes; managed at `admin/api/keys`
 - subscribers: public double-opt-in webhook subscriptions (`/api/subscribe`, confirm/unsub links); dispatcher fans transitions out HMAC-signed through the egress guard
-- `admin/api/backup` exports/imports exportable config sections as JSON (merge or replace; auth sections never import)
+- `admin/api/backup` exports/imports exportable config sections as JSON (merge or replace; auth sections never import); `full` adds the durable tables (deploy, sealed secrets, hub keys, agents, api keys) which restore only under the same WHARFINGER_SECRET_KEY
 - `server.js` stamps `x-wharfinger-proto` per request (socket proto or X-Forwarded-Proto) and `server/bootstrap-env.mjs` points PROTOCOL_HEADER at it; without it adapter-node reports https unconditionally on plain-http installs
 - error surfaces: `src/routes/+error.svelte` (all statuses), `src/error.html` (fatal fallback), `CrashBoundary.svelte` in the root layout (recovery + copy debug)
 - `src/lib/shared/` types + pure math used by both sides (auth roles, drafts, maintenance, notify events)

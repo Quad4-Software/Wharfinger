@@ -179,6 +179,7 @@
 
 	let backupBusy = $state(false);
 	let backupMerge = $state(false);
+	let backupFull = $state(false);
 	let backupResult = $state('');
 	let exportPassphrase = $state('');
 	let importPassphrase = $state('');
@@ -189,8 +190,10 @@
 			// A passphrase export rides POST so the secret stays out of the
 			// request URL; empty means a plaintext export.
 			const data = exportPassphrase
-				? await api('/backup', { body: { passphrase: exportPassphrase } })
-				: await api('/backup');
+				? await api('/backup', {
+						body: { passphrase: exportPassphrase, full: backupFull }
+					})
+				: await api(`/backup${backupFull ? '?full=1' : ''}`);
 			const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
 			const a = document.createElement('a');
 			a.href = URL.createObjectURL(blob);
@@ -221,18 +224,28 @@
 			if ('encrypted' in rec && !importPassphrase) {
 				throw new Error('this backup is encrypted; enter its passphrase first');
 			}
-			const r = await api<{ applied: string[]; failed: { section: string; error: string }[] }>(
-				'/backup',
-				{
-					body: {
-						config: rec.encrypted ?? rec.config,
-						mode: backupMerge ? 'merge' : 'replace',
-						passphrase: importPassphrase || undefined
-					}
+			const r = await api<{
+				applied: string[];
+				failed: { section: string; error: string }[];
+				data?: { applied: string[]; failed: { table: string; error: string }[] };
+			}>('/backup', {
+				body: {
+					config: rec.encrypted ?? rec.config,
+					data: 'encrypted' in rec ? undefined : rec.data,
+					mode: backupMerge ? 'merge' : 'replace',
+					passphrase: importPassphrase || undefined
 				}
-			);
+			});
 			backupResult = `applied: ${r.applied.join(', ') || 'none'}\nfailed: ${
 				r.failed.map((f) => `${f.section} (${f.error})`).join(', ') || 'none'
+			}${
+				r.data
+					? `\ntables: ${r.data.applied.join(', ') || 'none'}${
+							r.data.failed.length
+								? `\ntable failures: ${r.data.failed.map((f) => `${f.table} (${f.error})`).join(', ')}`
+								: ''
+						}`
+					: ''
 			}`;
 			toast(r.failed.length === 0 ? 'success' : 'error', 'Import finished');
 			await load();
@@ -822,7 +835,8 @@
 				<p class="mb-4 text-xs text-faint">
 					Export every config section as JSON, or restore from a file. Merge adds imported services
 					by id; replace overwrites whole sections. Auth sections (admin, oidc, ldap) are never
-					imported.
+					imported. A full export also dumps deploy apps/releases/keys, sealed secrets, agents, and
+					api keys; sealed fields only open under the same WHARFINGER_SECRET_KEY.
 				</p>
 				<div class="mb-3 grid gap-3 sm:grid-cols-2">
 					<Field label="Export passphrase" hint="Seals the file; required again on restore.">
@@ -866,6 +880,9 @@
 					</label>
 					<label class="flex items-center gap-1.5 text-xs text-muted">
 						<input type="checkbox" bind:checked={backupMerge} /> merge services instead of replace
+					</label>
+					<label class="flex items-center gap-1.5 text-xs text-muted">
+						<input type="checkbox" bind:checked={backupFull} /> include deploy data and sealed keys
 					</label>
 				</div>
 				{#if backupResult}

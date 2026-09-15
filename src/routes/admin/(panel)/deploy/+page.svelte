@@ -11,7 +11,7 @@
 	import { fmtDateTime } from '$lib/utils/format';
 
 	let apps = $state<DeployApp[]>([]);
-	let jobs = $state<Job[]>([]);
+	let jobs = $state<(Job & { waitingReason?: string | null })[]>([]);
 	let agents = $state<{ id: string; name: string }[]>([]);
 	let loading = $state(true);
 	let formOpen = $state(false);
@@ -22,7 +22,7 @@
 		try {
 			const [a, j, ag] = await Promise.all([
 				api<{ apps: DeployApp[] }>('/deploy/apps'),
-				api<{ jobs: Job[] }>('/deploy/jobs'),
+				api<{ jobs: (Job & { waitingReason?: string | null })[] }>('/deploy/jobs'),
 				api<{ agents: { id: string; name: string }[] }>('/agents').catch(() => ({
 					agents: [] as { id: string; name: string }[]
 				}))
@@ -139,6 +139,9 @@
 		{#each jobs as job (job.id)}
 			<div class="flex items-center gap-3 px-4 py-2.5">
 				<span class="chip {jobTone(job.status)}">{job.status}</span>
+				{#if job.waitingReason}
+					<span class="chip border-degraded/50 text-degraded-fg">{job.waitingReason}</span>
+				{/if}
 				<span class="min-w-0 flex-1 truncate text-sm">{job.jobKey}</span>
 				<span class="shrink-0 text-xs text-faint">
 					{job.kind} · {fmtDateTime(new Date(job.createdAt).toISOString())}

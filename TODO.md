@@ -205,20 +205,20 @@ user-confirmed action path.
 
 ## Phase 6: HA and resilience
 
-- [ ] Queue durability audit: every job transition transactional,
+- [x] Queue durability audit: every job transition transactional,
       lease recovery on startup, orphan requeue, exactly-once
       semantics via idempotent execution keys
-- [ ] Agent executor resumes in-flight deploys after agent restart
+- [x] Agent executor resumes in-flight deploys after agent restart
       (state dir journal); reports unknown-outcome jobs so the hub
       can reconcile
-- [ ] Hub restart mid-deploy: running jobs marked
+- [x] Hub restart mid-deploy: running jobs marked
       `unknown`/`reconciling` until the agent reports; no blind
       requeue that could double-deploy
-- [ ] Multi-hub readiness: job claiming already lease-based; document
+- [x] Multi-hub readiness: job claiming already lease-based; document
       active/passive hub pattern (single-writer SQLite constraint)
-- [ ] Backup/restore covers deploy tables + sealed keys; restore
+- [x] Backup/restore covers deploy tables + sealed keys; restore
       drills documented
-- [ ] Graceful degradation: deploys pause when agent offline; queue
+- [x] Graceful degradation: deploys pause when agent offline; queue
       shows waiting jobs with reason
 
 ## Phase 6b: Enterprise identity and governance
