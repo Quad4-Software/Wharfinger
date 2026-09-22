@@ -54,10 +54,55 @@ export async function resolveEffective(
 	return { config: merged, raw, fileRaw, overrides };
 }
 
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+	return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+/**
+ * Restore file-level ${VAR} interpolation inside an override section.
+ * Overrides are stored verbatim and never interpolated, so a
+ * placeholder copied unchanged from the file would otherwise freeze
+ * into a literal string and break validation. Only leaves
+ * byte-identical to the file's own placeholder inherit the
+ * interpolated value; a placeholder invented in the panel stays
+ * literal, so overrides still cannot read arbitrary env vars.
+ */
+function inheritFileInterpolation(
+	fileVal: unknown,
+	resolvedVal: unknown,
+	overrideVal: unknown
+): unknown {
+	if (typeof overrideVal === 'string' && overrideVal.includes('${') && overrideVal === fileVal) {
+		return resolvedVal;
+	}
+	if (isPlainObject(overrideVal) && isPlainObject(fileVal)) {
+		const out: Record<string, unknown> = {};
+		for (const k of Object.keys(overrideVal)) {
+			out[k] = inheritFileInterpolation(
+				fileVal[k],
+				isPlainObject(resolvedVal) ? resolvedVal[k] : undefined,
+				overrideVal[k]
+			);
+		}
+		return out;
+	}
+	if (Array.isArray(overrideVal) && Array.isArray(fileVal)) {
+		return overrideVal.map((v, i) =>
+			inheritFileInterpolation(
+				fileVal[i],
+				Array.isArray(resolvedVal) ? resolvedVal[i] : undefined,
+				v
+			)
+		);
+	}
+	return overrideVal;
+}
+
 /**
  * Validate a merged document: the file document interpolated, with
- * override sections layered on top verbatim. Used by the runtime, the
- * section save path, and the raw TOML editor.
+ * override sections layered on top verbatim except for unchanged
+ * ${VAR} placeholders, which keep the file's interpolated value.
+ * Used by the runtime, the section save path, and the raw TOML editor.
  */
 export function validateMergedDoc(
 	fileRaw: Record<string, unknown>,
@@ -66,7 +111,9 @@ export function validateMergedDoc(
 ): StatusConfig {
 	const resolved = interpolateTrusted(fileRaw, source);
 	for (const [section, raw] of overrides) {
-		if ((SECTION_KEYS as readonly string[]).includes(section)) resolved[section] = raw;
+		if ((SECTION_KEYS as readonly string[]).includes(section)) {
+			resolved[section] = inheritFileInterpolation(fileRaw[section], resolved[section], raw);
+		}
 	}
 	return validateConfigDoc(resolved, source);
 }
@@ -102,12 +149,12 @@ export function validateMerged(
 	const resolved = interpolateTrusted(fileRaw, `section "${section}"`);
 	for (const [key, o] of overrides) {
 		if (key !== section && (SECTION_KEYS as readonly string[]).includes(key)) {
-			resolved[key] = o.raw;
+			resolved[key] = inheritFileInterpolation(fileRaw[key], resolved[key], o.raw);
 		}
 	}
 	// An absent value means the section is gone entirely, which is how
 	// cross-section references detect a required section going missing.
 	if (value === undefined) Reflect.deleteProperty(resolved, section);
-	else resolved[section] = value;
+	else resolved[section] = inheritFileInterpolation(fileRaw[section], resolved[section], value);
 	return validateConfigDoc(resolved, `section "${section}"`);
 }

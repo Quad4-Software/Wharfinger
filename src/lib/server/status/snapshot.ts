@@ -170,6 +170,11 @@ export class SnapshotBuilder {
 				url: cfg.site.url ?? null,
 				logoUrl: cfg.site.logo_url ?? null,
 				accent: cfg.site.accent,
+				ogTitle: cfg.site.og_title || null,
+				ogDescription: cfg.site.og_description || null,
+				ogImage: cfg.site.og_image || null,
+				twitterSite: cfg.site.twitter_site || null,
+				robots: cfg.site.robots,
 				announcement: cfg.site.announcement
 					? { text: cfg.site.announcement, severity: cfg.site.announcement_severity }
 					: null,

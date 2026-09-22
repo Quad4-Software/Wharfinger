@@ -1,4 +1,5 @@
 import * as v from 'valibot';
+import { SECURITY_CHECKS } from '$lib/shared/drafts';
 import { WEEKDAYS } from '$lib/shared/maintenance';
 import { NOTIFY_EVENTS } from '$lib/shared/notify';
 
@@ -322,6 +323,27 @@ const PushService = v.object({
 	degraded_ms: v.optional(v.number())
 });
 
+// External security posture check: fetches the URL through the egress
+// guard with a bounded manual redirect chain and grades TLS, security
+// headers, cookie flags, mixed content and security.txt into a 0-100
+// score. Reachable always reads up; warnings degrade; min_score sets
+// the pass bar; only an unreachable target reads as down.
+const SecurityService = v.object({
+	id: ServiceId,
+	name: v.string(),
+	group: v.optional(v.string(), 'General'),
+	description: v.optional(v.string()),
+	type: v.literal('security'),
+	url: HttpUrl,
+	// Subset of sub-checks to run; all run when unset or empty.
+	checks: v.optional(v.array(v.picklist(SECURITY_CHECKS))),
+	// 0-100 pass bar; scoring below it marks the service degraded.
+	min_score: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(100))),
+	interval_seconds: v.optional(v.number()),
+	timeout_ms: v.optional(v.number()),
+	degraded_ms: v.optional(v.number())
+});
+
 export const Service = v.variant('type', [
 	HttpService,
 	TcpService,
@@ -337,7 +359,8 @@ export const Service = v.variant('type', [
 	XmppService,
 	IrcService,
 	WebsocketService,
-	PushService
+	PushService,
+	SecurityService
 ]);
 
 const IncidentUpdate = v.object({
@@ -434,6 +457,7 @@ const RESERVED_PREFIXES = [
 	'/favicon',
 	'/_app',
 	'/feed.xml',
+	'/og.svg',
 	'/robots.txt',
 	'/sitemap.xml',
 	'/healthz',
@@ -626,7 +650,62 @@ const TelemetrySection = v.object({
 	client_reports: v.optional(v.boolean(), true),
 	// Cap on forwarded events per minute; identical events inside a
 	// minute are always collapsed regardless of this limit.
-	max_per_minute: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(1000)), 60)
+	max_per_minute: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(1000)), 60),
+	// Ingest pipeline for the Sentry-compatible endpoints at
+	// /api/<id>/envelope|store. local (default) writes straight to
+	// the db. relay scrubs envelopes then forwards them to
+	// upstream_dsn like a stateless Sentry Relay edge node, keeping a
+	// bounded in-memory retry buffer. queue spools envelopes under
+	// <data>/telemetry-spool/ and flushes to the local store in the
+	// background to smooth bursts. Overflow answers 429 rather than
+	// dropping silently.
+	ingest: v.optional(
+		v.pipe(
+			v.object({
+				mode: v.optional(v.picklist(['local', 'relay', 'queue']), 'local'),
+				// Sentry dsn of the upstream ingest in relay mode;
+				// another Wharfinger or external Sentry/GlitchTip.
+				upstream_dsn: v.optional(v.union([v.literal(''), HttpUrl]), ''),
+				upstream_timeout_ms: v.optional(
+					v.pipe(v.number(), v.integer(), v.minValue(500), v.maxValue(60_000)),
+					10_000
+				),
+				// Spool file cap in queue mode, pending-buffer cap in
+				// relay mode.
+				max_queue: v.optional(
+					v.pipe(v.number(), v.integer(), v.minValue(10), v.maxValue(100_000)),
+					1000
+				),
+				flush_interval_ms: v.optional(
+					v.pipe(v.number(), v.integer(), v.minValue(100), v.maxValue(60_000)),
+					1000
+				),
+				retry_base_ms: v.optional(
+					v.pipe(v.number(), v.integer(), v.minValue(100), v.maxValue(60_000)),
+					1000
+				),
+				retry_max_ms: v.optional(
+					v.pipe(v.number(), v.integer(), v.minValue(1000), v.maxValue(300_000)),
+					30_000
+				),
+				retry_attempts: v.optional(
+					v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(20)),
+					5
+				),
+				// Token bucket per project and per client ip, on top of
+				// the global /api limiter. 0 disables the extra buckets.
+				rate_limit_per_minute: v.optional(
+					v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(1_000_000)),
+					600
+				)
+			}),
+			v.check(
+				(i) => i.mode !== 'relay' || i.upstream_dsn !== '',
+				'ingest relay mode requires upstream_dsn'
+			)
+		),
+		{}
+	)
 });
 
 // Remote agent ingest. Agents push host metrics to POST /ingress or
@@ -720,7 +799,30 @@ const ConfigSchema = v.object({
 		description: v.optional(v.string(), ''),
 		url: v.optional(HttpUrl),
 		logo_url: v.optional(v.string()),
-		accent: v.optional(HexColor, '#10b981'),
+		accent: v.optional(HexColor, '#d9a648'),
+		// Social card overrides; blank falls back to title/description.
+		og_title: v.optional(v.string(), ''),
+		og_description: v.optional(v.string(), ''),
+		// Blank uses the generated /og.svg card. Only https URLs or
+		// root-relative paths are allowed so crawlers never get a
+		// plaintext http or protocol-relative target.
+		og_image: v.optional(
+			v.pipe(
+				v.string(),
+				v.check(
+					(s) => s === '' || s.startsWith('https://') || (s.startsWith('/') && !s.startsWith('//')),
+					'must be empty, an https:// URL, or a root-relative path'
+				)
+			),
+			''
+		),
+		// twitter:site handle including @; empty disables the tag.
+		twitter_site: v.optional(
+			v.pipe(v.string(), v.regex(/^(@[A-Za-z0-9_]{1,15})?$/, 'must be a handle like @name')),
+			''
+		),
+		// Crawler policy for the public status pages.
+		robots: v.optional(v.picklist(['index', 'noindex']), 'index'),
 		announcement: v.optional(v.string()),
 		announcement_severity: v.optional(v.picklist(['info', 'warning', 'critical']), 'info'),
 		// Origins allowed to embed the page in an iframe. Each entry is
@@ -750,7 +852,15 @@ const ConfigSchema = v.object({
 				30
 			),
 			history_days: v.optional(v.pipe(v.number(), v.integer(), v.minValue(7), v.maxValue(365)), 90),
-			show_uptime_legend: v.optional(v.boolean(), true)
+			show_uptime_legend: v.optional(v.boolean(), true),
+			// Default UI locale for public pages; visitors may still
+			// override via ?lang= or the wf-lang cookie.
+			locale: v.optional(
+				v.pipe(
+					v.string(),
+					v.regex(/^[a-z]{2,3}(-[a-z0-9]{2,8})*$/i, 'expected a locale tag like en or pt-BR')
+				)
+			)
 		}),
 		{}
 	),

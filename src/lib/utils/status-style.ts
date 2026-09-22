@@ -28,11 +28,3 @@ export const DAY_CLASS: Record<string, string> = {
 	maintenance: 'bg-maint/90',
 	nodata: 'bg-nodata/60'
 };
-
-export const DAY_LABEL: Record<string, string> = {
-	up: 'Operational',
-	degraded: 'Partial disruption',
-	down: 'Major disruption',
-	maintenance: 'Maintenance',
-	nodata: 'No data'
-};

@@ -138,6 +138,17 @@ CREATE TABLE IF NOT EXISTS config_sections (
 	updated_at INTEGER NOT NULL
 );
 
+-- Saved revisions of the effective TOML document from the config
+-- editor. Pruned to a bounded tail so restores reach back without
+-- growing the db.
+CREATE TABLE IF NOT EXISTS config_history (
+	id     INTEGER PRIMARY KEY AUTOINCREMENT,
+	doc    TEXT NOT NULL,
+	author TEXT,
+	at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_config_history_at ON config_history (at);
+
 -- Audit trail for admin actions and auth events.
 CREATE TABLE IF NOT EXISTS audit_log (
 	id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -436,6 +447,28 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_chat_messages_room ON chat_messages (room_id, id);
 
+-- Uploaded files referenced by chat messages. Bytes live on disk
+-- under <data>/chat-attachments/; path stores the relative key
+-- '<room>/<id>[.<ext>]'. message_id is null until a send claims the
+-- upload; deleted_at tombstones access when the parent message (or
+-- the upload itself) is deleted. Files are removed by the prune
+-- sweep, not at tombstone time.
+CREATE TABLE IF NOT EXISTS chat_attachments (
+	id          TEXT PRIMARY KEY,
+	message_id  INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE,
+	room_id     TEXT NOT NULL REFERENCES chat_rooms(id) ON DELETE CASCADE,
+	uploader_id INTEGER NOT NULL,
+	filename    TEXT NOT NULL,
+	mime        TEXT NOT NULL,
+	size        INTEGER NOT NULL,
+	sha256      TEXT NOT NULL,
+	path        TEXT NOT NULL,
+	created_at  INTEGER NOT NULL,
+	deleted_at  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_chat_attachments_message ON chat_attachments (message_id);
+CREATE INDEX IF NOT EXISTS idx_chat_attachments_room ON chat_attachments (room_id);
+
 -- Durable job queue. See .agents/skills/job-queue. job_key dedupes
 -- enqueue; lease_owner is a per-claim random token so only the claim
 -- holder can heartbeat or finish. 'unknown' marks jobs whose outcome
@@ -551,9 +584,33 @@ CREATE TABLE IF NOT EXISTS secret_sets (
 	id         TEXT PRIMARY KEY,
 	name       TEXT NOT NULL UNIQUE,
 	sealed     TEXT NOT NULL,
+	updated_by TEXT,
 	created_at INTEGER NOT NULL,
 	updated_at INTEGER NOT NULL
 );
+
+-- Point-in-time history for secret sets; changed_keys holds key names
+-- only, never values. Capped per set by SecretSetStore.
+CREATE TABLE IF NOT EXISTS secret_set_versions (
+	id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	set_id       TEXT NOT NULL REFERENCES secret_sets(id) ON DELETE CASCADE,
+	version      INTEGER NOT NULL,
+	sealed       TEXT NOT NULL,
+	changed_keys TEXT NOT NULL,
+	actor        TEXT,
+	created_at   INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_secret_set_versions ON secret_set_versions (set_id, version);
+
+-- Browser Web Push subscriptions; endpoint is the push-service
+-- credential, user_id null for anonymous status-page subscribers.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+	id TEXT PRIMARY KEY, endpoint TEXT NOT NULL UNIQUE,
+	p256dh TEXT, auth TEXT, user_agent TEXT,
+	user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+	created_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, disabled_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_push_subs_user ON push_subscriptions (user_id);
 `;
 
 export function openDb(dir = dataDir()): DatabaseSync {
@@ -676,6 +733,13 @@ function migrate(db: DatabaseSync): void {
 		db.exec(
 			'CREATE INDEX IF NOT EXISTS idx_deploy_apps_preview ON deploy_apps (preview_of, preview_pr)'
 		);
+	}
+	const secretCols = (
+		db.prepare("SELECT name FROM pragma_table_info('secret_sets')").all() as { name: string }[]
+	).map((c) => c.name);
+	// Username of the last writer; mirrors the version row actor.
+	if (!secretCols.includes('updated_by')) {
+		db.exec('ALTER TABLE secret_sets ADD COLUMN updated_by TEXT');
 	}
 	const jobCols = (
 		db.prepare("SELECT name FROM pragma_table_info('jobs')").all() as { name: string }[]

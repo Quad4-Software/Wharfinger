@@ -81,4 +81,38 @@ export class ConfigStore {
 	async clearAll(): Promise<void> {
 		await this.db.exec('DELETE FROM config_sections');
 	}
+
+	// Saved TOML document revisions for the config editor. doc is the
+	// exact text that was applied, so a restore is a round-trip through
+	// the same validation path.
+	async recordRevision(doc: string, author: string | null, now = Date.now()): Promise<void> {
+		await this.db
+			.prepare('INSERT INTO config_history (doc, author, at) VALUES (?, ?, ?)')
+			.run(doc, author, now);
+		// Keep the newest CONFIG_HISTORY_MAX rows.
+		const keep = (await this.db
+			.prepare('SELECT id FROM config_history ORDER BY id DESC LIMIT ?')
+			.all(CONFIG_HISTORY_MAX)) as unknown as { id: number }[];
+		if (keep.length === 0) return;
+		await this.db
+			.prepare(`DELETE FROM config_history WHERE id NOT IN (${keep.map(() => '?').join(',')})`)
+			.run(...keep.map((k) => k.id));
+	}
+
+	async revisions(limit = 20): Promise<{ id: number; author: string | null; at: number }[]> {
+		return (await this.db
+			.prepare('SELECT id, author, at FROM config_history ORDER BY id DESC LIMIT ?')
+			.all(limit)) as unknown as { id: number; author: string | null; at: number }[];
+	}
+
+	async revision(
+		id: number
+	): Promise<{ id: number; doc: string; author: string | null; at: number } | null> {
+		const r = (await this.db
+			.prepare('SELECT id, doc, author, at FROM config_history WHERE id = ?')
+			.get(id)) as { id: number; doc: string; author: string | null; at: number } | undefined;
+		return r ?? null;
+	}
 }
+
+const CONFIG_HISTORY_MAX = 100;

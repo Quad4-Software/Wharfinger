@@ -444,7 +444,7 @@ export class DeployStore {
 				.prepare(`UPDATE deploy_apps SET ${sets.join(', ')} WHERE id = ?${guard}`)
 				.run(...args);
 			if (!Number(n.changes))
-				throw new DeployError(409, 'app changed since it was loaded; reload and retry');
+				throw new DeployError(409, 'app changed since it was loaded. Reload and retry');
 		} catch (err) {
 			if (err instanceof DeployError) throw err;
 			if (isUniqueViolation(err)) throw new DeployError(409, 'an app with that name exists');
@@ -619,7 +619,7 @@ export class DeployStore {
 		}
 		const res = await this.db.prepare(sql).run(...args);
 		if (!Number(res.changes)) {
-			throw new DeployError(409, 'app changed since it was loaded; reload and retry');
+			throw new DeployError(409, 'app changed since it was loaded. Reload and retry');
 		}
 	}
 

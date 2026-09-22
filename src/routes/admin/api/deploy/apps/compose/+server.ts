@@ -35,7 +35,7 @@ export const POST: RequestHandler = async (event) => {
 	const plan = parseCompose(text);
 	if (project) plan.project = project;
 	if (plan.services.length === 0) {
-		return apiError(422, `no convertible services: ${plan.warnings.join('; ') || 'empty file'}`);
+		return apiError(422, `no convertible services: ${plan.warnings.join(', ') || 'empty file'}`);
 	}
 	if (body.preview === true) return apiJson({ ok: true, plan });
 	const failed = plan.services.filter((s) => s.error);

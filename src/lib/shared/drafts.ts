@@ -22,9 +22,34 @@ export interface ServiceDraft {
 		| 'xmpp'
 		| 'irc'
 		| 'websocket'
-		| 'push';
+		| 'push'
+		| 'security';
 	[key: string]: unknown;
 }
+
+// Sub-check names for the security service type, shared between the
+// config schema picklist, the checker defaults, and the editor chips.
+export const SECURITY_CHECKS = [
+	'headers',
+	'tls',
+	'cookies',
+	'redirects',
+	'mixed-content',
+	'security-txt',
+	'server-disclosure'
+] as const;
+
+export type SecurityCheckName = (typeof SECURITY_CHECKS)[number];
+
+export const SECURITY_CHECK_LABELS: Record<SecurityCheckName, string> = {
+	headers: 'Security headers',
+	tls: 'TLS certificate',
+	cookies: 'Cookie flags',
+	redirects: 'Redirect chain',
+	'mixed-content': 'Mixed content',
+	'security-txt': 'security.txt',
+	'server-disclosure': 'Server disclosure'
+};
 
 export interface MaintDraft {
 	id?: string;

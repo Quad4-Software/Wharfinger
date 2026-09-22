@@ -1,6 +1,7 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestEvent } from '@sveltejs/kit';
 import type { Runtime } from '$lib/server/runtime';
+import { trustForwarded } from '$lib/server/proxy';
 import type { Permission } from './authz';
 import type { User } from './users';
 
@@ -103,23 +104,23 @@ export function requirePerm(event: RequestEvent, perm: Permission): User {
 }
 
 // Same proxy trust rule as the rate-limit key: forwarded headers are
-// only honored when WHARFINGER_TRUST_PROXY marks the deployment as
-// proxied, otherwise the socket address is authoritative so audit
-// entries cannot be forged with a client-supplied XFF.
-const TRUST_PROXY = /^(1|true|yes)$/i.test(process.env.WHARFINGER_TRUST_PROXY ?? '');
-
+// only honored when WHARFINGER_TRUST_PROXY covers the socket peer
+// (lib/server/proxy.ts), otherwise the socket address is authoritative
+// so audit entries cannot be forged with a client-supplied XFF.
 export function clientIp(event: RequestEvent): string {
-	if (TRUST_PROXY) {
+	let peer: string | null;
+	try {
+		peer = event.getClientAddress();
+	} catch {
+		peer = null;
+	}
+	if (trustForwarded(peer)) {
 		const fwd = event.request.headers.get('x-forwarded-for');
 		if (fwd) return fwd.split(',')[0]?.trim() ?? 'unknown';
 		const real = event.request.headers.get('x-real-ip');
 		if (real) return real;
 	}
-	try {
-		return event.getClientAddress();
-	} catch {
-		return 'unknown';
-	}
+	return peer ?? 'unknown';
 }
 
 export async function audit(

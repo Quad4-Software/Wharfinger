@@ -23,11 +23,13 @@
 		"test:watch": "vitest",
 		"test:coverage": "vitest run --coverage",
 		"test:e2e": "playwright test",
+		"vitals": "node scripts/vitals.mjs",
 		"knip": "knip",
 		"check:files": "node scripts/check-files.mjs",
+		"check:i18n": "node scripts/check-i18n.mjs",
 		"check:tests": "node scripts/check-tests.mjs",
 		"check:coverage": "vitest run --coverage",
-		"verify": "pnpm run check && pnpm run lint && pnpm run format:check && pnpm run test && pnpm run knip && pnpm run check:files && pnpm run check:tests && pnpm run build"
+		"verify": "pnpm run check && pnpm run lint && pnpm run format:check && pnpm run test && pnpm run knip && pnpm run check:files && pnpm run check:i18n && pnpm run check:tests && pnpm run build"
 	},
 	"dependencies": {
 		"@fontsource-variable/inter": "5.3.0",
@@ -42,6 +44,7 @@
 		"undici": "8.10.2",
 		"uqr": "0.1.3",
 		"valibot": "1.4.2",
+		"web-push": "^3.6.7",
 		"ws": "^8.21.3",
 		"yaml": "2.8.1"
 	},
@@ -56,6 +59,7 @@
 		"@testing-library/jest-dom": "7.0.1",
 		"@testing-library/svelte": "5.4.2",
 		"@types/node": "26.4.1",
+		"@types/web-push": "^3.6.4",
 		"@types/ws": "^8.18.1",
 		"@typescript/native": "npm:typescript@7.0.2",
 		"@vitejs/devtools": "0.6.3",

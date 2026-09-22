@@ -125,6 +125,15 @@ export interface StatusSnapshot {
 		/** Configured logo URL, absolute or root-relative; null when unset. */
 		logoUrl: string | null;
 		accent: string;
+		/** Social card overrides; null falls back to title/description. */
+		ogTitle: string | null;
+		ogDescription: string | null;
+		/** og:image override (https URL or root-relative path); null uses /og.svg. */
+		ogImage: string | null;
+		/** twitter:site handle including @; null disables the tag. */
+		twitterSite: string | null;
+		/** Crawler policy applied to public status pages. */
+		robots: 'index' | 'noindex';
 		announcement: { text: string; severity: 'info' | 'warning' | 'critical' } | null;
 		links: { label: string; href: string }[];
 	};
@@ -138,4 +147,17 @@ export interface StatusSnapshot {
 	serviceGroups: GroupRef[];
 	historyDays: number;
 	refreshSeconds: number;
+}
+
+/**
+ * One row in the admin notification-center feed
+ * (GET <base>/api/notifications). href is panel-relative; the client
+ * prefixes the configured admin base path.
+ */
+export interface NotifyFeedItem {
+	kind: 'chat' | 'incident' | 'delivery' | 'audit';
+	title: string;
+	sub: string | null;
+	at: number;
+	href: string | null;
 }

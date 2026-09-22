@@ -51,7 +51,7 @@ export async function saveSectionValue(
 	const eff = rt.effective();
 	const current = eff.overrides.get(section)?.updatedAt ?? null;
 	if (expected !== undefined && expected !== current) {
-		throw new SectionError(409, 'this section was changed by someone else; reload and try again');
+		throw new SectionError(409, 'this section was changed by someone else. Reload and try again');
 	}
 
 	const plan = planSectionSave(eff.fileRaw, eff.overrides, section, value);

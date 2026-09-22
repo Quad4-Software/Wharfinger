@@ -212,7 +212,9 @@ export class IconCache {
 
 /** Public https origin used as the icon search base for a service. */
 function iconBaseUrl(s: ServiceConfig): string {
-	if (s.type === 'http' || s.type === 'json') return new URL(s.url).origin;
+	if (s.type === 'http' || s.type === 'json' || s.type === 'security') {
+		return new URL(s.url).origin;
+	}
 	// Push services have no remote target; nothing to icon.
 	if (s.type === 'push') return '';
 	if (s.type === 'websocket') {

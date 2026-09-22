@@ -15,6 +15,9 @@ const DATA_TABLES: { table: string; pk: string }[] = [
 	{ table: 'deploy_releases', pk: 'id' },
 	{ table: 'hub_keys', pk: 'id' },
 	{ table: 'secret_sets', pk: 'id' },
+	// Sealed history blobs; ordered after secret_sets so the parent
+	// rows exist before the FK children are inserted.
+	{ table: 'secret_set_versions', pk: 'id' },
 	{ table: 'agents', pk: 'id' },
 	{ table: 'api_keys', pk: 'id' }
 ];

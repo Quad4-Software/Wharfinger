@@ -16,6 +16,8 @@ import { MarkerStore } from './store/markers';
 import { PushStore } from './store/push';
 import { ApiKeyStore } from './store/apikeys';
 import { SubscriberStore } from './store/subscribers';
+import { PushSubStore } from './store/pushsubs';
+import { vapidKeys } from './notify/webpush';
 import { RateLimiter } from './http/ratelimit';
 import { makeEgress, type Egress } from './http/egress';
 import {
@@ -48,6 +50,7 @@ import { getScanStore } from './scan/store';
 import { DeployStore } from './deploy/store';
 import { sweepPreviews } from './deploy/preview';
 import { bindTelemetry } from './telemetry';
+import { maybeStartFlush } from './telemetry/pipeline';
 
 export interface Runtime {
 	config: StatusConfig;
@@ -71,6 +74,7 @@ export interface Runtime {
 	markers: MarkerStore;
 	apiKeys: ApiKeyStore;
 	subscribers: SubscriberStore;
+	pushSubs: PushSubStore;
 	agents: AgentStore;
 	edge: EdgeStore;
 	icons: IconCache;
@@ -121,6 +125,7 @@ export function getRuntime(): Runtime {
 	const markers = new MarkerStore(db);
 	const apiKeys = new ApiKeyStore(db);
 	const subscribers = new SubscriberStore(db);
+	const pushSubs = new PushSubStore(db);
 	const agents = new AgentStore(db);
 	const edge = new EdgeStore(db);
 	const users = new UserStore(db);
@@ -134,7 +139,7 @@ export function getRuntime(): Runtime {
 	const notifyLog = new NotificationLog(db);
 	const telemetry = new TelemetryStore(db);
 	const agentReleases = new AgentReleaseStore(db, dataDir());
-	const chat = new ChatStore(db, users);
+	const chat = new ChatStore(db, users, dataDir());
 	const jobs = new JobQueue(db);
 	const deploys = new DeployStore(db);
 
@@ -164,7 +169,10 @@ export function getRuntime(): Runtime {
 	const icons = new IconCache(join(dataDir(), 'icons'), monitor.userAgent, egress);
 	const snapshot = new SnapshotBuilder(() => cfg, monitor, checks, incidents, icons, db, markers);
 	const hub = new SseHub();
-	const dispatcher = new NotifyDispatcher(() => cfg, notifyLog, egress, subscribers);
+	const dispatcher = new NotifyDispatcher(() => cfg, notifyLog, egress, subscribers, {
+		subs: pushSubs,
+		vapid: () => vapidKeys()
+	});
 	dispatcher.attach(monitor);
 	const alerter = new AgentAlerter(() => cfg, agents, dispatcher);
 
@@ -205,6 +213,7 @@ export function getRuntime(): Runtime {
 		await edge.prune(cutoff);
 		await telemetry.prune();
 		await pushBeats.prune(cfg.services.map((s) => s.id));
+		await pushSubs.prune(Date.now() - 90 * 86_400_000);
 		await markers.prune(cutoff);
 		await chat.prune();
 		await jobs.prune(Date.now() - 30 * 86_400_000);
@@ -245,6 +254,9 @@ export function getRuntime(): Runtime {
 	const ready = (async () => {
 		await db.exec('SELECT 1 FROM hub_keys LIMIT 1');
 		await apply();
+		// Create the VAPID keypair on first boot so the subscribe
+		// endpoint can hand out the public key immediately.
+		vapidKeys();
 
 		// WHARFINGER_ADMIN_ENABLED=false wins over config and cannot be
 		// undone from inside the panel.
@@ -278,7 +290,12 @@ export function getRuntime(): Runtime {
 		// resolves; the assertion defeats control-flow narrowing to
 		// the pre-assignment null.
 		const rt = runtime as Runtime | null;
-		if (rt) startAnomaly(rt);
+		if (rt) {
+			startAnomaly(rt);
+			// Drain a leftover telemetry spool from a previous queue-mode
+			// run even if no ingest request has arrived yet.
+			maybeStartFlush(rt);
+		}
 		console.log(`[monitor] started, ${cfg.services.length} service(s)`);
 	})();
 	ready.catch((err: unknown) => {
@@ -303,6 +320,7 @@ export function getRuntime(): Runtime {
 		markers,
 		apiKeys,
 		subscribers,
+		pushSubs,
 		agents,
 		edge,
 		icons,

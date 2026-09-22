@@ -44,6 +44,17 @@ export interface SecretSetInfo {
 	name: string;
 	/** Key names only; values never leave the store unsealed via API. */
 	keys: string[];
+	/** Username of the last writer; null for sets written pre-history. */
+	updatedBy: string | null;
 	createdAt: number;
 	updatedAt: number;
+}
+
+/** One entry in a set's version history. Metadata only, no values. */
+export interface SecretSetVersionInfo {
+	version: number;
+	/** Key names added, removed, or changed vs the previous version. */
+	changedKeys: string[];
+	actor: string | null;
+	createdAt: number;
 }

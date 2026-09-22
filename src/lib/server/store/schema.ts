@@ -107,6 +107,12 @@ const TABLES: Record<string, TableSpec> = {
 		indexes: [['room_id', 'id']],
 		cascades: { room_id: 'chat_rooms' }
 	}),
+	chat_attachments: spec({
+		pk: 'text',
+		pkCols: ['id'],
+		indexes: [['message_id'], ['room_id']],
+		cascades: { room_id: 'chat_rooms', message_id: 'chat_messages' }
+	}),
 	jobs: spec({
 		pk: 'int',
 		pkCols: ['id'],
@@ -145,6 +151,19 @@ const TABLES: Record<string, TableSpec> = {
 		cascades: { team_id: 'teams', group_id: 'service_groups' }
 	}),
 	secret_sets: spec({ pk: 'text', pkCols: ['id'], uniques: [['name']] }),
+	push_subscriptions: spec({
+		pk: 'text',
+		pkCols: ['id'],
+		uniques: [['endpoint']],
+		indexes: [['user_id']],
+		cascades: { user_id: 'users' }
+	}),
+	secret_set_versions: spec({
+		pk: 'int',
+		pkCols: ['id'],
+		uniques: [['set_id', 'version']],
+		cascades: { set_id: 'secret_sets' }
+	}),
 	scan_reports: spec({ pk: 'text', pkCols: ['id'], indexes: [['app_id', 'started_at']] }),
 	scan_findings: spec({ pk: 'none', indexes: [['report_id']] }),
 	recommendations: spec({

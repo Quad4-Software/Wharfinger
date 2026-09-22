@@ -75,5 +75,12 @@ export default tseslint.config(
 			'svelte/no-navigation-without-resolve': 'off'
 		}
 	},
+	{
+		// The generated tsconfig excludes the service worker (it lives
+		// in the webworker lib context, compiled standalone by vite), so
+		// type-aware rules have no project to attach to here.
+		files: ['src/service-worker.ts'],
+		extends: [tseslint.configs.disableTypeChecked]
+	},
 	prettier
 );

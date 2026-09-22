@@ -8,10 +8,16 @@ name = "Quad4 Software"
 # title defaults to "<name> Status"
 description = "Live status and uptime history for Quad4 Software services."
 url = "${SITE_URL:-https://status.quad4.io}"
-accent = "#10b981"
+accent = "#d9a648"
 # announcement = "We are investigating elevated API latency."
 # announcement_severity = "warning"  # info | warning | critical
 # logo_url = "/logo.svg"
+# Social card overrides (og:* / twitter:* meta on the public pages).
+# og_title = "Quad4 Software Status"
+# og_description = "Live status and uptime history."
+# og_image = "/og.svg"    # https URL or /path; blank uses the generated card
+# twitter_site = "@quad4"
+# robots = "index"        # index | noindex
 
 [page]
 refresh_seconds = 30   # client cache/poll cadence
@@ -227,6 +233,20 @@ expected_open = [22, 25, 53, 80, 443, 465, 587, 993]
 # name = "Realtime socket"
 # type = "websocket"
 # url = "wss://example.com/ws"
+#
+# security: external security posture grade (0-100) for a site. Fetches
+#   the URL through the egress guard (up to 5 validated redirects) and
+#   scores TLS, security headers, cookie flags, mixed content and
+#   security.txt. Up when reachable and above min_score, degraded on
+#   warnings or a low score, down when unreachable.
+# [[services]]
+# id = "site-posture"
+# name = "Site security posture"
+# type = "security"
+# url = "https://example.com"
+# min_score = 70          # optional; degraded below this
+# checks = ["headers", "tls", "cookies", "redirects", "mixed-content",
+#           "security-txt", "server-disclosure"]   # optional subset; all run when unset
 #
 # push: dead man's switch for cron jobs and batch pipelines. The job
 # calls its unique check-in URL (Admin -> Services -> copy icon) every
@@ -458,3 +478,26 @@ dsn = "https://e4312b8cd18c427c803fb19041285df8@bugs.quad4.io/4"
 environment = "production"
 client_reports = true   # forward browser crashes
 max_per_minute = 60     # event cap; duplicates always collapse
+
+# Ingest pipeline for the local Sentry-compatible endpoints
+# (/api/<projectId>/envelope|store). Defaults change nothing.
+#   mode = "local"   write straight to the db (default)
+#   mode = "relay"   stateless edge node: scrub each envelope, then
+#                    forward to upstream_dsn (another Wharfinger or
+#                    Sentry/GlitchTip) through the egress guard with a
+#                    bounded in-memory retry buffer; no local writes
+#   mode = "queue"   spool envelopes under <data>/telemetry-spool/ and
+#                    flush to the local store in the background
+# Overflow answers 429 rather than dropping silently. Relay requires
+# upstream_dsn. Event ids are deduped against a small in-memory LRU
+# before any store write in every mode.
+# [telemetry.ingest]
+# mode = "local"
+# upstream_dsn = "https://<public_key>@hub.example.com/4"
+# upstream_timeout_ms = 10000
+# max_queue = 1000            # spool files or relay buffer entries
+# flush_interval_ms = 1000    # queue drain cadence
+# retry_base_ms = 1000        # relay backoff base
+# retry_max_ms = 30000        # relay backoff cap
+# retry_attempts = 5
+# rate_limit_per_minute = 600 # per project and per client ip; 0 = off

@@ -4,6 +4,17 @@
 // the role-name policy enforced by the roles API.
 export type Role = string;
 
+// Role row as returned by admin/api/roles: the permission set plus
+// the member count used to block deleting in-use roles.
+export interface RoleInfo {
+	name: string;
+	label: string;
+	permissions: string[];
+	builtin: boolean;
+	createdAt: number;
+	members: number;
+}
+
 export interface PublicUser {
 	id: number;
 	username: string;

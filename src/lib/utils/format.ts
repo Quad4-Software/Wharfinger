@@ -9,16 +9,16 @@ export function fmtMs(v: number | null): string {
 	return `${(v / 1000).toFixed(2)}s`;
 }
 
-export function fmtDate(iso: string): string {
-	return new Date(iso).toLocaleDateString(undefined, {
+export function fmtDate(iso: string, locale?: string): string {
+	return new Date(iso).toLocaleDateString(locale, {
 		year: 'numeric',
 		month: 'short',
 		day: 'numeric'
 	});
 }
 
-export function fmtDateTime(iso: string): string {
-	return new Date(iso).toLocaleString(undefined, {
+export function fmtDateTime(iso: string, locale?: string): string {
+	return new Date(iso).toLocaleString(locale, {
 		month: 'short',
 		day: 'numeric',
 		hour: '2-digit',
@@ -26,7 +26,7 @@ export function fmtDateTime(iso: string): string {
 	});
 }
 
-export function relativeTime(isoOrMs: string | number, now = Date.now()): string {
+export function relativeTime(isoOrMs: string | number, now = Date.now(), locale?: string): string {
 	const then = typeof isoOrMs === 'string' ? Date.parse(isoOrMs) : isoOrMs;
 	const diff = now - then;
 	const abs = Math.abs(diff);
@@ -36,11 +36,12 @@ export function relativeTime(isoOrMs: string | number, now = Date.now()): string
 		[60_000, 'minute'],
 		[1_000, 'second']
 	];
-	const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+	const rtf = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
 	for (const [ms, unit] of units) {
 		if (abs >= ms) return rtf.format(Math.round(-diff / ms), unit);
 	}
-	return 'just now';
+	// Sub-second: Intl renders "now" / "jetzt" etc for the locale.
+	return rtf.format(0, 'second');
 }
 
 const BYTE_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
