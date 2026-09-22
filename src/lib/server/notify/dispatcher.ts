@@ -10,8 +10,11 @@ import { expandWindows } from '$lib/server/status/snapshot';
 import type { NotificationLog } from './log';
 import type { Egress, FetchInit } from '$lib/server/http/egress';
 import type { SubscriberStore } from '$lib/server/store/subscribers';
+import type { PushSubStore } from '$lib/server/store/pushsubs';
+import type { VapidKeys } from 'web-push';
 import { renderMessage, type NotifyContext } from './templates';
 import { sendToTarget } from './senders';
+import { sendPush, vapidSubject } from './webpush';
 
 interface Transition {
 	service: ServiceConfig;
@@ -55,7 +58,10 @@ export class NotifyDispatcher {
 		private readonly config: () => StatusConfig,
 		private readonly log: NotificationLog,
 		private readonly egress: Egress,
-		private readonly subscribers?: SubscriberStore
+		private readonly subscribers?: SubscriberStore,
+		// Browser push fanout: vapid is a lazy accessor so the identity
+		// file is only touched when a dispatch actually happens.
+		private readonly push?: { subs: PushSubStore; vapid: () => VapidKeys }
 	) {}
 
 	private enqueue(p: Promise<void>): void {
@@ -189,6 +195,60 @@ export class NotifyDispatcher {
 			});
 		await Promise.allSettled(jobs);
 		await this.fanOutSubscribers(ctx, siteName);
+		await this.fanOutPush(ctx, siteName, siteUrl);
+	}
+
+	/**
+	 * Browser Web Push fanout: every live subscription gets the event,
+	 * gated by the same cooldown key rules as configured targets. The
+	 * log gets one aggregate entry per event rather than one row per
+	 * endpoint; dead endpoints (404/410) are tombstoned in place.
+	 */
+	private async fanOutPush(
+		ctx: Omit<NotifyContext, 'siteName' | 'siteUrl'>,
+		siteName: string,
+		siteUrl: string | null
+	): Promise<void> {
+		const push = this.push;
+		if (!push || ctx.event === 'test') return;
+		if (this.coolingDown('webpush', ctx.serviceId ?? null, ctx.event)) return;
+		const subs = await push.subs.active();
+		if (subs.length === 0) return;
+		const msg = renderMessage({ ...ctx, siteName, siteUrl });
+		const payload = JSON.stringify({
+			title: msg.title,
+			body: msg.body,
+			url: msg.clickUrl ?? '/'
+		});
+		const deps = {
+			keys: push.vapid(),
+			subject: vapidSubject(siteUrl),
+			urgency: msg.priority >= 4 ? ('high' as const) : ('normal' as const),
+			timeoutMs: this.config().notifications.timeout_ms,
+			egress: this.egress
+		};
+		const errs: string[] = [];
+		await Promise.allSettled(
+			subs.map(async (sub) => {
+				const r = await sendPush(sub, payload, deps);
+				if (r.ok) {
+					await push.subs.markSeen(sub.endpoint);
+					return;
+				}
+				// RFC 8030: the push service says the subscription is gone.
+				if (r.status === 404 || r.status === 410) await push.subs.disable(sub.id);
+				errs.push(r.error ?? 'send failed');
+			})
+		);
+		await this.log.record({
+			target: 'webpush',
+			kind: 'webpush',
+			event: ctx.event,
+			serviceId: ctx.serviceId ?? null,
+			ok: errs.length === 0,
+			status: null,
+			error: errs.length ? `${errs.length} of ${subs.length} endpoints failed: ${errs[0]}` : null
+		});
 	}
 
 	/** Public webhook subscribers get the same transitions, HMAC-signed. */
