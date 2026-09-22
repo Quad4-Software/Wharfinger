@@ -152,6 +152,7 @@ const ACTION_MAP: Partial<Record<string, ActionInfo>> = {
 	'secrets.update': { label: 'Updated a secret set', kind: 'warn' },
 	'secrets.delete': { label: 'Deleted a secret set', kind: 'bad' },
 	'secrets.reveal': { label: 'Revealed a secret', kind: 'warn' },
+	'secrets.restore': { label: 'Restored a secret set version', kind: 'warn' },
 	'notifications.test': { label: 'Sent a test notification', kind: 'info' },
 	'notify.target': { label: 'Changed notification targets', kind: 'info' },
 	'notify.test': { label: 'Sent a test notification', kind: 'info' },

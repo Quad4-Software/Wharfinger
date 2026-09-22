@@ -26,7 +26,7 @@ interface CreateBody {
 }
 
 export const POST: RequestHandler = async (event) => {
-	requirePerm(event, 'secrets.manage');
+	const user = requirePerm(event, 'secrets.manage');
 	const rt = getRuntime();
 	const body = await readJson<CreateBody>(event.request, 512 * 1024);
 	const entries = parseEntries(body.entries ?? {});
@@ -34,7 +34,8 @@ export const POST: RequestHandler = async (event) => {
 	try {
 		const set = await getSecretStore(rt.db).create(
 			typeof body.name === 'string' ? body.name : '',
-			entries
+			entries,
+			user.username
 		);
 		await audit(
 			rt,

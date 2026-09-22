@@ -1,14 +1,14 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Copy, Eye, KeyRound, Pencil, Plus, Trash } from '@lucide/svelte';
+	import { Copy, Eye, KeyRound, Pencil, Plus, RotateCcwClock, Trash } from '@lucide/svelte';
 	import PageHeader from '$lib/components/admin/PageHeader.svelte';
 	import Field from '$lib/components/admin/Field.svelte';
 	import Modal from '$lib/components/admin/Modal.svelte';
 	import ConfirmDialog from '$lib/components/admin/ConfirmDialog.svelte';
-	import { api, ApiError, errMessage } from '$lib/state/admin.svelte';
+	import { api, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
-	import { fmtDateTime } from '$lib/utils/format';
-	import type { SecretSetInfo } from '$lib/shared/groups';
+	import { fmtDateTime, relativeTime } from '$lib/utils/format';
+	import type { SecretSetInfo, SecretSetVersionInfo } from '$lib/shared/groups';
 
 	let sets = $state<SecretSetInfo[]>([]);
 	let loading = $state(true);
@@ -26,6 +26,14 @@
 	let revealConfirmOpen = $state(false);
 	let revealed = $state<{ set: string; key: string; value: string } | null>(null);
 	let revealOpen = $state(false);
+
+	let historyTarget = $state<SecretSetInfo | null>(null);
+	let historyOpen = $state(false);
+	let historyLoading = $state(false);
+	let versions = $state<SecretSetVersionInfo[]>([]);
+
+	let restoreTarget = $state<{ set: SecretSetInfo; version: number } | null>(null);
+	let restoreConfirmOpen = $state(false);
 
 	async function load(): Promise<void> {
 		try {
@@ -83,7 +91,7 @@
 			editOpen = false;
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'save failed');
+			toast('error', errMessage(err, 'save failed'));
 		} finally {
 			busy = false;
 		}
@@ -101,6 +109,39 @@
 			revealOpen = true;
 		} catch (err) {
 			toast('error', errMessage(err, 'reveal failed'));
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function openHistory(s: SecretSetInfo): Promise<void> {
+		historyTarget = s;
+		historyOpen = true;
+		historyLoading = true;
+		try {
+			const r = await api<{ versions: SecretSetVersionInfo[] }>(`/secrets/${s.id}/versions`);
+			versions = r.versions;
+		} catch (err) {
+			toast('error', errMessage(err, 'could not load version history'));
+			historyOpen = false;
+		} finally {
+			historyLoading = false;
+		}
+	}
+
+	async function restore(): Promise<void> {
+		if (!restoreTarget) return;
+		busy = true;
+		try {
+			await api(`/secrets/${restoreTarget.set.id}/versions`, {
+				body: { version: restoreTarget.version }
+			});
+			toast('success', `Restored version ${restoreTarget.version}`);
+			restoreConfirmOpen = false;
+			await load();
+			if (historyTarget) await openHistory(historyTarget);
+		} catch (err) {
+			toast('error', errMessage(err, 'restore failed'));
 		} finally {
 			busy = false;
 		}
@@ -129,7 +170,7 @@
 
 <PageHeader
 	title="Secrets"
-	description="Sealed key-value sets; values are never listed, only revealed per key"
+	description="Sealed key-value sets. Values are never listed, only revealed per key."
 >
 	<button
 		class="btn btn-primary"
@@ -151,7 +192,7 @@
 		<KeyRound class="mx-auto mb-3 size-8 text-faint" />
 		<p class="text-muted">No secret sets yet.</p>
 		<p class="mt-1 text-xs text-faint">
-			Sealed key-value maps stored with the data key; individual values are revealed on demand.
+			Sealed key-value maps stored with the data key. Individual values are revealed on demand.
 		</p>
 		<button
 			class="btn btn-primary mt-4"
@@ -170,8 +211,19 @@
 					<span class="min-w-0 truncate text-sm font-semibold">{s.name}</span>
 					<div class="flex shrink-0 items-center gap-1">
 						<span class="mr-1 text-xs text-faint"
-							>updated {fmtDateTime(new Date(s.updatedAt).toISOString())}</span
+							>updated {fmtDateTime(new Date(s.updatedAt).toISOString())}{s.updatedBy
+								? ` by ${s.updatedBy}`
+								: ''}</span
 						>
+						<button
+							class="btn btn-ghost btn-sm"
+							aria-label="History of {s.name}"
+							onclick={() => {
+								void openHistory(s);
+							}}
+						>
+							<RotateCcwClock class="size-3.5" />
+						</button>
 						<button
 							class="btn btn-ghost btn-sm"
 							aria-label="Edit {s.name}"
@@ -238,7 +290,7 @@
 		<Field
 			label="Entries"
 			hint={editTarget
-				? 'KEY=VALUE lines replace the whole set; leave empty to keep current keys'
+				? 'KEY=VALUE lines replace the whole set. Leave empty to keep current keys.'
 				: 'One KEY=VALUE per line'}
 		>
 			<textarea
@@ -300,6 +352,50 @@
 		</div>
 	{/if}
 </Modal>
+
+<Modal bind:open={historyOpen} title={`History: ${historyTarget?.name ?? ''}`} wide>
+	{#if historyLoading}
+		<p class="py-6 text-center text-sm text-faint">Loading versions...</p>
+	{:else if versions.length === 0}
+		<p class="py-6 text-center text-sm text-faint">No versions yet.</p>
+	{:else}
+		<ul class="divide-y divide-edge/60">
+			{#each versions as v (v.version)}
+				<li class="flex flex-wrap items-center gap-2 py-2.5 text-xs">
+					<span class="font-mono font-semibold">v{v.version}</span>
+					<span class="text-muted">{relativeTime(v.createdAt)}</span>
+					<span class="text-faint">{v.actor ?? 'unknown'}</span>
+					<span class="flex min-w-0 flex-wrap gap-1">
+						{#each v.changedKeys as k (k)}
+							<span class="chip font-mono text-[0.65rem]">{k}</span>
+						{:else}
+							<span class="text-faint">no key changes</span>
+						{/each}
+					</span>
+					<button
+						class="btn btn-ghost btn-sm ml-auto shrink-0"
+						disabled={busy}
+						onclick={() => {
+							if (!historyTarget) return;
+							restoreTarget = { set: historyTarget, version: v.version };
+							restoreConfirmOpen = true;
+						}}
+					>
+						Restore
+					</button>
+				</li>
+			{/each}
+		</ul>
+	{/if}
+</Modal>
+
+<ConfirmDialog
+	bind:open={restoreConfirmOpen}
+	title={`Restore version ${restoreTarget?.version ?? ''}?`}
+	description={`"${restoreTarget?.set.name ?? 'This set'}" will be overwritten with version ${restoreTarget?.version ?? ''}. Current values are versioned first, nothing is lost.`}
+	confirmLabel="Restore"
+	onconfirm={() => void restore()}
+/>
 
 <ConfirmDialog
 	bind:open={deleteOpen}

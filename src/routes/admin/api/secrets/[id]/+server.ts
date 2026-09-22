@@ -20,7 +20,7 @@ interface PutBody {
 
 // Whole-map replace: entries overwrites every key in the set.
 export const PUT: RequestHandler = async (event) => {
-	requirePerm(event, 'secrets.manage');
+	const user = requirePerm(event, 'secrets.manage');
 	const rt = getRuntime();
 	const id = event.params.id;
 	const body = await readJson<PutBody>(event.request, 512 * 1024);
@@ -37,7 +37,7 @@ export const PUT: RequestHandler = async (event) => {
 	}
 
 	try {
-		const set = await getSecretStore(rt.db).put(id, patch);
+		const set = await getSecretStore(rt.db).put(id, patch, user.username);
 		await audit(rt, event, 'secrets.update', `id=${id} keys=${set.keys.length}`);
 		return apiJson({ ok: true, set });
 	} catch (err) {

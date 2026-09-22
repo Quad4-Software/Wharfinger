@@ -34,6 +34,8 @@ const { GET: listSets, POST: createSet } =
 const { PUT: putSet, DELETE: deleteSet } =
 	await import('../../src/routes/admin/api/secrets/[id]/+server');
 const { POST: revealKey } = await import('../../src/routes/admin/api/secrets/[id]/reveal/+server');
+const { GET: listVersions, POST: restoreVersion } =
+	await import('../../src/routes/admin/api/secrets/[id]/versions/+server');
 
 const admin: User = {
 	id: 1,
@@ -145,6 +147,87 @@ describe('SecretSetStore', () => {
 	});
 });
 
+describe('secret set versions', () => {
+	it('writes a version on create and put with key-name diffs', async () => {
+		const store = getSecretStore(ref.db);
+		const s = await store.create('versioned', { A: '1', B: '2' }, 'root');
+		expect(s.updatedBy).toBe('root');
+
+		let vs = await store.versions(s.id);
+		expect(vs.length).toBe(1);
+		expect(vs[0].version).toBe(1);
+		expect(vs[0].changedKeys).toEqual(['A', 'B']);
+		expect(vs[0].actor).toBe('root');
+
+		// B changed, C added; A untouched so it is not in the diff.
+		const updated = await store.put(s.id, { entries: { A: '1', B: 'changed', C: 'new' } });
+		expect(updated.updatedBy).toBeNull();
+		vs = await store.versions(s.id);
+		expect(vs.map((v) => v.version)).toEqual([2, 1]);
+		expect(vs[0].changedKeys).toEqual(['B', 'C']);
+
+		// B and C removed.
+		await store.put(s.id, { entries: { A: '1' } });
+		vs = await store.versions(s.id);
+		expect(vs[0].version).toBe(3);
+		expect(vs[0].changedKeys).toEqual(['B', 'C']);
+	});
+
+	it('restores a prior version and versions the restore itself', async () => {
+		const store = getSecretStore(ref.db);
+		const s = await store.create('restorable', { KEEP: 'v1', GONE: 'x' });
+		await store.put(s.id, { entries: { KEEP: 'v2' } });
+		expect(await store.reveal(s.id, 'GONE')).toBeNull();
+		expect(await store.reveal(s.id, 'KEEP')).toBe('v2');
+
+		const restored = await store.restore(s.id, 1, 'root');
+		expect(restored.keys.sort()).toEqual(['GONE', 'KEEP']);
+		expect(await store.reveal(s.id, 'KEEP')).toBe('v1');
+		expect(await store.reveal(s.id, 'GONE')).toBe('x');
+
+		const vs = await store.versions(s.id);
+		expect(vs[0].version).toBe(3);
+		// GONE re-added and KEEP changed back relative to v2 state.
+		expect(vs[0].changedKeys).toEqual(['GONE', 'KEEP']);
+		expect(vs[0].actor).toBe('root');
+
+		await expect(store.restore(s.id, 99)).rejects.toThrow(SecretError);
+		await expect(store.restore('sec_none', 1)).rejects.toThrow(SecretError);
+	});
+
+	it('caps history at 50 versions per set', async () => {
+		const store = getSecretStore(ref.db);
+		const s = await store.create('capped', { K: 'v0' });
+		for (let i = 1; i <= 55; i++) {
+			await store.put(s.id, { entries: { K: `v${i}` } });
+		}
+		const vs = await store.versions(s.id);
+		expect(vs.length).toBe(50);
+		expect(vs[0].version).toBe(56);
+		expect(vs[vs.length - 1].version).toBe(7);
+		// Pruned versions cannot be restored.
+		await expect(store.restore(s.id, 1)).rejects.toThrow(SecretError);
+	});
+
+	it('stores sealed blobs and never leaks values in metadata', async () => {
+		const store = getSecretStore(ref.db);
+		const s = await store.create('meta', { SECRET: 'leak-me-not' });
+		const vs = await store.versions(s.id);
+		expect(JSON.stringify(vs)).not.toContain('leak-me-not');
+
+		const row = ref.db
+			.prepare('SELECT sealed, changed_keys FROM secret_set_versions WHERE set_id = ?')
+			.get(s.id) as { sealed: string; changed_keys: string };
+		expect(row.sealed.startsWith('v1.')).toBe(true);
+		expect(row.sealed).not.toContain('leak-me-not');
+		expect(row.changed_keys).not.toContain('leak-me-not');
+
+		// Deleting the set removes its history too.
+		await store.remove(s.id);
+		expect(await store.versions(s.id)).toEqual([]);
+	});
+});
+
 describe('secret routes', () => {
 	it('rejects anonymous callers with 401', async () => {
 		expect(await status(listSets, event({ user: null }))).toBe(401);
@@ -224,5 +307,62 @@ describe('secret routes', () => {
 
 		expect(await status(deleteSet, event({ method: 'DELETE', params: { id } }))).toBe(200);
 		expect(await status(deleteSet, event({ method: 'DELETE', params: { id } }))).toBe(404);
+	});
+
+	it('lists version metadata and restores through the route', async () => {
+		const created = await json(
+			await createSet(
+				event({
+					method: 'POST',
+					body: { name: 'route-restore', entries: { V: 'one' } }
+				}) as never
+			)
+		);
+		const set = created.set as { id: string; updatedBy: string | null };
+		const id = set.id;
+		// The route passes the session username through as the writer.
+		expect(set.updatedBy).toBe('root');
+		await putSet(
+			event({ method: 'PUT', params: { id }, body: { entries: { V: 'two' } } }) as never
+		);
+
+		// Version list carries metadata only, newest first.
+		const list = await json(await listVersions(event({ params: { id } }) as never));
+		const vs = list.versions as { version: number; changedKeys: string[] }[];
+		expect(vs.map((v) => v.version)).toEqual([2, 1]);
+		expect(vs[0].changedKeys).toEqual(['V']);
+		expect(JSON.stringify(list)).not.toContain('two');
+
+		// Perm gate and input validation on the new endpoints.
+		expect(await status(listVersions, event({ params: { id }, perms: [] }))).toBe(403);
+		expect(await status(listVersions, event({ params: { id: 'sec_none' } }))).toBe(404);
+		expect(
+			await status(
+				restoreVersion,
+				event({ method: 'POST', params: { id }, body: { version: 'x' } })
+			)
+		).toBe(422);
+		expect(
+			await status(restoreVersion, event({ method: 'POST', params: { id }, body: { version: 99 } }))
+		).toBe(404);
+
+		const res = await json(
+			await restoreVersion(event({ method: 'POST', params: { id }, body: { version: 1 } }) as never)
+		);
+		expect(res.ok).toBe(true);
+		expect(JSON.stringify(res)).not.toContain('one');
+
+		const revealed = await json(
+			await revealKey(event({ method: 'POST', params: { id }, body: { key: 'V' } }) as never)
+		);
+		expect(revealed.value).toBe('one');
+
+		const auditRow = ref.db
+			.prepare(
+				"SELECT action, detail FROM audit_log WHERE action = 'secrets.restore' ORDER BY id DESC LIMIT 1"
+			)
+			.get() as { action: string; detail: string };
+		expect(auditRow.detail).toContain('route-restore');
+		expect(auditRow.detail).toContain('version=1');
 	});
 });
