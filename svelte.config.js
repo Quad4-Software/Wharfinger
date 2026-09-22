@@ -19,12 +19,17 @@ const config = {
 				// unsafe-inline required: Svelte keyed transitions and the
 				// hydration payload inject style attributes.
 				'style-src': ['self', 'unsafe-inline'],
-				'img-src': ['self', 'data:'],
+				// blob: is needed for chat attachment image previews,
+				// which are fetched as bytes and shown via object URLs
+				// because the download route forces attachment disposition.
+				'img-src': ['self', 'data:', 'blob:'],
 				'font-src': ['self'],
 				'connect-src': ['self'],
 				'object-src': ['none'],
 				'base-uri': ['none'],
 				'form-action': ['self'],
+				// Push notification service worker.
+				'worker-src': ['self'],
 				'frame-ancestors': ['none']
 			}
 		},

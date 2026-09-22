@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import ErrorPage from '$lib/components/ErrorPage.svelte';
+	import { t } from '$lib/i18n/locale.svelte';
 
 	// Under the admin mount the natural "home" is the panel dashboard,
 	// not the public status page.
@@ -12,14 +13,14 @@
 </script>
 
 <svelte:head>
-	<title>{page.status} {page.error?.message ?? 'Error'}</title>
+	<title>{page.status} {page.error?.message ?? t('error.title')}</title>
 	<meta name="robots" content="noindex, nofollow" />
 </svelte:head>
 
 <ErrorPage
 	status={page.status}
-	message={page.error?.message ?? 'Something went wrong'}
+	message={page.error?.message ?? t('error.went_wrong')}
 	errorId={page.error?.errorId ?? null}
 	homeHref={underAdmin ? adminBase : '/'}
-	homeLabel={underAdmin ? 'Back to panel' : 'Back to status'}
+	homeLabel={underAdmin ? t('error.back_panel') : t('error.back_status')}
 />

@@ -4,6 +4,7 @@
 	import { page } from '$app/state';
 	import { sendClientReport } from '$lib/shared/telemetry';
 	import { Check, Copy, RotateCcw, TriangleAlert } from '@lucide/svelte';
+	import { t } from '$lib/i18n/locale.svelte';
 
 	const { children }: { children: Snippet } = $props();
 
@@ -68,17 +69,17 @@
 				>
 					<TriangleAlert class="size-6 text-down" />
 				</div>
-				<h1 class="mt-5 text-xl font-semibold tracking-tight">The page crashed</h1>
+				<h1 class="mt-5 text-xl font-semibold tracking-tight">{t('crash.title')}</h1>
 				<p class="mt-2 break-words font-mono text-xs text-muted">{describe(error)}</p>
 				<div class="mt-6 flex flex-wrap items-center justify-center gap-2">
 					<button class="btn btn-primary" onclick={reset}
-						><RotateCcw class="size-4" />Try again</button
+						><RotateCcw class="size-4" />{t('crash.try_again')}</button
 					>
 					<button
 						class="btn"
 						onclick={() => {
 							location.reload();
-						}}>Reload page</button
+						}}>{t('crash.reload')}</button
 					>
 					<button
 						class="btn"
@@ -86,7 +87,11 @@
 							void copyDebug(error);
 						}}
 					>
-						{#if copied}<Check class="size-4" />Copied{:else}<Copy class="size-4" />Copy debug info{/if}
+						{#if copied}
+							<Check class="size-4" />{t('common.copied')}
+						{:else}
+							<Copy class="size-4" />{t('error.copy_debug')}
+						{/if}
 					</button>
 				</div>
 			</div>

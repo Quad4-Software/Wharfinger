@@ -42,18 +42,36 @@ export function errMessage(err: unknown, fallback = 'request failed'): string {
 		if (typeof issues === 'string') return `invalid config: ${issues}`;
 		return err.message;
 	}
+	// Network-level fetch failures surface as bare TypeErrors; translate
+	// them into something an operator can act on.
+	if (err instanceof TypeError) return 'could not reach the server';
 	return err instanceof Error ? err.message : fallback;
 }
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 export async function api<T = Record<string, unknown>>(
 	sub: string,
 	opts: { method?: string; body?: unknown; rawBody?: BodyInit } = {}
 ): Promise<T> {
-	const res = await fetch(`${adminBase()}/api${sub}`, {
-		method: opts.method ?? (opts.body === undefined && opts.rawBody === undefined ? 'GET' : 'POST'),
-		headers: opts.body === undefined ? {} : { 'content-type': 'application/json' },
-		body: opts.rawBody ?? (opts.body === undefined ? undefined : JSON.stringify(opts.body))
-	});
+	const method =
+		opts.method ?? (opts.body === undefined && opts.rawBody === undefined ? 'GET' : 'POST');
+	const exec = (): Promise<Response> =>
+		fetch(`${adminBase()}/api${sub}`, {
+			method,
+			headers: opts.body === undefined ? {} : { 'content-type': 'application/json' },
+			body: opts.rawBody ?? (opts.body === undefined ? undefined : JSON.stringify(opts.body))
+		});
+	let res: Response;
+	try {
+		res = await exec();
+	} catch (err) {
+		// One retry for idempotent reads: transient drops during dev
+		// reloads and proxy flaps otherwise surface as load failures.
+		if (method !== 'GET') throw err;
+		await sleep(600);
+		res = await exec();
+	}
 	if (res.status === 401) {
 		const next = encodeURIComponent(location.pathname + location.search);
 		location.href = `${adminBase()}/login?next=${next}`;

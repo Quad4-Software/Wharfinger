@@ -3,13 +3,14 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { Check, Copy, House, TriangleAlert } from '@lucide/svelte';
+	import { t } from '$lib/i18n/locale.svelte';
 
 	const {
 		status,
-		message = 'Something went wrong',
+		message = t('error.went_wrong'),
 		errorId = null,
 		homeHref = '/',
-		homeLabel = 'Back to status'
+		homeLabel = t('error.back_status')
 	}: {
 		status: number;
 		message?: string;
@@ -22,20 +23,20 @@
 
 	const title = $derived(
 		status === 404
-			? 'Page not found'
+			? t('error.not_found')
 			: status === 429
-				? 'Too many requests'
+				? t('error.too_many')
 				: status >= 500
-					? 'Something went wrong'
-					: 'Request failed'
+					? t('error.went_wrong')
+					: t('error.request_failed')
 	);
 	const hint = $derived(
 		status === 404
-			? 'The page you are looking for does not exist or was moved.'
+			? t('error.hint_not_found')
 			: status === 429
-				? 'Slow down and try again in a minute.'
+				? t('error.hint_429')
 				: status >= 500
-					? 'The failure was logged automatically. Paste the debug info into a bug report if it keeps happening.'
+					? t('error.hint_500')
 					: null
 	);
 
@@ -80,13 +81,19 @@
 		<h1 class="mt-1 text-xl font-semibold tracking-tight">{title}</h1>
 		<p class="mt-2 text-sm text-muted">{message}</p>
 		{#if hint}<p class="mt-3 text-xs text-faint">{hint}</p>{/if}
-		{#if errorId}<p class="mt-3 font-mono text-xs text-faint">error id: {errorId}</p>{/if}
+		{#if errorId}
+			<p class="mt-3 font-mono text-xs text-faint">{t('error.id', { id: errorId })}</p>
+		{/if}
 		<div class="mt-6 flex flex-wrap items-center justify-center gap-2">
 			<a class="btn btn-primary" href={resolve(homeHref as '/')}
 				><House class="size-4" />{homeLabel}</a
 			>
 			<button class="btn" onclick={copyDebug}>
-				{#if copied}<Check class="size-4" />Copied{:else}<Copy class="size-4" />Copy debug info{/if}
+				{#if copied}
+					<Check class="size-4" />{t('common.copied')}
+				{:else}
+					<Copy class="size-4" />{t('error.copy_debug')}
+				{/if}
 			</button>
 		</div>
 	</div>

@@ -1,6 +1,8 @@
 import type { Handle, HandleServerError, RequestEvent, Reroute, ServerInit } from '@sveltejs/kit';
 import { isHttpError } from '@sveltejs/kit';
+import { dev } from '$app/environment';
 import { getRuntime } from '$lib/server/runtime';
+import { trustForwarded } from '$lib/server/proxy';
 import { isChatBridge } from '$lib/server/admin/chat';
 import { captureException, scrubUrl } from '$lib/server/telemetry';
 import { SESSION_COOKIE } from '$lib/server/constants';
@@ -10,6 +12,7 @@ import {
 	PUBLIC_FAVICON_PREFIX,
 	paths
 } from '$lib/shared/paths';
+import { LANG_COOKIE, localeDir, resolveLocale } from '$lib/i18n';
 
 export const init: ServerInit = () => {
 	getRuntime();
@@ -17,7 +20,7 @@ export const init: ServerInit = () => {
 
 // style-src needs unsafe-inline for the per-service accent style
 // attributes; everything else stays same-origin only.
-function securityHeaders(): Record<string, string> {
+function securityHeaders(): { headers: Record<string, string>; csp: string; ancestors: string[] } {
 	// site.frame_ancestors controls who may iframe the page. Default
 	// 'self' keeps the admin preview working; extra origins opt in
 	// embedding for homepage dashboards and the like. '*' is rejected
@@ -29,23 +32,37 @@ function securityHeaders(): Record<string, string> {
 	} catch {
 		// Runtime not ready (build-time prerender); keep the default.
 	}
+	// Dev and preview tooling frames the app from a localhost origin
+	// that differs only by port; allow it there only. CSP host-source
+	// has no IPv6 literal syntax, so ::1 origins are covered by the
+	// localhost hostname entries instead.
+	if (dev) {
+		ancestors = [
+			...ancestors,
+			'http://localhost:*',
+			'https://localhost:*',
+			'http://127.0.0.1:*',
+			'https://127.0.0.1:*'
+		];
+	}
 	const selfOnly = ancestors.every((a) => a === "'self'");
+	const csp = [
+		"default-src 'self'",
+		"img-src 'self' data: blob:",
+		"style-src 'self' 'unsafe-inline'",
+		"font-src 'self'",
+		"script-src 'self'",
+		"connect-src 'self'",
+		"object-src 'none'",
+		"base-uri 'none'",
+		"form-action 'self'",
+		"worker-src 'self'",
+		`frame-ancestors ${ancestors.join(' ')}`
+	].join('; ');
 	const headers: Record<string, string> = {
 		'x-content-type-options': 'nosniff',
 		'referrer-policy': 'strict-origin-when-cross-origin',
-		'permissions-policy': 'camera=(), microphone=(), geolocation=(), interest-cohort=()',
-		'content-security-policy': [
-			"default-src 'self'",
-			"img-src 'self' data: blob:",
-			"style-src 'self' 'unsafe-inline'",
-			"font-src 'self'",
-			"script-src 'self'",
-			"connect-src 'self'",
-			"object-src 'none'",
-			"base-uri 'none'",
-			"form-action 'self'",
-			`frame-ancestors ${ancestors.join(' ')}`
-		].join('; '),
+		'permissions-policy': 'camera=(), microphone=(), geolocation=()',
 		// The badge, favicon, and API endpoints are meant to be embedded
 		// and fetched cross-origin; they relax CORP per-route below.
 		'cross-origin-resource-policy': 'same-origin'
@@ -54,7 +71,21 @@ function securityHeaders(): Record<string, string> {
 	// when the config is self-only, omitted once external ancestors
 	// are allowed (CSP frame-ancestors covers every modern browser).
 	if (selfOnly) headers['x-frame-options'] = 'SAMEORIGIN';
-	return headers;
+	return { headers, csp, ancestors };
+}
+
+/**
+ * Replace the frame-ancestors directive in an existing CSP. SvelteKit
+ * emits its own CSP (with script nonces), so the configured ancestors
+ * are rewritten into that header instead of shipping a second policy.
+ */
+function withFrameAncestors(csp: string, ancestors: string[]): string {
+	const kept = csp
+		.split(';')
+		.map((d) => d.trim())
+		.filter((d) => d !== '' && !d.toLowerCase().startsWith('frame-ancestors'));
+	kept.push(`frame-ancestors ${ancestors.join(' ')}`);
+	return kept.join('; ');
 }
 
 // Everything under the admin mount is noindexed and uncacheable, both
@@ -64,20 +95,22 @@ const ADMIN_HEADERS: Record<string, string> = {
 	'cache-control': 'no-store'
 };
 
-// Forwarded headers are only trusted when the deployment opts in via
-// WHARFINGER_TRUST_PROXY (set when a reverse proxy overwrites them). A
-// directly exposed app must use the socket address: client-supplied
-// XFF would let anyone rotate the rate-limit key per request and
-// bypass brute-force and flood limits entirely.
-const TRUST_PROXY = /^(1|true|yes)$/i.test(process.env.WHARFINGER_TRUST_PROXY ?? '');
-
+// Forwarded headers are only trusted within the WHARFINGER_TRUST_PROXY
+// mode (see lib/server/proxy.ts). A directly exposed app must use the
+// socket address: client-supplied XFF would let anyone rotate the
+// rate-limit key per request and bypass brute-force and flood limits.
 function clientKey(event: RequestEvent): string {
-	if (TRUST_PROXY) {
+	const peer = socketAddr(event);
+	if (trustForwarded(peer === 'unknown' ? null : peer)) {
 		const fwd = event.request.headers.get('x-forwarded-for');
 		if (fwd) return fwd.split(',')[0]?.trim() ?? 'unknown';
 		const real = event.request.headers.get('x-real-ip');
 		if (real) return real;
 	}
+	return peer;
+}
+
+function socketAddr(event: RequestEvent): string {
 	try {
 		return event.getClientAddress();
 	} catch {
@@ -179,6 +212,17 @@ export const handle: Handle = async ({ event, resolve }) => {
 	const underAdmin = pathname === base || pathname.startsWith(`${base}/`);
 	const underLiteralAdmin = pathname === '/admin' || pathname.startsWith('/admin/');
 
+	// Locale resolution: ?lang= is a public-only override; the wf-lang
+	// cookie is the persisted preference; [page].locale is the site
+	// default; Accept-Language covers first-time visitors.
+	const lang = resolveLocale({
+		query: underAdmin ? null : event.url.searchParams.get('lang'),
+		cookie: event.cookies.get(LANG_COOKIE),
+		config: rt.config.page.locale,
+		accept: event.request.headers.get('accept-language')
+	});
+	event.locals.lang = lang;
+
 	if (underLiteralAdmin && base !== '/admin') {
 		// Panel moved; do not reveal the internal route tree.
 		return new Response('Not found', { status: 404 });
@@ -257,10 +301,28 @@ export const handle: Handle = async ({ event, resolve }) => {
 		}
 	}
 
-	const response = await resolve(event);
-	for (const [k, v] of Object.entries(securityHeaders())) {
+	const response = await resolve(event, {
+		// Per-request html lang/dir/body class: the app.html placeholders
+		// stay literal until this runs, so all tokens are replaced here.
+		// admin-flat drops the decorative background blobs from the panel.
+		transformPageChunk: ({ html }) =>
+			html
+				.replace('%sveltekit.lang%', lang)
+				.replace('%sveltekit.dir%', localeDir(lang))
+				.replace('%sveltekit.bodyclass%', underAdmin ? 'admin-flat' : '')
+	});
+	const sec = securityHeaders();
+	for (const [k, v] of Object.entries(sec.headers)) {
 		if (!response.headers.has(k)) response.headers.set(k, v);
 	}
+	// SvelteKit emits its own CSP (script nonces for hydration), so the
+	// configured frame-ancestors are rewritten into whichever CSP is
+	// already on the response rather than adding a second policy.
+	const csp = response.headers.get('content-security-policy');
+	response.headers.set(
+		'content-security-policy',
+		csp ? withFrameAncestors(csp, sec.ancestors) : sec.csp
+	);
 	if (underAdmin) {
 		for (const [k, v] of Object.entries(ADMIN_HEADERS)) {
 			if (!response.headers.has(k)) response.headers.set(k, v);
