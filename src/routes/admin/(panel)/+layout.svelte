@@ -7,7 +7,7 @@
 </script>
 
 <svelte:head>
-	<title>Status panel</title>
+	<title>Wharfinger</title>
 </svelte:head>
 
 <AdminShell user={data.user} perms={data.perms}>

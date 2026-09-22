@@ -7,11 +7,12 @@
 	import Modal from '$lib/components/admin/Modal.svelte';
 	import ConfirmDialog from '$lib/components/admin/ConfirmDialog.svelte';
 	import SessionList from '$lib/components/admin/SessionList.svelte';
-	import { api, ApiError } from '$lib/state/admin.svelte';
+	import RoleManager from '$lib/components/admin/RoleManager.svelte';
+	import { api, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
 	import { relativeTime } from '$lib/utils/format';
 	import { generatePassword } from '$lib/shared/password';
-	import type { PublicUser as User, Role } from '$lib/shared/auth';
+	import type { PublicUser as User, Role, RoleInfo } from '$lib/shared/auth';
 
 	interface Invite {
 		hash: string;
@@ -24,15 +25,6 @@
 		expired: boolean;
 	}
 
-	interface RoleRow {
-		name: string;
-		label: string;
-		permissions: string[];
-		builtin: boolean;
-		createdAt: number;
-		members: number;
-	}
-
 	const { data }: { data: { user: User; perms: string[] } } = $props();
 
 	const canUsers = $derived(data.perms.includes('users.manage'));
@@ -42,18 +34,10 @@
 
 	let users = $state<User[]>([]);
 	let invites = $state<Invite[]>([]);
-	let roles = $state<RoleRow[]>([]);
+	let roles = $state<RoleInfo[]>([]);
 	let allPerms = $state<string[]>([]);
 	let loading = $state(true);
 	let busy = $state(false);
-
-	// roles editor
-	let roleBusy = $state(false);
-	let nRoleName = $state('');
-	let nRoleLabel = $state('');
-	let nRolePerms = $state<string[]>([]);
-	let roleDeleteTarget = $state<RoleRow | null>(null);
-	let roleDeleteOpen = $state(false);
 
 	// invite dialog
 	let inviteOpen = $state(false);
@@ -135,7 +119,7 @@
 					? api<{ keys: ApiKeyRow[] }>('/keys').catch(() => ({ keys: [] }))
 					: Promise.resolve({ keys: [] }),
 				canRoles
-					? api<{ roles: RoleRow[]; permissions: string[] }>('/roles').catch(() => ({
+					? api<{ roles: RoleInfo[]; permissions: string[] }>('/roles').catch(() => ({
 							roles: [],
 							permissions: []
 						}))
@@ -147,7 +131,7 @@
 			roles = r.roles;
 			allPerms = r.permissions;
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'load failed');
+			toast('error', errMessage(err, 'load failed'));
 		} finally {
 			loading = false;
 		}
@@ -170,7 +154,7 @@
 			inviteUrl = r.url;
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'invite failed');
+			toast('error', errMessage(err, 'invite failed'));
 		} finally {
 			busy = false;
 		}
@@ -182,7 +166,7 @@
 			toast('success', 'Invite revoked');
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'revoke failed');
+			toast('error', errMessage(err, 'revoke failed'));
 		}
 	}
 
@@ -205,7 +189,7 @@
 			cRole = 'operator';
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'create failed');
+			toast('error', errMessage(err, 'create failed'));
 		} finally {
 			busy = false;
 		}
@@ -217,7 +201,7 @@
 			toast('success', `${u.username} is now ${role}`);
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'update failed');
+			toast('error', errMessage(err, 'update failed'));
 		}
 	}
 
@@ -227,7 +211,7 @@
 			toast('success', `${u.username} ${disabled ? 'disabled' : 'enabled'}`);
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'update failed');
+			toast('error', errMessage(err, 'update failed'));
 		}
 	}
 
@@ -241,7 +225,7 @@
 			resetOpen = false;
 			resetPassword = '';
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'reset failed');
+			toast('error', errMessage(err, 'reset failed'));
 		} finally {
 			busy = false;
 		}
@@ -260,7 +244,7 @@
 			keyName = '';
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'create failed');
+			toast('error', errMessage(err, 'create failed'));
 		} finally {
 			keyBusy = false;
 		}
@@ -274,7 +258,7 @@
 			});
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'update failed');
+			toast('error', errMessage(err, 'update failed'));
 		}
 	}
 
@@ -284,7 +268,7 @@
 			toast('success', `Key ${k.name} deleted`);
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'delete failed');
+			toast('error', errMessage(err, 'delete failed'));
 		}
 	}
 
@@ -295,7 +279,7 @@
 			const r = await api<{ sessions: SessionRow[] }>(`/users/${sessTarget.id}/sessions`);
 			sessList = r.sessions;
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'load failed');
+			toast('error', errMessage(err, 'load failed'));
 		} finally {
 			sessBusy = false;
 		}
@@ -319,7 +303,7 @@
 			sessRevokeOpen = false;
 			await loadSessions();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'revoke failed');
+			toast('error', errMessage(err, 'revoke failed'));
 		}
 	}
 
@@ -331,7 +315,7 @@
 			sessRevokeAllOpen = false;
 			await loadSessions();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'revoke failed');
+			toast('error', errMessage(err, 'revoke failed'));
 		}
 	}
 
@@ -344,52 +328,7 @@
 			deleteOpen = false;
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'delete failed');
-		}
-	}
-
-	async function saveRole(r: RoleRow): Promise<void> {
-		try {
-			await api(`/roles/${encodeURIComponent(r.name)}`, {
-				method: 'PATCH',
-				body: { label: r.label, permissions: r.permissions }
-			});
-			toast('success', `Role ${r.name} saved`);
-			await load();
-		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'save failed');
-		}
-	}
-
-	async function createRole(): Promise<void> {
-		if (roleBusy) return;
-		roleBusy = true;
-		try {
-			await api('/roles', {
-				body: { name: nRoleName.trim(), label: nRoleLabel.trim(), permissions: nRolePerms }
-			});
-			toast('success', `Role ${nRoleName.trim()} created`);
-			nRoleName = '';
-			nRoleLabel = '';
-			nRolePerms = [];
-			await load();
-		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'create failed');
-		} finally {
-			roleBusy = false;
-		}
-	}
-
-	async function removeRole(): Promise<void> {
-		if (!roleDeleteTarget) return;
-		try {
-			await api(`/roles/${encodeURIComponent(roleDeleteTarget.name)}`, { method: 'DELETE' });
-			toast('success', `Role ${roleDeleteTarget.name} deleted`);
-			roleDeleteTarget = null;
-			roleDeleteOpen = false;
-			await load();
-		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'delete failed');
+			toast('error', errMessage(err, 'delete failed'));
 		}
 	}
 </script>
@@ -514,94 +453,7 @@
 	{/if}
 
 	{#if canRoles}
-		<section class="mt-8">
-			<h2 class="mb-1 text-sm font-semibold">Roles</h2>
-			<p class="mb-3 text-xs text-faint">
-				Permission sets applied to accounts. The admin role always holds every permission and cannot
-				be edited or deleted.
-			</p>
-			<div class="card divide-y divide-edge">
-				{#each roles as r (r.name)}
-					<div class="px-4 py-3">
-						<div class="flex flex-wrap items-center gap-2">
-							{#if r.builtin}
-								<span class="text-sm font-medium">{r.label}</span>
-							{:else}
-								<input class="input w-40 py-1 text-xs" bind:value={r.label} aria-label="Label" />
-							{/if}
-							<span class="font-mono text-xs text-faint">{r.name}</span>
-							{#if r.builtin}<span class="chip">built-in</span>{/if}
-							<span class="chip">{r.members} {r.members === 1 ? 'user' : 'users'}</span>
-							<span class="ml-auto flex items-center gap-1">
-								{#if r.name !== 'admin'}
-									<button
-										class="btn btn-ghost btn-sm"
-										disabled={roleBusy}
-										onclick={() => void saveRole(r)}
-									>
-										Save
-									</button>
-								{/if}
-								{#if !r.builtin}
-									<button
-										class="btn btn-ghost btn-sm text-down-fg"
-										disabled={r.members > 0}
-										title={r.members > 0 ? 'still assigned to users' : 'Delete role'}
-										onclick={() => {
-											roleDeleteTarget = r;
-											roleDeleteOpen = true;
-										}}
-									>
-										Delete
-									</button>
-								{/if}
-							</span>
-						</div>
-						<div class="mt-2 flex flex-wrap gap-x-4 gap-y-1.5">
-							{#each allPerms as p (p)}
-								<label class="flex items-center gap-1.5 text-xs text-muted">
-									<input
-										type="checkbox"
-										bind:group={r.permissions}
-										value={p}
-										disabled={r.name === 'admin'}
-									/>
-									{p}
-								</label>
-							{/each}
-						</div>
-					</div>
-				{/each}
-				<form
-					class="px-4 py-3"
-					onsubmit={(e) => {
-						e.preventDefault();
-						void createRole();
-					}}
-				>
-					<div class="flex flex-wrap items-center gap-2">
-						<input
-							class="input w-40 text-xs"
-							placeholder="role name"
-							bind:value={nRoleName}
-							required
-						/>
-						<input class="input w-40 text-xs" placeholder="label" bind:value={nRoleLabel} />
-						<button class="btn btn-sm" type="submit" disabled={roleBusy || !nRoleName.trim()}>
-							Create role
-						</button>
-					</div>
-					<div class="mt-2 flex flex-wrap gap-x-4 gap-y-1.5">
-						{#each allPerms as p (p)}
-							<label class="flex items-center gap-1.5 text-xs text-muted">
-								<input type="checkbox" bind:group={nRolePerms} value={p} />
-								{p}
-							</label>
-						{/each}
-					</div>
-				</form>
-			</div>
-		</section>
+		<RoleManager {roles} {allPerms} onchanged={load} />
 	{/if}
 
 	{#if canKeys}
@@ -649,12 +501,22 @@
 						placeholder="key name (e.g. ci-deploy)"
 						bind:value={keyName}
 					/>
-					<label class="flex items-center gap-1 text-xs text-muted">
-						<input type="checkbox" bind:checked={keyRead} /> read
-					</label>
-					<label class="flex items-center gap-1 text-xs text-muted">
-						<input type="checkbox" bind:checked={keyWrite} /> write
-					</label>
+					<button
+						type="button"
+						class="chip font-mono transition-colors {keyRead ? 'chip-on' : ''}"
+						aria-pressed={keyRead}
+						onclick={() => (keyRead = !keyRead)}
+					>
+						read
+					</button>
+					<button
+						type="button"
+						class="chip font-mono transition-colors {keyWrite ? 'chip-on' : ''}"
+						aria-pressed={keyWrite}
+						onclick={() => (keyWrite = !keyWrite)}
+					>
+						write
+					</button>
 					<button
 						class="btn btn-sm"
 						type="submit"
@@ -694,7 +556,7 @@
 			</div>
 		{:else}
 			<p class="text-sm text-muted">
-				Share this link. It is shown once; a new one can be generated anytime.
+				Share this link. It is shown once. A new one can be generated anytime.
 			</p>
 			<div class="flex gap-2">
 				<input class="input flex-1 font-mono text-xs" readonly value={inviteUrl} />
@@ -779,7 +641,7 @@
 	>
 		<p class="text-sm text-muted">
 			Set a new password for <span class="font-medium text-fg">{resetTarget?.username}</span>. Their
-			sessions stay active; ask them to sign out and back in.
+			sessions stay active. Ask them to sign out and back in.
 		</p>
 		<Field label="New password" required>
 			<input
@@ -846,7 +708,7 @@
 	bind:open={sessRevokeOpen}
 	title="Sign out session?"
 	description={sessRevokeTarget?.current
-		? 'This is your current session; you will be signed out.'
+		? 'This is your current session. You will be signed out.'
 		: 'That device will need to sign in again.'}
 	confirmLabel="Revoke"
 	danger
@@ -857,7 +719,7 @@
 	bind:open={sessRevokeAllOpen}
 	title="Revoke all sessions?"
 	description={sessTarget?.id === data.user.id
-		? 'Your other sessions will be signed out; this device stays signed in.'
+		? 'Your other sessions will be signed out. This device stays signed in.'
 		: `Every session for ${sessTarget?.username ?? 'this user'} will be signed out.`}
 	confirmLabel="Revoke all"
 	danger
@@ -873,20 +735,11 @@
 	onconfirm={() => void removeUser()}
 />
 
-<ConfirmDialog
-	bind:open={roleDeleteOpen}
-	title="Delete role?"
-	description={`${roleDeleteTarget?.name ?? 'This role'} will be removed.`}
-	confirmLabel="Delete"
-	danger
-	onconfirm={() => void removeRole()}
-/>
-
 {#if keyToken !== null}
 	<Modal bind:open={keyModalOpen} title="API key created">
 		<div class="space-y-4">
 			<p class="text-sm text-muted">
-				Copy this token now; it is stored only as a hash and cannot be shown again. Use it as
+				Copy this token now. It is stored only as a hash and cannot be shown again. Use it as
 				<code class="font-mono">Authorization: Bearer &lt;token&gt;</code> on
 				<code class="font-mono">/api/v1/*</code>.
 			</p>
