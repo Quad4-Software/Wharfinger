@@ -17,7 +17,7 @@
 	import Field from '$lib/components/admin/Field.svelte';
 	import ConfirmDialog from '$lib/components/admin/ConfirmDialog.svelte';
 	import TraceWaterfall from '$lib/components/admin/TraceWaterfall.svelte';
-	import { api, ApiError, errMessage } from '$lib/state/admin.svelte';
+	import { api, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
 	import { fmtDateTime, fmtMs, relativeTime } from '$lib/utils/format';
 
@@ -152,7 +152,7 @@
 			issues = ir.issues;
 			total = ir.total;
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'load failed');
+			toast('error', errMessage(err, 'load failed'));
 		} finally {
 			loading = false;
 		}
@@ -186,7 +186,7 @@
 			detailEvents = r.events;
 			detailTotal = r.total;
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'load failed');
+			toast('error', errMessage(err, 'load failed'));
 		} finally {
 			detailLoading = false;
 		}
@@ -208,7 +208,7 @@
 			tTotal = tr.total;
 			tLoaded = true;
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'load failed');
+			toast('error', errMessage(err, 'load failed'));
 		} finally {
 			tLoading = false;
 		}
@@ -221,7 +221,7 @@
 				`/telemetry/traces/${t.projectId}/${t.traceId}`
 			);
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'load failed');
+			toast('error', errMessage(err, 'load failed'));
 		} finally {
 			tDetailLoading = false;
 		}
@@ -779,13 +779,14 @@
 			<p class="text-sm text-muted">
 				Project "{created.name}" is live. Set this DSN in your app's Sentry SDK:
 			</p>
-			<div class="flex gap-2">
+			<div class="flex items-start gap-2">
 				<code
-					class="min-w-0 flex-1 overflow-x-auto rounded-md border border-edge bg-bg px-2 py-1.5 font-mono text-xs"
+					class="min-w-0 flex-1 rounded-md border border-edge bg-bg px-2 py-1.5 font-mono text-xs break-all"
 					>{created.dsn}</code
 				>
 				<button
 					class="btn btn-ghost shrink-0"
+					title="Copy DSN"
 					onclick={() => {
 						copy(created?.dsn ?? '');
 					}}

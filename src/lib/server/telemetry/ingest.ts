@@ -48,7 +48,8 @@ export function sentryKey(req: Request): string | null {
  * payloads are raw bytes (attachments can be binary).
  */
 function parseEnvelope(
-	body: Uint8Array
+	body: Uint8Array,
+	maxItems = MAX_ITEMS
 ): { header: Record<string, unknown>; items: { type: string; payload: Uint8Array }[] } | null {
 	const nl = body.indexOf(0x0a);
 	if (nl <= 0) return null;
@@ -61,7 +62,7 @@ function parseEnvelope(
 	const items: { type: string; payload: Uint8Array }[] = [];
 	let pos = nl + 1;
 	const dec = new TextDecoder();
-	while (pos < body.length && items.length < MAX_ITEMS) {
+	while (pos < body.length && items.length < maxItems) {
 		const eol = body.indexOf(0x0a, pos);
 		const headEnd = eol === -1 ? body.length : eol;
 		let itemHead: { type?: string; length?: number };
@@ -274,6 +275,86 @@ export function normalizeEvent(raw: Record<string, unknown>): ParsedEvent {
 		title,
 		culprit
 	};
+}
+
+/**
+ * Envelope header event_id, when present. Relay responses and dedupe
+ * use it; the item payload's own event_id stays authoritative for
+ * storage.
+ */
+export function envelopeEventId(body: Uint8Array): string | null {
+	const nl = body.indexOf(0x0a);
+	// A header-only body (no trailing newline) still parses.
+	const head = nl === -1 ? body : body.subarray(0, nl);
+	if (head.length === 0) return null;
+	try {
+		const h = JSON.parse(new TextDecoder().decode(head)) as Record<string, unknown> | null;
+		if (h === null || typeof h !== 'object' || Array.isArray(h)) return null;
+		return typeof h.event_id === 'string' ? h.event_id.slice(0, 64) : null;
+	} catch {
+		return null;
+	}
+}
+
+// Relay scrub walks more items than local ingest needs: dropping
+// tail items would silently truncate a forwarded envelope.
+const SCRUB_ITEM_CAP = 200;
+
+/**
+ * Re-encode an envelope with every JSON-object item payload
+ * deep-scrubbed. Relay mode sends this form upstream so filtered
+ * fields never leave the node; the header (event_id, dsn) and item
+ * framing are preserved. Payloads that are not JSON objects
+ * (attachments, minidumps) pass through verbatim. Returns null when
+ * the header line is not parseable JSON.
+ */
+export function scrubEnvelope(body: Uint8Array): Uint8Array | null {
+	const env = parseEnvelope(body, SCRUB_ITEM_CAP);
+	if (env === null) return null;
+	const enc = new TextEncoder();
+	const dec = new TextDecoder();
+	const parts: Uint8Array[] = [enc.encode(JSON.stringify(env.header))];
+	for (const item of env.items) {
+		let payload = item.payload;
+		try {
+			const parsed: unknown = JSON.parse(dec.decode(payload));
+			if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+				payload = enc.encode(JSON.stringify(scrub(parsed)));
+			}
+		} catch {
+			// Opaque binary payload; forward as-is.
+		}
+		parts.push(enc.encode(JSON.stringify({ type: item.type, length: payload.length })), payload);
+	}
+	const total = parts.reduce((n, p) => n + p.length, 0) + parts.length - 1;
+	const out = new Uint8Array(total);
+	let pos = 0;
+	for (let i = 0; i < parts.length; i++) {
+		out.set(parts[i], pos);
+		pos += parts[i].length;
+		if (i < parts.length - 1) out[pos++] = 0x0a;
+	}
+	return out;
+}
+
+/**
+ * Wrap a single store-endpoint event JSON into a one-item envelope.
+ * Queue mode spools and relay mode forwards envelopes only, so the
+ * legacy /store body gets the same framing as SDK traffic.
+ */
+export function eventToEnvelope(raw: Record<string, unknown>): Uint8Array {
+	const enc = new TextEncoder();
+	const payload = enc.encode(JSON.stringify(raw));
+	const header = typeof raw.event_id === 'string' ? { event_id: raw.event_id.slice(0, 64) } : {};
+	const head = enc.encode(JSON.stringify(header));
+	const itemHead = enc.encode(JSON.stringify({ type: 'event', length: payload.length }));
+	const out = new Uint8Array(head.length + itemHead.length + payload.length + 2);
+	out.set(head, 0);
+	out[head.length] = 0x0a;
+	out.set(itemHead, head.length + 1);
+	out[head.length + itemHead.length + 1] = 0x0a;
+	out.set(payload, head.length + itemHead.length + 2);
+	return out;
 }
 
 export type EnvelopeItem =
