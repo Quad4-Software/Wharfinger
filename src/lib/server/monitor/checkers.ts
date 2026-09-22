@@ -11,6 +11,7 @@ import {
 	type FetchInit
 } from '$lib/server/http/egress';
 import { daysUntil, probeCert } from './tls';
+import { checkSecurity } from './security-check';
 
 export interface CheckOutcome {
 	/** Passed all assertions. */
@@ -71,6 +72,8 @@ export async function runCheck(service: ServiceConfig, ctx: CheckContext): Promi
 				return await checkIrc(service, ctx);
 			case 'websocket':
 				return await checkWebsocket(service, ctx);
+			case 'security':
+				return await checkSecurity(service, ctx);
 		}
 	} catch (err) {
 		return { ok: false, degraded: false, latencyMs: ctx.timeoutMs, detail: errMessage(err) };
