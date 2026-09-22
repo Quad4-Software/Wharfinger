@@ -32,6 +32,8 @@ jobs:
           egress-policy: audit
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
@@ -135,6 +137,9 @@ jobs:
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Sign images (keyless)
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          AGENT_DIGEST: ${{ steps.agent-build.outputs.digest }}
         run: |
-          cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
-          cosign sign --yes "${AGENT_IMAGE}@${{ steps.agent-build.outputs.digest }}"
+          cosign sign --yes "${IMAGE}@${IMAGE_DIGEST}"
+          cosign sign --yes "${AGENT_IMAGE}@${AGENT_DIGEST}"
