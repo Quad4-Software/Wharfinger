@@ -17,6 +17,8 @@ declare global {
 			sessionHash: string | null;
 			/** External mount path of the admin panel (e.g. /admin). */
 			adminBase: string;
+			/** Resolved UI locale for this request (see lib/i18n). */
+			lang: string;
 		}
 		// interface PageData {}
 		// interface PageState {}
