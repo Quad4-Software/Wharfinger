@@ -2,7 +2,9 @@
 	import { Collapsible } from 'bits-ui';
 	import { ChevronDown, ShieldCheck, ShieldAlert } from '@lucide/svelte';
 	import type { ServiceSnapshot } from '$lib/shared/types';
-	import { fmtMs, fmtPct, relativeTime } from '$lib/utils/format';
+	import type { I18nKey } from '$lib/i18n';
+	import { relativeTime, t } from '$lib/i18n/locale.svelte';
+	import { fmtMs, fmtPct } from '$lib/utils/format';
 	import StatusPill from './StatusPill.svelte';
 	import UptimeBars from './UptimeBars.svelte';
 	import LatencyPanel from './LatencyPanel.svelte';
@@ -12,11 +14,11 @@
 	let open = $state(false);
 
 	const initial = $derived(service.name.trim().charAt(0).toUpperCase() || '?');
-	const stats = $derived([
-		{ label: '24 hours', value: service.uptime.d24 },
-		{ label: '7 days', value: service.uptime.d7 },
-		{ label: '30 days', value: service.uptime.d30 },
-		{ label: '90 days', value: service.uptime.d90 }
+	const stats = $derived<{ key: I18nKey; value: number | null }[]>([
+		{ key: 'status.uptime_24h', value: service.uptime.d24 },
+		{ key: 'status.uptime_7d', value: service.uptime.d7 },
+		{ key: 'status.uptime_30d', value: service.uptime.d30 },
+		{ key: 'status.uptime_90d', value: service.uptime.d90 }
 	]);
 </script>
 
@@ -58,13 +60,13 @@
 						<div class="font-mono text-sm tabular-nums text-fg">
 							{fmtPct(service.uptime.d90)}
 						</div>
-						<div class="text-[11px] text-muted">90d uptime</div>
+						<div class="text-[11px] text-muted">{t('status.uptime_90d_short')}</div>
 					</div>
 					<div class="hidden text-right @sm:block">
 						<div class="font-mono text-sm tabular-nums text-fg">
 							{fmtMs(service.latencyMs)}
 						</div>
-						<div class="text-[11px] text-muted">latency</div>
+						<div class="text-[11px] text-muted">{t('status.latency')}</div>
 					</div>
 					<ChevronDown
 						class="size-4 text-muted transition-transform duration-200 group-data-[state=open]:rotate-180"
@@ -73,8 +75,8 @@
 			</div>
 			<UptimeBars days={service.days} />
 			<div class="flex justify-between text-[10px] tracking-wide text-faint">
-				<span>{service.days.length} days ago</span>
-				<span>today</span>
+				<span>{t('status.days_ago', { count: service.days.length })}</span>
+				<span>{t('status.today')}</span>
 			</div>
 		</Collapsible.Trigger>
 
@@ -85,9 +87,9 @@
 				<LatencyPanel {service} />
 				<div class="space-y-3">
 					<div class="grid grid-cols-2 gap-2 @sm:grid-cols-1">
-						{#each stats as s (s.label)}
+						{#each stats as s (s.key)}
 							<div class="flex items-baseline justify-between rounded-lg bg-overlay/3 px-3 py-2">
-								<span class="text-xs text-muted">{s.label}</span>
+								<span class="text-xs text-muted">{t(s.key)}</span>
 								<span class="font-mono text-sm tabular-nums text-fg">{fmtPct(s.value)}</span>
 							</div>
 						{/each}
@@ -118,9 +120,9 @@
 								></div>
 							</div>
 							<p class="mt-1 text-[10px] text-faint">
-								error budget left, {slo.windowDays}d window{slo.burnRate !== null &&
+								{t('slo.budget_left', { days: slo.windowDays })}{slo.burnRate !== null &&
 								slo.burnRate > 1
-									? ` · burning ${slo.burnRate.toFixed(1)}x`
+									? ` · ${t('slo.burning', { rate: slo.burnRate.toFixed(1) })}`
 									: ''}
 							</p>
 						</div>
@@ -137,15 +139,15 @@
 								<ShieldCheck class="size-4 shrink-0 text-up" />
 							{/if}
 							<span class="text-xs">
-								TLS certificate expires in {service.certDays} day{service.certDays === 1 ? '' : 's'}
+								{t('cert.expires', { count: service.certDays })}
 							</span>
 						</div>
 					{/if}
 					{#if service.lastCheckedAt}
 						<p class="text-[11px] text-faint">
-							Last checked {relativeTime(service.lastCheckedAt, now)}{service.lastDetail
-								? ` · ${service.lastDetail}`
-								: ''}
+							{t('status.last_checked', {
+								time: relativeTime(service.lastCheckedAt, now)
+							})}{service.lastDetail ? ` · ${service.lastDetail}` : ''}
 						</p>
 					{/if}
 				</div>

@@ -4,6 +4,7 @@
 	import type { PageMeta, StatusSnapshot } from '$lib/shared/types';
 	import { filterSnapshot } from '$lib/shared/pages';
 	import { StatusStream } from '$lib/state/status-stream.svelte';
+	import { t } from '$lib/i18n/locale.svelte';
 	import Announcement from '$lib/components/Announcement.svelte';
 	import IncidentList from '$lib/components/IncidentList.svelte';
 	import IncidentRail from '$lib/components/IncidentRail.svelte';
@@ -21,6 +22,44 @@
 	let snapshot = $state<StatusSnapshot>(untrack(() => initial));
 	let now = $state(Date.now());
 	let activeGroups = $state<string[]>([]);
+	let dismissed = $state<string[]>(loadDismissed());
+
+	const DISMISS_KEY = 'wf-dismissed-ongoing';
+
+	function loadDismissed(): string[] {
+		try {
+			const raw = localStorage.getItem(DISMISS_KEY);
+			const ids = raw ? (JSON.parse(raw) as unknown) : [];
+			return Array.isArray(ids) ? ids.filter((x): x is string => typeof x === 'string') : [];
+		} catch {
+			return [];
+		}
+	}
+
+	function persistDismissed(): void {
+		try {
+			localStorage.setItem(DISMISS_KEY, JSON.stringify(dismissed.slice(-200)));
+		} catch {
+			// storage unavailable
+		}
+	}
+
+	function clearOngoing(): void {
+		dismissed = [...new Set([...dismissed, ...snapshot.incidents.active.map((i) => i.id)])];
+		persistDismissed();
+	}
+
+	function restoreDismissed(): void {
+		dismissed = [];
+		persistDismissed();
+	}
+
+	// Dismissed ids are only meaningful while the incident is still active,
+	// so resolved ids drop out of the count automatically.
+	const ongoing = $derived(snapshot.incidents.active.filter((i) => !dismissed.includes(i.id)));
+	const clearedCount = $derived(
+		dismissed.filter((id) => snapshot.incidents.active.some((i) => i.id === id)).length
+	);
 
 	const stream = new StatusStream(
 		(s) => {
@@ -58,7 +97,7 @@
 	}
 </script>
 
-<a href="#status-content" class="skip-link">Skip to status</a>
+<a href="#status-content" class="skip-link">{t('status.skip')}</a>
 <div class="mx-auto max-w-3xl px-4 sm:px-6 rail:max-w-6xl" style="--color-accent: {site.accent}">
 	<SiteHeader {site} pages={snapshot.pages} currentSlug={pageMeta?.slug ?? null} />
 
@@ -74,15 +113,27 @@
 
 			<OverallBanner overall={snapshot.overall} generatedAt={snapshot.generatedAt} {now} />
 
-			{#if snapshot.incidents.active.length > 0}
-				<IncidentList incidents={snapshot.incidents.active} title="Ongoing Incidents" />
+			{#if ongoing.length > 0 || clearedCount > 0}
+				<IncidentList
+					incidents={ongoing}
+					title={t('status.incidents_ongoing')}
+					collapsible
+					persistKey="wf-ongoing-collapsed"
+					onclear={clearOngoing}
+					cleared={clearedCount}
+					onrestore={restoreDismissed}
+				/>
 			{/if}
 
 			<MaintenanceSection windows={snapshot.maintenance.active} active />
 			<MaintenanceSection windows={snapshot.maintenance.upcoming} active={false} />
 
 			{#if filterGroups.length > 0}
-				<div class="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter services">
+				<div
+					class="flex flex-wrap items-center gap-1.5"
+					role="group"
+					aria-label={t('status.filter_services')}
+				>
 					{#each filterGroups as g (g.id)}
 						<button
 							type="button"
@@ -112,7 +163,7 @@
 								activeGroups = [];
 							}}
 						>
-							Clear
+							{t('common.clear')}
 						</button>
 					{/if}
 				</div>
@@ -123,7 +174,7 @@
 			{/each}
 		</main>
 
-		<aside class="mt-8 rail:sticky rail:top-6 rail:mt-0" aria-label="Incident history">
+		<aside class="mt-8 rail:sticky rail:top-6 rail:mt-0" aria-label={t('status.incident_history')}>
 			<IncidentRail incidents={snapshot.incidents.recent} />
 		</aside>
 	</div>

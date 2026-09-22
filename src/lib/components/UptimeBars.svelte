@@ -1,7 +1,9 @@
 <script lang="ts">
 	import type { DayBucket } from '$lib/shared/types';
-	import { DAY_CLASS, DAY_LABEL } from '$lib/utils/status-style';
-	import { fmtDate, fmtPct } from '$lib/utils/format';
+	import { DAY_KEYS } from '$lib/i18n';
+	import { fmtDate, t } from '$lib/i18n/locale.svelte';
+	import { DAY_CLASS } from '$lib/utils/status-style';
+	import { fmtPct } from '$lib/utils/format';
 
 	const { days }: { days: DayBucket[] } = $props();
 
@@ -71,6 +73,13 @@
 	}
 
 	const hovered = $derived(hoverIdx === null ? null : days[hoverIdx]);
+
+	function dayLabel(day: DayBucket): string {
+		const label = `${day.date}: ${t(DAY_KEYS[day.state])}`;
+		return day.uptime === null
+			? label
+			: `${label}, ${t('uptime.pct', { pct: fmtPct(day.uptime) })}`;
+	}
 </script>
 
 <svelte:window
@@ -85,7 +94,7 @@
 <div
 	class="flex h-8 items-stretch gap-[2px]"
 	role="list"
-	aria-label="Daily uptime history"
+	aria-label={t('uptime.history')}
 	{onkeydown}
 >
 	{#each days as day, i (day.date)}
@@ -95,9 +104,7 @@
 			role="listitem"
 			tabindex={i === focusIdx ? 0 : -1}
 			class="bar min-w-0 flex-1 rounded-[2px] {DAY_CLASS[day.state]}"
-			aria-label="{day.date}: {DAY_LABEL[day.state]}{day.uptime !== null
-				? `, ${fmtPct(day.uptime)} uptime`
-				: ''}"
+			aria-label={dayLabel(day)}
 			onpointerenter={(e) => {
 				show(e, i);
 			}}
@@ -127,7 +134,7 @@
 	>
 		<div class="font-medium text-fg">{fmtDate(hovered.date)}</div>
 		<div class="mt-0.5 text-muted">
-			{DAY_LABEL[hovered.state]}{hovered.uptime !== null ? ` · ${fmtPct(hovered.uptime)}` : ''}
+			{t(DAY_KEYS[hovered.state])}{hovered.uptime !== null ? ` · ${fmtPct(hovered.uptime)}` : ''}
 		</div>
 	</div>
 {/if}

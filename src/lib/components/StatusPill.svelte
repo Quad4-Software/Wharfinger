@@ -1,5 +1,7 @@
 <script lang="ts">
-	import { STATUS_LABEL, type ServiceStatus } from '$lib/shared/status';
+	import type { ServiceStatus } from '$lib/shared/status';
+	import { STATUS_KEYS } from '$lib/i18n';
+	import { t } from '$lib/i18n/locale.svelte';
 	import { STATUS_PILL } from '$lib/utils/status-style';
 
 	const { status }: { status: ServiceStatus } = $props();
@@ -10,5 +12,5 @@
 		status
 	]}"
 >
-	{STATUS_LABEL[status]}
+	{t(STATUS_KEYS[status])}
 </span>

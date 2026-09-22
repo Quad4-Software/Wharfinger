@@ -7,7 +7,7 @@
 	import ConfirmDialog from '$lib/components/admin/ConfirmDialog.svelte';
 	import ServicePicker from '$lib/components/admin/ServicePicker.svelte';
 	import AiPanel from '$lib/components/admin/AiPanel.svelte';
-	import { api, ApiError } from '$lib/state/admin.svelte';
+	import { api, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
 	import { fmtDateTime } from '$lib/utils/format';
 	import type { Incident } from '$lib/shared/types';
@@ -25,6 +25,7 @@
 	let updateMessage = $state('');
 	let resolveTarget = $state<Incident | null>(null);
 	let resolveOpen = $state(false);
+	let resolveAllOpen = $state(false);
 	let deleteTarget = $state<Incident | null>(null);
 	let deleteOpen = $state(false);
 	let aiFocus = $state<string | null>(null);
@@ -45,7 +46,7 @@
 			incidents = inc;
 			services = Array.isArray(svc.value) ? svc.value : [];
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'load failed');
+			toast('error', errMessage(err, 'load failed'));
 		} finally {
 			loading = false;
 		}
@@ -67,7 +68,7 @@
 			selected = [];
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'create failed');
+			toast('error', errMessage(err, 'create failed'));
 		} finally {
 			busy = false;
 		}
@@ -84,7 +85,7 @@
 			updateMessage = '';
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'update failed');
+			toast('error', errMessage(err, 'update failed'));
 		} finally {
 			busy = false;
 		}
@@ -100,7 +101,26 @@
 			resolveOpen = false;
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'resolve failed');
+			toast('error', errMessage(err, 'resolve failed'));
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function resolveAll(): Promise<void> {
+		busy = true;
+		try {
+			const results = await Promise.allSettled(
+				incidents.active.map((inc) => api(`/incidents/${inc.id}`, { method: 'PATCH' }))
+			);
+			const failed = results.filter((r) => r.status === 'rejected').length;
+			if (failed > 0) {
+				toast('error', `${incidents.active.length - failed} resolved, ${failed} failed`);
+			} else {
+				toast('success', `${incidents.active.length} incidents resolved`);
+			}
+			resolveAllOpen = false;
+			await load();
 		} finally {
 			busy = false;
 		}
@@ -116,7 +136,7 @@
 			deleteOpen = false;
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'delete failed');
+			toast('error', errMessage(err, 'delete failed'));
 		} finally {
 			busy = false;
 		}
@@ -142,7 +162,20 @@
 	</div>
 {:else}
 	<section>
-		<h2 class="mb-3 text-sm font-semibold">Active</h2>
+		<div class="mb-3 flex items-center justify-between gap-2">
+			<h2 class="text-sm font-semibold">Active</h2>
+			{#if incidents.active.length > 1}
+				<button
+					class="btn"
+					disabled={busy}
+					onclick={() => {
+						resolveAllOpen = true;
+					}}
+				>
+					Resolve all
+				</button>
+			{/if}
+		</div>
 		{#if incidents.active.length === 0}
 			<div class="card p-6 text-center">
 				<p class="flex items-center justify-center gap-2 text-sm text-up-fg">
@@ -319,6 +352,14 @@
 	description={`"${resolveTarget?.title ?? 'This incident'}" will be marked resolved.`}
 	confirmLabel="Resolve"
 	onconfirm={() => void resolve()}
+/>
+
+<ConfirmDialog
+	bind:open={resolveAllOpen}
+	title="Resolve all active incidents?"
+	description={`All ${incidents.active.length} active incidents will be marked resolved and moved to history.`}
+	confirmLabel="Resolve all"
+	onconfirm={() => void resolveAll()}
 />
 
 <ConfirmDialog

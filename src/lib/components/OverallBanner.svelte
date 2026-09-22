@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { CircleCheck, TriangleAlert, CircleX, Wrench, CircleQuestionMark } from '@lucide/svelte';
-	import { OVERALL_LABEL, type ServiceStatus } from '$lib/shared/status';
+	import type { ServiceStatus } from '$lib/shared/status';
+	import { OVERALL_KEYS } from '$lib/i18n';
+	import { t, relativeTime } from '$lib/i18n/locale.svelte';
 	import { STATUS_HEX } from '$lib/utils/status-style';
-	import { relativeTime } from '$lib/utils/format';
 
 	const {
 		overall,
@@ -27,7 +28,7 @@
 <section
 	class="card relative overflow-hidden p-6 sm:p-8"
 	aria-live="polite"
-	aria-label="Overall status"
+	aria-label={t('status.overall')}
 >
 	<div
 		class="pointer-events-none absolute inset-0 opacity-60"
@@ -42,9 +43,11 @@
 				<Icon class="size-6" strokeWidth={2.2} />
 			</div>
 			<div>
-				<h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">{OVERALL_LABEL[overall]}</h1>
+				<h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">
+					{t(OVERALL_KEYS[overall])}
+				</h1>
 				<p class="mt-0.5 text-sm text-muted">
-					Last updated {relativeTime(generatedAt, now)}
+					{t('status.updated', { time: relativeTime(generatedAt, now) })}
 				</p>
 			</div>
 		</div>

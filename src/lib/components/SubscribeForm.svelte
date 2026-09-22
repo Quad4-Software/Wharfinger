@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Webhook } from '@lucide/svelte';
+	import { t } from '$lib/i18n/locale.svelte';
 
 	let open = $state(false);
 	let url = $state('');
@@ -37,13 +38,14 @@
 			open = true;
 		}}
 	>
-		<Webhook class="size-3.5" /> Subscribe
+		<Webhook class="size-3.5" />
+		{t('subscribe.cta')}
 	</button>
 {:else}
 	<div class="flex flex-col gap-1.5">
 		{#if done}
 			<p class="text-muted">
-				Confirmation sent. The webhook will receive a link to activate the subscription.
+				{t('subscribe.sent')}
 			</p>
 		{:else}
 			<form
@@ -57,18 +59,18 @@
 					class="input w-56 text-xs"
 					type="url"
 					placeholder="https://example.com/hook"
-					aria-label="Webhook URL"
+					aria-label={t('subscribe.url_label')}
 					bind:value={url}
 					required
 				/>
 				<button class="btn btn-sm" type="submit" disabled={busy || !url.trim()}>
-					{busy ? 'Sending...' : 'Subscribe'}
+					{busy ? t('subscribe.sending') : t('subscribe.cta')}
 				</button>
 			</form>
 			{#if failed}
-				<p class="text-down" role="alert">Could not register that webhook URL.</p>
+				<p class="text-down" role="alert">{t('subscribe.failed')}</p>
 			{/if}
-			<p class="text-faint">Status events will be POSTed there, HMAC-signed.</p>
+			<p class="text-faint">{t('subscribe.hint')}</p>
 		{/if}
 	</div>
 {/if}

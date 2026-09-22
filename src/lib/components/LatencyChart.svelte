@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { LatencyPoint } from '$lib/shared/types';
+	import { t } from '$lib/i18n/locale.svelte';
 	import { fmtMs } from '$lib/utils/format';
 
 	interface ChartMarker {
@@ -70,8 +71,12 @@
 
 <div class="space-y-2">
 	<div class="flex items-baseline justify-between text-xs text-muted">
-		<span>Response time, last 24h</span>
-		<span class="font-mono">{avgOverall !== null ? `avg ${fmtMs(avgOverall)}` : 'no samples'}</span>
+		<span>{t('latency.chart_title')}</span>
+		<span class="font-mono"
+			>{avgOverall !== null
+				? t('latency.avg', { ms: fmtMs(avgOverall) })
+				: t('latency.no_samples')}</span
+		>
 	</div>
 	{#if values.length > 0}
 		<svg
@@ -80,7 +85,7 @@
 			class="w-full text-maint"
 			style="height: {height}px"
 			role="img"
-			aria-label="Latency chart"
+			aria-label={t('latency.chart_aria')}
 		>
 			<defs>
 				<linearGradient id="lat-fill-{uid}" x1="0" y1="0" x2="0" y2="1">
@@ -117,7 +122,7 @@
 		</svg>
 	{:else}
 		<div class="flex h-[100px] items-center justify-center text-xs text-faint">
-			No latency data yet
+			{t('latency.no_data')}
 		</div>
 	{/if}
 </div>

@@ -5,6 +5,7 @@
 	import type { LatencyPoint, ServiceSnapshot } from '$lib/shared/types';
 	import type { LatencyRange } from '$lib/shared/uptime';
 	import { paths } from '$lib/shared/paths';
+	import { t } from '$lib/i18n/locale.svelte';
 	import LatencyChart from './LatencyChart.svelte';
 
 	const { service }: { service: ServiceSnapshot } = $props();
@@ -76,7 +77,7 @@
 
 <div class="space-y-2">
 	<div class="flex items-center justify-between">
-		<span class="text-xs text-muted">Response time</span>
+		<span class="text-xs text-muted">{t('latency.title')}</span>
 		<ToggleGroup.Root
 			type="single"
 			bind:value={range}
@@ -99,9 +100,10 @@
 				class="flex h-[100px] flex-col items-center justify-center gap-2 text-xs text-faint"
 				role="alert"
 			>
-				<span>Could not load history</span>
+				<span>{t('latency.load_failed')}</span>
 				<button class="btn btn-sm" onclick={retry}>
-					<RotateCcw class="size-3.5" /> Retry
+					<RotateCcw class="size-3.5" />
+					{t('common.retry')}
 				</button>
 			</div>
 		{:else}

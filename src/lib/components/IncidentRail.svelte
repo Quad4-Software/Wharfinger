@@ -2,9 +2,10 @@
 	import { TriangleAlert, Flame, Wrench, CircleCheck, ChevronDown, Rss } from '@lucide/svelte';
 	import { resolve } from '$app/paths';
 	import type { Incident } from '$lib/shared/types';
-	import { durationBetween, fmtDateTime } from '$lib/utils/format';
+	import { fmtDateTime, t } from '$lib/i18n/locale.svelte';
+	import { durationBetween } from '$lib/utils/format';
 
-	const { incidents, title = 'Past incidents' }: { incidents: Incident[]; title?: string } =
+	const { incidents, title = t('incident.past') }: { incidents: Incident[]; title?: string } =
 		$props();
 
 	const sevIcon = { minor: TriangleAlert, major: Flame, maintenance: Wrench } as const;
@@ -26,7 +27,7 @@
 	{#if incidents.length === 0}
 		<div class="flex items-center gap-3 px-4 py-4 text-sm text-muted">
 			<CircleCheck class="size-4 shrink-0 text-up" />
-			No incidents on record.
+			{t('incident.none_on_record')}
 		</div>
 	{:else}
 		<ul
@@ -52,11 +53,13 @@
 									<span class="mt-0.5 block text-xs text-muted">
 										{fmtDateTime(inc.startedAt)} ·
 										{inc.resolvedAt
-											? `resolved after ${durationBetween(inc.startedAt, inc.resolvedAt)}`
-											: 'ongoing'}
+											? t('incident.resolved_after', {
+													duration: durationBetween(inc.startedAt, inc.resolvedAt)
+												})
+											: t('incident.ongoing')}
 									</span>
 									<span class="mt-0.5 block truncate text-xs text-faint">
-										affects {inc.services.join(', ')}
+										{t('incident.affects', { services: inc.services.join(', ') })}
 									</span>
 								</span>
 								<ChevronDown
@@ -85,11 +88,13 @@
 								<p class="mt-0.5 text-xs text-muted">
 									{fmtDateTime(inc.startedAt)} ·
 									{inc.resolvedAt
-										? `resolved after ${durationBetween(inc.startedAt, inc.resolvedAt)}`
-										: 'ongoing'}
+										? t('incident.resolved_after', {
+												duration: durationBetween(inc.startedAt, inc.resolvedAt)
+											})
+										: t('incident.ongoing')}
 								</p>
 								<p class="mt-0.5 truncate text-xs text-faint">
-									affects {inc.services.join(', ')}
+									{t('incident.affects', { services: inc.services.join(', ') })}
 								</p>
 							</div>
 						</div>
@@ -102,7 +107,8 @@
 				href={resolve('/feed.xml')}
 				class="inline-flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-fg"
 			>
-				<Rss class="size-3.5" /> Subscribe to incident updates
+				<Rss class="size-3.5" />
+				{t('incident.subscribe_updates')}
 			</a>
 		</footer>
 	{/if}
