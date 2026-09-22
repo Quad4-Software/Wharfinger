@@ -5,14 +5,19 @@ export const GET: RequestHandler = async () => {
 	const rt = getRuntime();
 	const { snapshot } = await rt.snapshot.current();
 	const base = snapshot.site.url?.replace(/\/$/, '');
-	const lines = ['User-agent: *', 'Allow: /', 'Disallow: /api/stream'];
-	// Only advertise the admin mount when it sits on the default path; a
-	// custom base_path is hidden deliberately and relies on x-robots-tag.
-	if (rt.adminBase() === '/admin') lines.push('Disallow: /admin');
-	// Pages flagged noindex are also disallowed here so crawlers that
-	// ignore x-robots-tag never fetch them.
-	for (const p of snapshot.pages) {
-		if (p.noindex) lines.push(`Disallow: /p/${p.slug}`);
+	const lines = ['User-agent: *'];
+	if (snapshot.site.robots === 'noindex') {
+		lines.push('Disallow: /');
+	} else {
+		lines.push('Allow: /', 'Disallow: /api/stream');
+		// Only advertise the admin mount when it sits on the default path; a
+		// custom base_path is hidden deliberately and relies on x-robots-tag.
+		if (rt.adminBase() === '/admin') lines.push('Disallow: /admin');
+		// Pages flagged noindex are also disallowed here so crawlers that
+		// ignore x-robots-tag never fetch them.
+		for (const p of snapshot.pages) {
+			if (p.noindex) lines.push(`Disallow: /p/${p.slug}`);
+		}
 	}
 	lines.push('');
 	if (base) lines.push(`Sitemap: ${base}/sitemap.xml`);

@@ -4,8 +4,10 @@
 	import PageHeader from '$lib/components/admin/PageHeader.svelte';
 	import SectionChip from '$lib/components/admin/SectionChip.svelte';
 	import Field from '$lib/components/admin/Field.svelte';
+	import Toggle from '$lib/components/admin/Toggle.svelte';
 	import { api, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
+	import { cloneJson } from '$lib/utils/clone';
 
 	// Status page customizer: branding, page behavior, and header links
 	// with a live preview of the public page. Writes go through the same
@@ -70,8 +72,8 @@
 			KEYS.forEach((k, i) => {
 				const v = results[i].value ?? (k === 'links' ? [] : {});
 				secs[k] = {
-					loaded: structuredClone(v),
-					draft: structuredClone(v),
+					loaded: cloneJson(v),
+					draft: cloneJson(v),
 					overridden: results[i].overridden,
 					updatedAt: results[i].updatedAt,
 					saving: false
@@ -93,7 +95,7 @@
 				method: 'PUT',
 				body: { value: secs[k].draft, expected: secs[k].updatedAt }
 			});
-			secs[k].loaded = structuredClone(secs[k].draft);
+			secs[k].loaded = cloneJson(secs[k].draft);
 			secs[k].overridden = r.overridden;
 			secs[k].updatedAt = r.updatedAt;
 			previewKey++;
@@ -118,7 +120,39 @@
 		secs.links.draft = links().filter((_, j) => j !== i);
 	}
 
-	const ACCENTS = ['#10b981', '#3b82f6', '#8b5cf6', '#f59e0b', '#ef4444', '#ec4899', '#14b8a6'];
+	function hostOf(u: string): string {
+		try {
+			return new URL(u).host;
+		} catch {
+			return '';
+		}
+	}
+
+	// Social card preview. The image preview only renders same-origin
+	// sources: the panel CSP restricts img-src to 'self', so external
+	// og_image URLs show a placeholder instead.
+	const ogImageValue = $derived(str(site(), 'og_image').trim());
+	const ogExternal = $derived(ogImageValue.startsWith('https://'));
+	const ogSrc = $derived.by(() => {
+		const base = ogImageValue.startsWith('/') ? ogImageValue : '/og.svg';
+		return `${base}${base.includes('?') ? '&' : '?'}k=${previewKey}`;
+	});
+	const ogPreviewTitle = $derived(
+		str(site(), 'og_title') || str(site(), 'title') || str(site(), 'name')
+	);
+	const ogPreviewDesc = $derived(str(site(), 'og_description') || str(site(), 'description'));
+	const ogPreviewHost = $derived(hostOf(str(site(), 'url')) || 'status.example.com');
+
+	const ACCENTS = [
+		'#d9a648',
+		'#3b82f6',
+		'#8b5cf6',
+		'#f59e0b',
+		'#ef4444',
+		'#ec4899',
+		'#14b8a6',
+		'#10b981'
+	];
 </script>
 
 <PageHeader title="Customize" description="Branding and behavior of the public status page.">
@@ -152,7 +186,7 @@
 							required
 						/>
 					</Field>
-					<Field label="Page title" hint="Browser tab title; defaults to the site name.">
+					<Field label="Page title" hint="Browser tab title. Defaults to the site name.">
 						<input
 							class="input w-full"
 							value={str(site(), 'title')}
@@ -211,7 +245,7 @@
 							<input
 								class="h-7 w-14 cursor-pointer rounded border border-edge bg-transparent"
 								type="color"
-								value={str(site(), 'accent', '#10b981')}
+								value={str(site(), 'accent', '#d9a648')}
 								oninput={(e) => {
 									patch('site', { accent: e.currentTarget.value });
 								}}
@@ -251,6 +285,103 @@
 							disabled={secs.site.saving || !dirty('site')}
 						>
 							{secs.site.saving ? 'Saving…' : 'Save site'}
+						</button>
+					</div>
+				</div>
+			</section>
+
+			<section class="card p-5">
+				<div class="mb-4 flex items-center justify-between">
+					<h2 class="text-sm font-semibold">Social cards</h2>
+					<SectionChip section="site" overridden={secs.site.overridden} onreset={load} />
+				</div>
+				<div class="space-y-4">
+					<div class="grid gap-4 sm:grid-cols-2">
+						<Field label="OG title" hint="Card headline. Blank uses the page title.">
+							<input
+								class="input w-full"
+								value={str(site(), 'og_title')}
+								oninput={(e) => {
+									patch('site', { og_title: e.currentTarget.value });
+								}}
+							/>
+						</Field>
+						<Field label="Twitter handle" hint="Emits twitter:site. Include the @.">
+							<input
+								class="input w-full font-mono"
+								value={str(site(), 'twitter_site')}
+								oninput={(e) => {
+									patch('site', { twitter_site: e.currentTarget.value });
+								}}
+								placeholder="@quad4"
+							/>
+						</Field>
+					</div>
+					<Field label="OG description" hint="Blank uses the site description.">
+						<textarea
+							class="input w-full"
+							rows="2"
+							oninput={(e) => {
+								patch('site', { og_description: e.currentTarget.value });
+							}}>{str(site(), 'og_description')}</textarea
+						>
+					</Field>
+					<div class="grid gap-4 sm:grid-cols-2">
+						<Field
+							label="OG image URL"
+							hint="https:// URL or /path. Blank uses the generated card."
+						>
+							<input
+								class="input w-full font-mono"
+								value={str(site(), 'og_image')}
+								oninput={(e) => {
+									patch('site', { og_image: e.currentTarget.value });
+								}}
+								placeholder="/og.svg"
+							/>
+						</Field>
+						<Field label="Search indexing" hint="Crawler policy for public pages.">
+							<div class="pt-1.5">
+								<Toggle
+									checked={str(site(), 'robots', 'index') === 'noindex'}
+									onchange={(v) => {
+										patch('site', { robots: v ? 'noindex' : 'index' });
+									}}
+									label="Keep out of search engines"
+									hint="Serves noindex to crawlers on every public page"
+								/>
+							</div>
+						</Field>
+					</div>
+					<div class="overflow-hidden rounded-xl border border-edge">
+						{#if ogExternal}
+							<div
+								class="flex aspect-[1200/630] w-full items-center justify-center bg-bg px-4 text-center text-xs text-faint"
+							>
+								External image (preview blocked by CSP): {ogImageValue}
+							</div>
+						{:else}
+							<img
+								src={ogSrc}
+								alt="Social card preview"
+								class="block aspect-[1200/630] w-full bg-bg object-cover"
+							/>
+						{/if}
+						<div class="space-y-0.5 border-t border-edge bg-panel p-3">
+							<p class="truncate text-xs uppercase tracking-wide text-faint">{ogPreviewHost}</p>
+							<p class="truncate text-sm font-semibold">{ogPreviewTitle}</p>
+							{#if ogPreviewDesc}
+								<p class="truncate text-xs text-muted">{ogPreviewDesc}</p>
+							{/if}
+						</div>
+					</div>
+					<div class="flex justify-end">
+						<button
+							class="btn btn-primary"
+							onclick={() => save('site')}
+							disabled={secs.site.saving || !dirty('site')}
+						>
+							{secs.site.saving ? 'Saving…' : 'Save social cards'}
 						</button>
 					</div>
 				</div>

@@ -23,16 +23,36 @@ export function canonicalUrl(site: Site | undefined, path: string): string | nul
 }
 
 /**
- * Absolute og:image. logo_url may be a root-relative path, which only
- * works for social crawlers once resolved against site.url.
+ * og:title and og:description honor the site-level overrides on the
+ * root page; named pages keep their own title/description so shared
+ * links stay specific to the page.
  */
-export function ogImage(site: Site | undefined): string | null {
+export function ogTitle(site: Site | undefined, meta: PageMeta | null | undefined): string {
+	return meta ? pageTitle(site, meta) : (site?.ogTitle ?? '') || pageTitle(site, meta);
+}
+
+export function ogDescription(site: Site | undefined, meta: PageMeta | null | undefined): string {
+	return meta
+		? pageDescription(site, meta)
+		: (site?.ogDescription ?? '') || pageDescription(site, meta);
+}
+
+/**
+ * Absolute og:image: the og_image override first, then the generated
+ * /og.svg card (scoped to a named page via ?page=), then logo_url.
+ * Root-relative sources only work for crawlers once resolved against
+ * site.url, so everything returns null when it is unset.
+ */
+export function ogImage(site: Site | undefined, page?: string | null): string | null {
+	const base = site?.url?.replace(/\/+$/, '');
+	const override = site?.ogImage;
+	if (override) {
+		if (override.startsWith('https://')) return override;
+		if (base) return `${base}${override.startsWith('/') ? '' : '/'}${override}`;
+	}
+	if (base) return `${base}/og.svg${page ? `?page=${encodeURIComponent(page)}` : ''}`;
 	const logo = site?.logoUrl;
-	if (!logo) return null;
-	if (logo.startsWith('http://') || logo.startsWith('https://')) return logo;
-	const base = site.url?.replace(/\/+$/, '');
-	if (!base) return null;
-	return `${base}${logo.startsWith('/') ? '' : '/'}${logo}`;
+	return logo && /^https?:\/\//.test(logo) ? logo : null;
 }
 
 interface JsonLdSite {

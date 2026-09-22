@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalUrl, jsonLdTag, ogImage, pageDescription, pageTitle } from '$lib/shared/seo';
+import {
+	canonicalUrl,
+	jsonLdTag,
+	ogDescription,
+	ogImage,
+	ogTitle,
+	pageDescription,
+	pageTitle
+} from '$lib/shared/seo';
 import type { PageMeta, StatusSnapshot } from '$lib/shared/types';
 
 const site = {
@@ -9,6 +17,11 @@ const site = {
 	url: 'https://status.quad4.io/',
 	logoUrl: '/logo.svg',
 	accent: '#10b981',
+	ogTitle: null,
+	ogDescription: null,
+	ogImage: null,
+	twitterSite: null,
+	robots: 'index',
 	announcement: null,
 	links: []
 } satisfies StatusSnapshot['site'];
@@ -50,15 +63,40 @@ describe('canonicalUrl', () => {
 	});
 });
 
-describe('ogImage', () => {
-	it('resolves root-relative logos against site.url', () => {
-		expect(ogImage(site)).toBe('https://status.quad4.io/logo.svg');
+describe('ogTitle/ogDescription', () => {
+	it('honors site overrides on the root page', () => {
+		const s = { ...site, ogTitle: 'Quad4 infra status', ogDescription: 'Everything live.' };
+		expect(ogTitle(s, null)).toBe('Quad4 infra status');
+		expect(ogDescription(s, null)).toBe('Everything live.');
 	});
 
-	it('passes absolute logos through and drops relative ones without site.url', () => {
-		expect(ogImage({ ...site, logoUrl: 'https://cdn.io/l.png' })).toBe('https://cdn.io/l.png');
+	it('keeps the page title on named pages', () => {
+		const s = { ...site, ogTitle: 'Quad4 infra status' };
+		expect(ogTitle(s, meta)).toBe('Projects · Quad4');
+		expect(ogTitle(site, meta)).toBe('Projects · Quad4');
+	});
+});
+
+describe('ogImage', () => {
+	it('points at the generated card resolved against site.url', () => {
+		expect(ogImage(site)).toBe('https://status.quad4.io/og.svg');
+		expect(ogImage(site, 'projects')).toBe('https://status.quad4.io/og.svg?page=projects');
+	});
+
+	it('prefers an og_image override, absolute or root-relative', () => {
+		expect(ogImage({ ...site, ogImage: 'https://cdn.io/card.png' })).toBe(
+			'https://cdn.io/card.png'
+		);
+		expect(ogImage({ ...site, ogImage: '/card.svg' })).toBe('https://status.quad4.io/card.svg');
+	});
+
+	it('falls back to an absolute logo only when site.url is unset', () => {
+		expect(ogImage({ ...site, url: null, logoUrl: 'https://cdn.io/l.png' })).toBe(
+			'https://cdn.io/l.png'
+		);
 		expect(ogImage({ ...site, url: null })).toBeNull();
-		expect(ogImage({ ...site, logoUrl: null })).toBeNull();
+		expect(ogImage({ ...site, url: null, logoUrl: null })).toBeNull();
+		expect(ogImage({ ...site, url: null, ogImage: '/card.svg' })).toBeNull();
 	});
 });
 

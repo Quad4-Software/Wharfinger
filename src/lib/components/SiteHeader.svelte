@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
-	import { Activity, Rss } from '@lucide/svelte';
+	import { Anchor, Rss } from '@lucide/svelte';
 	import type { PageMeta, StatusSnapshot } from '$lib/shared/types';
+	import { t } from '$lib/i18n/locale.svelte';
 
 	const {
 		site,
@@ -25,12 +26,12 @@
 				class="flex size-9 items-center justify-center rounded-lg ring-1 ring-edge"
 				style="background: color-mix(in srgb, var(--color-accent) 14%, transparent)"
 			>
-				<Activity class="size-5 text-accent" strokeWidth={2.2} />
+				<Anchor class="size-5 text-accent" strokeWidth={2.2} />
 			</div>
 		{/if}
 		<div>
 			<div class="text-[15px] font-semibold tracking-tight text-fg">{site.name}</div>
-			<div class="text-xs text-muted">Status</div>
+			<div class="text-xs text-muted">{t('status.word')}</div>
 		</div>
 	</div>
 
@@ -39,7 +40,7 @@
 			<a
 				href={resolve('/')}
 				class="transition-colors {currentSlug === null ? 'text-fg' : 'text-muted hover:text-fg'}"
-				>All</a
+				>{t('status.all_pages')}</a
 			>
 			{#each pages as p (p.slug)}
 				<a
@@ -62,10 +63,10 @@
 		<a
 			href={resolve('/feed.xml')}
 			class="inline-flex items-center gap-1.5 text-muted transition-colors hover:text-fg"
-			title="RSS incident feed"
+			title={t('status.feed_title')}
 		>
 			<Rss class="size-4" />
-			<span class="hidden sm:inline">Feed</span>
+			<span class="hidden sm:inline">{t('status.feed')}</span>
 		</a>
 	</nav>
 </header>
