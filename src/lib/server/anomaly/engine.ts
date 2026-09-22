@@ -115,16 +115,30 @@ export function zScore(
 }
 
 /**
+ * Rate-of-bad-things metrics (flaps, failures, churn) only matter on
+ * the upside: an hour with unusually few flaps is not an anomaly.
+ * Continuous gauges like cpu and load1 stay two-sided because a
+ * flatline can mean a stalled collector as much as a calm host.
+ */
+const SPIKE_ONLY_RE = /([_.]per_(hour|min|sec)|failures|flaps|errors)/i;
+
+export function metricDirection(metric: string): 'both' | 'up' {
+	return SPIKE_ONLY_RE.test(metric) ? 'up' : 'both';
+}
+
+/**
  * Severity for a score, or null when the baseline is too young to
- * trust or the deviation is ordinary. Either tail counts: a metric
- * that flatlines is as anomalous as one that spikes.
+ * trust or the deviation is ordinary. direction 'up' ignores the
+ * lower tail entirely.
  */
 export function classify(
 	z: number,
 	n: number,
-	minSamples = ANOMALY_MIN_SAMPLES
+	minSamples = ANOMALY_MIN_SAMPLES,
+	direction: 'both' | 'up' = 'both'
 ): AnomalySeverity | null {
 	if (n < minSamples) return null;
+	if (direction === 'up' && z < 0) return null;
 	const a = Math.abs(z);
 	if (a >= ANOMALY_ALERT_Z) return 'alert';
 	if (a >= ANOMALY_WARN_Z) return 'warn';
@@ -199,7 +213,7 @@ export class AnomalyEngine {
 
 		const expected = prev?.ewma ?? value;
 		const z = prev ? zScore(value, expected, prev.ewmvar) : 0;
-		const severity = classify(z, prev?.n ?? 0);
+		const severity = classify(z, prev?.n ?? 0, ANOMALY_MIN_SAMPLES, metricDirection(metric));
 
 		const next = ewmaUpdate(
 			prev ? { mean: prev.ewma, variance: prev.ewmvar, n: prev.n } : null,
@@ -220,6 +234,20 @@ export class AnomalyEngine {
 			.run(metric, Math.min(next.n, WINDOW_N_CAP), next.mean, next.variance, next.n, ts);
 
 		if (!severity) return null;
+
+		// One open anomaly per metric at a time: a sustained excursion
+		// would otherwise write a row every tick. An escalation to a
+		// higher severity still records so warn->alert is visible.
+		const rank = (s: AnomalySeverity): number => ANOMALY_SEVERITIES.indexOf(s);
+		const open = (await this.db
+			.prepare(
+				`SELECT severity FROM anomalies
+				WHERE metric = ? AND acked_at IS NULL AND created_at > ?
+				ORDER BY id DESC LIMIT 1`
+			)
+			.get(metric, ts - ANOMALY_ALERT_COOLDOWN_MS)) as { severity: AnomalySeverity } | undefined;
+		if (open && rank(open.severity) >= rank(severity)) return null;
+
 		const r = await this.db
 			.prepare(
 				`INSERT INTO anomalies (metric, value, expected, z, severity, detail, created_at)

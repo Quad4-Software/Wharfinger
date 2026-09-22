@@ -13,7 +13,7 @@
 	} from '@lucide/svelte';
 	import PageHeader from '$lib/components/admin/PageHeader.svelte';
 	import StatTile from '$lib/components/admin/StatTile.svelte';
-	import { api, ApiError, errMessage } from '$lib/state/admin.svelte';
+	import { api, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
 	import { fmtDateTime, relativeTime } from '$lib/utils/format';
 
@@ -76,7 +76,7 @@
 			summary = a.summary;
 			metricStats = m.metrics;
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'load failed');
+			toast('error', errMessage(err, 'load failed'));
 		} finally {
 			loading = false;
 		}

@@ -14,6 +14,7 @@ import {
 	AnomalyEngine,
 	classify,
 	ewmaUpdate,
+	metricDirection,
 	getEngine,
 	zScore,
 	type AnomalyRow
@@ -81,6 +82,15 @@ describe('zScore and classify', () => {
 		expect(classify(50, ANOMALY_MIN_SAMPLES - 1)).toBeNull();
 		expect(classify(50, ANOMALY_MIN_SAMPLES)).toBe('alert');
 	});
+
+	it('ignores the lower tail for spike-only metrics', () => {
+		expect(metricDirection('service.flaps_per_hour')).toBe('up');
+		expect(metricDirection('auth.failures_per_min')).toBe('up');
+		expect(metricDirection('deploy.per_hour')).toBe('up');
+		expect(metricDirection('agent.host1.cpu')).toBe('both');
+		expect(classify(-17, 100, ANOMALY_MIN_SAMPLES, 'up')).toBeNull();
+		expect(classify(-17, 100, ANOMALY_MIN_SAMPLES, 'both')).toBe('alert');
+	});
 });
 
 describe('AnomalyEngine.observe', () => {
@@ -108,9 +118,45 @@ describe('AnomalyEngine.observe', () => {
 	it('bounds detail JSON at 4KB', async () => {
 		const e = new AnomalyEngine(freshDb());
 		const a = await forceAlert(e, 'm.detail');
-		const big = await e.observe('m.detail', 9000, Date.now() + 1, { pad: 'x'.repeat(10 * 1024) });
+		// The open row suppresses repeats on m.detail, so the big
+		// payload goes through a second metric.
+		await seedBaseline(e, 'm.big', 5);
+		const big = await e.observe('m.big', 9000, Date.now() + 1, { pad: 'x'.repeat(10 * 1024) });
 		expect(big?.detail?.length).toBeLessThanOrEqual(4096);
 		expect(a.id).toBeGreaterThan(0);
+	});
+
+	it('suppresses repeat rows while an anomaly is open, allows escalation', async () => {
+		const e = new AnomalyEngine(freshDb());
+		const now = Date.now();
+		await seedBaseline(e, 'rate.errors_per_hour', 5);
+		const first = await e.observe('rate.errors_per_hour', 900, now);
+		expect(first?.severity).toBe('alert');
+		// Same-severity repeats inside the cooldown window are folded away.
+		expect(await e.observe('rate.errors_per_hour', 950, now + 60_000)).toBeNull();
+		// A below-baseline value on a rate metric is not an anomaly at all.
+		const e2 = new AnomalyEngine(freshDb());
+		await seedBaseline(e2, 'service.flaps_per_hour', 400);
+		expect(await e2.observe('service.flaps_per_hour', 3, now)).toBeNull();
+	});
+
+	it('reopens after the suppression window or after an ack', async () => {
+		const e = new AnomalyEngine(freshDb());
+		const now = Date.now();
+		const first = await forceAlert(e, 'm.reopen', now);
+		expect(await e.observe('m.reopen', 9000, now + 60_000)).toBeNull();
+		// Acking the open anomaly lets the next excursion record again.
+		// The baseline has tracked the excursion upward by now, so the
+		// re-alert value has to clear the wider spread.
+		await e.ack(first.id, 'alice');
+		expect(await e.observe('m.reopen', 60000, now + 120_000)).not.toBeNull();
+	});
+
+	it('keeps gauge metrics two-sided', async () => {
+		const e = new AnomalyEngine(freshDb());
+		await seedBaseline(e, 'agent.h1.cpu', 50);
+		// A flatline crash to zero is as anomalous as a spike for gauges.
+		expect((await e.observe('agent.h1.cpu', 0, Date.now()))?.severity).toBeTruthy();
 	});
 });
 
@@ -135,9 +181,13 @@ describe('AnomalyEngine alert suppression', () => {
 		e.alerter = (a) => sent.push(a);
 		const t0 = 10_000_000;
 		await forceAlert(e, 'm.sup', t0);
-		await forceAlert(e, 'm.sup', t0 + 60_000);
+		// Repeats while the alert is open are suppressed before insert,
+		// so neither a row nor a notify happens.
+		expect(await e.observe('m.sup', 9000, t0 + 60_000)).toBeNull();
 		expect(sent).toHaveLength(1);
-		await forceAlert(e, 'm.sup', t0 + ANOMALY_ALERT_COOLDOWN_MS + 1);
+		// Past the window the excursion re-records; the bigger value
+		// clears the baseline spread grown by the first two outliers.
+		expect(await e.observe('m.sup', 200000, t0 + ANOMALY_ALERT_COOLDOWN_MS + 1)).not.toBeNull();
 		expect(sent).toHaveLength(2);
 	});
 
