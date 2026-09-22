@@ -262,7 +262,7 @@
 					hint={type === 'gotify'
 						? 'Mapped to the Gotify 0-10 scale.'
 						: type === 'pushover'
-							? 'Mapped to -2..2; urgent sends an emergency priority.'
+							? 'Mapped to -2..2. Urgent sends an emergency priority.'
 							: undefined}
 				>
 					<select class="input" bind:value={priority}>
@@ -280,7 +280,7 @@
 		{/if}
 
 		{#if type === 'ntfy'}
-			<Field label="Click URL" hint="Where the notification links; defaults to the site URL.">
+			<Field label="Click URL" hint="Where the notification links. Defaults to the site URL.">
 				<input class="input font-mono" bind:value={clickUrl} />
 			</Field>
 		{/if}

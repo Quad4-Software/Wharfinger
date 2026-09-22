@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Modal from '$lib/components/admin/Modal.svelte';
 	import Field from '$lib/components/admin/Field.svelte';
+	import EmptyHint from '$lib/components/admin/EmptyHint.svelte';
 	import { api, ApiError, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
 
@@ -113,13 +114,23 @@
 	<div class="space-y-4">
 		<div class="grid gap-4 sm:grid-cols-2">
 			<Field label="Target system" hint="Agent that runs every imported service" required>
-				<select class="input" bind:value={agentId} required>
-					{#each agents as a (a.id)}
-						<option value={a.id}>{a.name}</option>
-					{/each}
-				</select>
+				{#if agents.length === 0}
+					<div class="input flex items-center text-faint">No target systems</div>
+					<EmptyHint
+						message="Register an agent before importing."
+						href="/agents"
+						linkLabel="Add a system"
+						perm="agents.manage"
+					/>
+				{:else}
+					<select class="input" bind:value={agentId} required>
+						{#each agents as a (a.id)}
+							<option value={a.id}>{a.name}</option>
+						{/each}
+					</select>
+				{/if}
 			</Field>
-			<Field label="Project name" hint="Defaults to the compose name key; prefixes app names">
+			<Field label="Project name" hint="Defaults to the compose name key. Prefixes app names">
 				<input class="input" bind:value={project} placeholder="my-stack" />
 			</Field>
 		</div>

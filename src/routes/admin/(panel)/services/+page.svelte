@@ -8,6 +8,7 @@
 		Badge,
 		Check,
 		Copy,
+		GripVertical,
 		Link2,
 		Pencil,
 		Play,
@@ -23,8 +24,10 @@
 	import Field from '$lib/components/admin/Field.svelte';
 	import type { ServiceDraft } from '$lib/shared/drafts';
 	import StatusPill from '$lib/components/StatusPill.svelte';
-	import { api, ApiError, errMessage } from '$lib/state/admin.svelte';
+	import { api, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
+	import { cloneJson } from '$lib/utils/clone';
+	import { reorder } from '$lib/utils/reorder';
 	import type { ServiceStatus } from '$lib/shared/status';
 
 	type RawService = Record<string, unknown> & { id: string; name: string; type: string };
@@ -50,6 +53,12 @@
 		updatedAt: number | null;
 	}
 
+	interface PageRef {
+		slug: string;
+		title: string;
+		services: string[];
+	}
+
 	let loaded = $state<RawService[]>([]);
 	let draft = $state<RawService[]>([]);
 	let overridden = $state(false);
@@ -58,6 +67,7 @@
 	let loading = $state(true);
 	let pushUrls = $state<Record<string, string>>({});
 	let pushCopied = $state('');
+	let pages = $state<PageRef[]>([]);
 
 	let slosLoaded = $state<SloRow[]>([]);
 	let slosDraft = $state<SloRow[]>([]);
@@ -76,9 +86,28 @@
 
 	const dirty = $derived(JSON.stringify(draft) !== JSON.stringify(loaded));
 
+	// Pages that explicitly list a service id; 'all' covers everything
+	// so it is not a hard reference.
+	function pagesUsing(id: string): PageRef[] {
+		return pages.filter((p) => p.services.includes(id));
+	}
+
+	// Page references that would dangle if the draft were saved. The
+	// merged-config check rejects these, so flag them before the PUT.
+	const staleRefs = $derived.by(() => {
+		const ids = new Set(draft.map((s) => s.id));
+		const out: { page: string; id: string }[] = [];
+		for (const p of pages) {
+			for (const sid of p.services) {
+				if (sid !== 'all' && !ids.has(sid)) out.push({ page: p.title || p.slug, id: sid });
+			}
+		}
+		return out;
+	});
+
 	async function load(): Promise<void> {
 		try {
-			const [sec, ov, pu, sloSec] = await Promise.all([
+			const [sec, ov, pu, sloSec, pgSec] = await Promise.all([
 				api<SectionView>('/sections/services'),
 				api<{ services: OverviewService[] }>('/overview'),
 				api<{ urls: Record<string, string> }>('/push-urls').catch(() => ({ urls: {} })),
@@ -86,20 +115,26 @@
 					value: [],
 					overridden: false,
 					updatedAt: null
+				})),
+				api<{ value: PageRef[] }>('/sections/pages').catch(() => ({
+					value: [],
+					overridden: false,
+					updatedAt: null
 				}))
 			]);
 			loaded = Array.isArray(sec.value) ? sec.value : [];
-			draft = structuredClone(loaded);
+			draft = cloneJson(loaded);
 			overridden = sec.overridden;
 			updatedAt = sec.updatedAt;
 			statuses = new Map(ov.services.map((s) => [s.id, s]));
 			pushUrls = pu.urls;
+			pages = Array.isArray(pgSec.value) ? pgSec.value : [];
 			slosLoaded = Array.isArray(sloSec.value) ? sloSec.value : [];
-			slosDraft = structuredClone(slosLoaded);
+			slosDraft = cloneJson(slosLoaded);
 			slosOverridden = sloSec.overridden;
 			slosUpdatedAt = sloSec.updatedAt;
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'load failed');
+			toast('error', errMessage(err, 'load failed'));
 		} finally {
 			loading = false;
 		}
@@ -115,6 +150,7 @@
 		if (s.type === 'http') return field(s, 'url');
 		if (s.type === 'json') return `${field(s, 'url')} [${field(s, 'json_path')}]`;
 		if (s.type === 'websocket') return field(s, 'url');
+		if (s.type === 'security') return field(s, 'url');
 		if (s.type === 'rdap') return field(s, 'domain');
 		if (s.type === 'domain') return field(s, 'domain');
 		if (s.type === 'push') {
@@ -140,15 +176,44 @@
 		else draft = draft.map((s, i) => (i === editingIdx ? d : s));
 		toast(
 			'info',
-			editingIdx === -1 ? 'Service added; save to apply' : 'Service updated; save to apply'
+			editingIdx === -1 ? 'Service added. Save to apply.' : 'Service updated. Save to apply.'
 		);
 	}
 	function move(i: number, dir: -1 | 1): void {
-		const j = i + dir;
-		if (j < 0 || j >= draft.length) return;
-		const next = [...draft];
-		[next[i], next[j]] = [next[j], next[i]];
-		draft = next;
+		draft = reorder(draft, i, i + dir);
+	}
+
+	// Drag to reorder rows. The grip handle owns the drag so buttons
+	// and text selection inside the row stay usable; the arrow buttons
+	// remain as the keyboard/touch path.
+	let dragIdx = $state(-1);
+	let dropIdx = $state(-1);
+
+	function onRowDragStart(i: number, e: DragEvent): void {
+		dragIdx = i;
+		if (e.dataTransfer) {
+			e.dataTransfer.effectAllowed = 'move';
+			e.dataTransfer.setData('text/plain', String(i));
+		}
+	}
+
+	function onRowDragOver(i: number, e: DragEvent): void {
+		if (dragIdx < 0 || dragIdx === i) return;
+		e.preventDefault();
+		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+		dropIdx = i;
+	}
+
+	function onRowDrop(i: number, e: DragEvent): void {
+		e.preventDefault();
+		if (dragIdx >= 0) draft = reorder(draft, dragIdx, i);
+		dragIdx = -1;
+		dropIdx = -1;
+	}
+
+	function onRowDragEnd(): void {
+		dragIdx = -1;
+		dropIdx = -1;
 	}
 
 	async function saveSlos(): Promise<void> {
@@ -189,6 +254,15 @@
 	}
 
 	async function save(): Promise<void> {
+		if (draft.length === 0) {
+			toast('error', 'At least one service is required.');
+			return;
+		}
+		if (staleRefs.length > 0) {
+			const list = staleRefs.map((r) => `${r.id} (page "${r.page}")`).join(', ');
+			toast('error', `Pages reference removed services: ${list}. Fix the pages first.`);
+			return;
+		}
 		saving = true;
 		try {
 			await api('/sections/services', {
@@ -246,6 +320,34 @@
 		});
 	}
 
+	function confirmDeleteService(): void {
+		const s = draft.at(deleteIdx);
+		if (!s) return;
+		if (draft.length === 1) {
+			toast('error', 'At least one service is required.');
+			deleteOpen = false;
+			deleteIdx = -1;
+			return;
+		}
+		draft = draft.filter((_, i) => i !== deleteIdx);
+		deleteIdx = -1;
+	}
+
+	const deleteDesc = $derived.by(() => {
+		const s = draft.at(deleteIdx);
+		if (!s) return '';
+		let d = `${s.name} will stop being monitored. Its history stays in the database but disappears from the page.`;
+		if (draft.length === 1) {
+			d += ' This is the last service and at least one is required.';
+		} else {
+			const using = pagesUsing(s.id);
+			if (using.length > 0) {
+				d += ` Pages still reference it: ${using.map((p) => p.title || p.slug).join(', ')}. Update them or the save will fail.`;
+			}
+		}
+		return d;
+	});
+
 	async function runCheck(s: RawService): Promise<void> {
 		checking = s.id;
 		try {
@@ -258,14 +360,14 @@
 				`${s.name}: ${r.detail ?? (r.ok ? 'up' : 'down')} (${Math.round(r.latencyMs)}ms)`
 			);
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'check failed');
+			toast('error', errMessage(err, 'check failed'));
 		} finally {
 			checking = null;
 		}
 	}
 </script>
 
-<PageHeader title="Services" description="Monitored endpoints; changes apply live on save">
+<PageHeader title="Services" description="Monitored endpoints. Changes apply live on save.">
 	<SectionChip section="services" {overridden} onreset={load} />
 	<button class="btn btn-primary" onclick={openNew}><Plus class="size-4" /> Add service</button>
 </PageHeader>
@@ -281,10 +383,43 @@
 		>
 	</div>
 {:else}
-	<div class="card divide-y divide-edge">
+	{#if staleRefs.length > 0}
+		<div
+			class="mb-4 rounded-lg border border-degraded/40 bg-degraded/10 px-4 py-3 text-sm text-degraded-fg"
+		>
+			Pages reference services not in this list: {staleRefs
+				.map((r) => `${r.id} (page "${r.page}")`)
+				.join(', ')}. Restore the ids or update the pages before saving.
+		</div>
+	{/if}
+	<div class="card divide-y divide-edge" role="list">
 		{#each draft as s, i (s.id || i)}
 			{@const st = statuses.get(s.id)}
-			<div class="flex items-center gap-3 px-4 py-3">
+			<div
+				role="listitem"
+				class="flex items-center gap-3 px-4 py-3 transition-colors {dropIdx === i && dragIdx >= 0
+					? 'bg-accent/5 ring-1 ring-accent/40 ring-inset'
+					: ''} {dragIdx === i ? 'opacity-50' : ''}"
+				ondragover={(e) => {
+					onRowDragOver(i, e);
+				}}
+				ondrop={(e) => {
+					onRowDrop(i, e);
+				}}
+			>
+				<button
+					type="button"
+					class="shrink-0 cursor-grab text-faint transition-colors hover:text-fg active:cursor-grabbing"
+					draggable="true"
+					ondragstart={(e) => {
+						onRowDragStart(i, e);
+					}}
+					ondragend={onRowDragEnd}
+					aria-label="Drag to reorder"
+					title="Drag to reorder"
+				>
+					<GripVertical class="size-4" />
+				</button>
 				<div class="flex w-10 shrink-0 flex-col">
 					<button
 						class="text-faint hover:text-fg disabled:opacity-30"
@@ -314,6 +449,13 @@
 						{#if s.group}<span class="text-xs text-faint">{s.group}</span>{/if}
 					</div>
 					<p class="mt-0.5 truncate font-mono text-xs text-faint">{s.id} · {targetOf(s)}</p>
+					{#if pagesUsing(s.id).length > 0}
+						<p class="mt-1 flex flex-wrap gap-1">
+							{#each pagesUsing(s.id) as p (p.slug)}
+								<span class="chip chip-muted">/p/{p.slug}</span>
+							{/each}
+						</p>
+					{/if}
 				</div>
 				{#if st}<StatusPill status={st.status} />{/if}
 				<div class="flex shrink-0 items-center gap-1">
@@ -376,7 +518,7 @@
 			<div>
 				<h2 class="text-sm font-semibold">SLO targets</h2>
 				<p class="text-xs text-faint">
-					Uptime objective per service; drives the error-budget and burn-rate readout on service
+					Uptime objective per service. Drives the error-budget and burn-rate readout on service
 					cards.
 				</p>
 			</div>
@@ -429,12 +571,12 @@
 			dirty={slosDirty}
 			saving={slosSaving}
 			onsave={saveSlos}
-			ondiscard={() => (slosDraft = structuredClone(slosLoaded))}
+			ondiscard={() => (slosDraft = cloneJson(slosLoaded))}
 		/>
 	</section>
 {/if}
 
-<SaveBar {dirty} {saving} onsave={save} ondiscard={() => (draft = structuredClone(loaded))} />
+<SaveBar {dirty} {saving} onsave={save} ondiscard={() => (draft = cloneJson(loaded))} />
 
 <ServiceEditor
 	bind:open={editorOpen}
@@ -446,13 +588,10 @@
 <ConfirmDialog
 	bind:open={deleteOpen}
 	title="Delete service?"
-	description={`${draft[deleteIdx]?.name ?? 'This service'} will stop being monitored. Its history stays in the database but disappears from the page.`}
+	description={deleteDesc}
 	confirmLabel="Delete"
 	danger
-	onconfirm={() => {
-		draft = draft.filter((_, i) => i !== deleteIdx);
-		deleteIdx = -1;
-	}}
+	onconfirm={confirmDeleteService}
 />
 
 <Modal bind:open={badgeOpen} title={`Badge: ${badgeSvc?.name ?? ''}`}>
@@ -488,7 +627,7 @@
 					<input class="input w-full" bind:value={badgeLabel} maxlength="60" />
 				</Field>
 				<Field label="Value color" hint="#rrggbb, optional.">
-					<input class="input w-full font-mono" bind:value={badgeColor} placeholder="#10b981" />
+					<input class="input w-full font-mono" bind:value={badgeColor} placeholder="#d9a648" />
 				</Field>
 				<Field label="Label color" hint="#rrggbb, optional.">
 					<input

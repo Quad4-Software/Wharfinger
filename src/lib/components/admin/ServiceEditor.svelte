@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Field from './Field.svelte';
 	import Modal from './Modal.svelte';
-	import type { ServiceDraft } from '$lib/shared/drafts';
+	import { SECURITY_CHECK_LABELS, SECURITY_CHECKS, type ServiceDraft } from '$lib/shared/drafts';
 
 	let {
 		open = $bindable(false),
@@ -69,6 +69,21 @@
 				.join('\n');
 		}
 		return '';
+	}
+
+	// Security check chips: an unset or empty draft.checks means all
+	// sub-checks run; toggling materializes the array.
+	function secCheckOn(name: string): boolean {
+		const c = draft.checks;
+		return !Array.isArray(c) || c.length === 0 || c.includes(name);
+	}
+
+	function toggleSecCheck(name: string): void {
+		const cur =
+			Array.isArray(draft.checks) && draft.checks.length > 0
+				? (draft.checks as string[])
+				: [...SECURITY_CHECKS];
+		draft.checks = cur.includes(name) ? cur.filter((c) => c !== name) : [...cur, name];
 	}
 
 	function submit(): void {
@@ -209,6 +224,22 @@
 				error = 'url must start with ws:// or wss://';
 				return;
 			}
+		} else if (draft.type === 'security') {
+			out.url = str(draft.url).trim();
+			if (!/^https?:\/\/.+/.test(out.url as string)) {
+				error = 'url must start with http:// or https://';
+				return;
+			}
+			const minScore = num(draft.min_score);
+			put(
+				'min_score',
+				minScore !== undefined && minScore >= 0 && minScore <= 100 ? minScore : undefined
+			);
+			const sel = (Array.isArray(draft.checks) ? (draft.checks as string[]) : []).filter((c) =>
+				(SECURITY_CHECKS as readonly string[]).includes(c)
+			);
+			// An empty or complete selection both mean all checks run.
+			put('checks', sel.length > 0 && sel.length < SECURITY_CHECKS.length ? sel : undefined);
 		} else if (draft.type === 'push') {
 			put('expected_interval_seconds', num(draft.expected_interval_seconds));
 			put('grace_seconds', num(draft.grace_seconds));
@@ -281,6 +312,7 @@
 					<option value="websocket">WebSocket</option>
 					<option value="rdap">Domain expiry (RDAP)</option>
 					<option value="domain">Domain health</option>
+					<option value="security">Security posture</option>
 					<option value="xmpp">XMPP</option>
 					<option value="irc">IRC</option>
 					<option value="push">Push (cron / heartbeat)</option>
@@ -528,7 +560,7 @@
 			</div>
 			{#if draft.type === 'postgres'}
 				<div class="grid grid-cols-2 gap-3">
-					<Field label="User" hint="StartupMessage only; no auth.">
+					<Field label="User" hint="StartupMessage only. No auth.">
 						<input
 							class="input font-mono"
 							value={str(draft.user)}
@@ -536,7 +568,7 @@
 							placeholder="monitor"
 						/>
 					</Field>
-					<Field label="Database" hint="Optional; sent in the StartupMessage.">
+					<Field label="Database" hint="Optional. Sent in the StartupMessage.">
 						<input
 							class="input font-mono"
 							value={str(draft.database)}
@@ -547,7 +579,7 @@
 			{/if}
 		{:else if draft.type === 'rdap'}
 			<div class="grid grid-cols-2 gap-3">
-				<Field label="Domain" required hint="RDAP lookup; monitors registration expiry.">
+				<Field label="Domain" required hint="RDAP lookup. Monitors registration expiry.">
 					<input
 						class="input font-mono"
 						value={str(draft.domain)}
@@ -585,7 +617,7 @@
 				/>
 			</Field>
 			<div class="grid grid-cols-2 gap-3">
-				<Field label="Ports to probe" hint="Comma separated; blank uses the default list.">
+				<Field label="Ports to probe" hint="Comma separated. Blank uses the default list.">
 					<input
 						class="input font-mono"
 						value={csv(draft.ports)}
@@ -593,7 +625,7 @@
 						placeholder="22, 80, 443"
 					/>
 				</Field>
-				<Field label="Expected open" hint="Optional drift list; open ports outside it degrade.">
+				<Field label="Expected open" hint="Optional drift list. Open ports outside it degrade.">
 					<input
 						class="input font-mono"
 						value={csv(draft.expected_open)}
@@ -639,7 +671,7 @@
 		{:else if draft.type === 'xmpp'}
 			<div class="grid grid-cols-3 gap-3">
 				<div class="col-span-2">
-					<Field label="Host" required hint="Client stream probe; waits for stream features.">
+					<Field label="Host" required hint="Client stream probe. Waits for stream features.">
 						<input
 							class="input font-mono"
 							value={str(draft.host)}
@@ -648,7 +680,7 @@
 						/>
 					</Field>
 				</div>
-				<Field label="Port" hint="Default 5222; 5223 for direct TLS.">
+				<Field label="Port" hint="Default 5222, or 5223 for direct TLS.">
 					<input
 						class="input"
 						type="number"
@@ -663,7 +695,7 @@
 				</Field>
 			</div>
 			<div class="grid grid-cols-2 gap-3">
-				<Field label="XMPP domain" hint="Stream 'to' attribute; defaults to the host.">
+				<Field label="XMPP domain" hint="Stream 'to' attribute. Defaults to the host.">
 					<input
 						class="input font-mono"
 						value={str(draft.domain)}
@@ -693,7 +725,7 @@
 		{:else if draft.type === 'irc'}
 			<div class="grid grid-cols-3 gap-3">
 				<div class="col-span-2">
-					<Field label="Host" required hint="Registers a nick; waits for the 001 welcome.">
+					<Field label="Host" required hint="Registers a nick. Waits for the 001 welcome.">
 						<input
 							class="input font-mono"
 							value={str(draft.host)}
@@ -717,7 +749,7 @@
 				</Field>
 			</div>
 			<div class="grid grid-cols-2 gap-3">
-				<Field label="Nick" hint="Optional; a random statXXXXXX is used otherwise.">
+				<Field label="Nick" hint="Optional. A random statXXXXXX is used otherwise.">
 					<input
 						class="input font-mono"
 						value={str(draft.nick)}
@@ -745,7 +777,7 @@
 				/> TLS connection + cert watch
 			</label>
 		{:else if draft.type === 'websocket'}
-			<Field label="WebSocket URL" required hint="Upgrade handshake only; no frames are sent.">
+			<Field label="WebSocket URL" required hint="Upgrade handshake only. No frames are sent.">
 				<input
 					class="input font-mono"
 					value={str(draft.url)}
@@ -754,9 +786,55 @@
 					required
 				/>
 			</Field>
+		{:else if draft.type === 'security'}
+			<Field
+				label="URL"
+				required
+				hint="Grades TLS, headers, cookies and content into a 0-100 score. Follows up to 5 redirects."
+			>
+				<input
+					class="input font-mono"
+					value={str(draft.url)}
+					oninput={(e) => (draft.url = e.currentTarget.value)}
+					placeholder="https://example.com"
+					required
+				/>
+			</Field>
+			<Field label="Sub-checks" hint="All run while none are toggled off.">
+				<div class="flex flex-wrap gap-1.5 pt-1">
+					{#each SECURITY_CHECKS as c (c)}
+						{@const on = secCheckOn(c)}
+						<button
+							type="button"
+							class="chip font-mono transition-colors {on
+								? 'chip-on'
+								: 'hover:border-accent/60 hover:text-fg'}"
+							aria-pressed={on}
+							onclick={() => {
+								toggleSecCheck(c);
+							}}
+						>
+							{SECURITY_CHECK_LABELS[c]}
+						</button>
+					{/each}
+				</div>
+			</Field>
+			<Field label="Minimum score" hint="0-100. A grade below this marks the service degraded.">
+				<input
+					class="input"
+					type="number"
+					min="0"
+					max="100"
+					value={num(draft.min_score) ?? ''}
+					oninput={(e) =>
+						(draft.min_score =
+							e.currentTarget.value === '' ? undefined : Number(e.currentTarget.value))}
+					placeholder="80"
+				/>
+			</Field>
 		{:else if draft.type === 'push'}
 			<p class="text-xs text-faint">
-				Dead man's switch: the job calls its unique check-in URL every interval; a missed beat past
+				Dead man's switch: the job calls its unique check-in URL every interval. A missed beat past
 				the grace window flips the service down. Save, then copy the URL from the service list.
 			</p>
 			<div class="grid grid-cols-2 gap-3">
@@ -794,7 +872,7 @@
 					required
 				/>
 			</Field>
-			<Field label="TCP ports" hint="Comma separated; up when any accepts. Default 443, 80, 22.">
+			<Field label="TCP ports" hint="Comma separated. Up when any accepts. Default 443, 80, 22.">
 				<input
 					class="input font-mono"
 					value={csv(draft.ports)}

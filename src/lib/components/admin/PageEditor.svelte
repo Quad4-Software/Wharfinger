@@ -2,6 +2,7 @@
 	import Field from './Field.svelte';
 	import Modal from './Modal.svelte';
 	import ServicePicker from './ServicePicker.svelte';
+	import Toggle from './Toggle.svelte';
 	import type { PageDraft } from '$lib/shared/drafts';
 
 	let {
@@ -59,7 +60,7 @@
 			return;
 		}
 		if (accent && !/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(accent)) {
-			error = 'accent must be a hex color like #10b981';
+			error = 'accent must be a hex color like #d9a648';
 			return;
 		}
 		const out: PageDraft = {
@@ -96,12 +97,14 @@
 		</Field>
 		<div class="grid grid-cols-2 gap-3">
 			<Field label="Accent" hint="Hex color, e.g. #38bdf8.">
-				<input class="input font-mono" bind:value={accent} placeholder="#10b981" />
+				<input class="input font-mono" bind:value={accent} placeholder="#d9a648" />
 			</Field>
-			<div class="flex items-end pb-2">
-				<label class="flex items-center gap-2 text-sm text-muted">
-					<input type="checkbox" bind:checked={noindex} /> Keep out of search engines
-				</label>
+			<div class="flex items-end pb-1">
+				<Toggle
+					bind:checked={noindex}
+					label="Keep out of search engines"
+					hint="Serves noindex in robots metadata"
+				/>
 			</div>
 		</div>
 		<Field label="Services on this page" required>

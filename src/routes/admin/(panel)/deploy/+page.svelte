@@ -6,7 +6,7 @@
 	import ComposeImport from '$lib/components/admin/ComposeImport.svelte';
 	import type { DeployApp } from '$lib/shared/deploy';
 	import type { Job } from '$lib/shared/jobs';
-	import { adminHref, api, ApiError, errMessage } from '$lib/state/admin.svelte';
+	import { adminHref, api, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
 	import { fmtDateTime } from '$lib/utils/format';
 
@@ -31,7 +31,7 @@
 			jobs = j.jobs.slice(0, 12);
 			agents = ag.agents;
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'load failed');
+			toast('error', errMessage(err, 'load failed'));
 		} finally {
 			loading = false;
 		}
@@ -51,7 +51,7 @@
 			formOpen = false;
 			toast('success', 'Application created');
 			await navigator.clipboard.writeText(res.webhook).catch(() => undefined);
-			toast('info', 'Webhook URL copied; store the deploy key shown on the app page');
+			toast('info', 'Webhook URL copied. Store the deploy key shown on the app page.');
 			await load();
 			return res;
 		} catch (err) {

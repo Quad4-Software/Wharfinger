@@ -32,14 +32,14 @@ export const POST: RequestHandler = async (event) => {
 
 	if (body.action === 'begin') {
 		const secret = generateTotpSecret();
-		return apiJson({ secret, uri: totpUri(secret, user.username, 'Status Panel') });
+		return apiJson({ secret, uri: totpUri(secret, user.username, 'Wharfinger') });
 	}
 
 	if (body.action === 'confirm') {
 		const secret = typeof body.secret === 'string' ? body.secret : '';
 		const code = typeof body.code === 'string' ? body.code.trim() : '';
 		if (!secret || !verifyTotp(secret, code)) {
-			return apiError(422, 'that code did not match; check your authenticator clock');
+			return apiError(422, 'that code did not match. Check your authenticator clock');
 		}
 		const { codes, hashes } = backupCodes();
 		await rt.users.setTotp(user.id, secret, hashes);

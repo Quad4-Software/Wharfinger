@@ -80,7 +80,7 @@
 <div class="card p-4">
 	<h2 class="mb-2 flex items-center gap-1.5 text-sm font-medium text-muted">
 		<Bot class="size-4" /> Assistant
-		<span class="text-[10px] font-normal text-faint">generated; verify before acting</span>
+		<span class="text-[10px] font-normal text-faint">generated. Verify before acting</span>
 	</h2>
 	{#if enabled === false}
 		<p class="text-xs text-faint">
@@ -154,7 +154,7 @@
 		bind:open={confirmOpen}
 		title="Run suggested action?"
 		description="{sel.label}{sel.reason
-			? ` — ${sel.reason}`
+			? `. ${sel.reason}`
 			: ''}. This calls the real admin endpoint and is audit-logged."
 		confirmLabel="Run"
 		danger={sel.danger}

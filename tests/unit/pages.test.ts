@@ -45,6 +45,11 @@ const snap: StatusSnapshot = {
 		url: null,
 		logoUrl: null,
 		accent: '#fff',
+		ogTitle: null,
+		ogDescription: null,
+		ogImage: null,
+		twitterSite: null,
+		robots: 'index',
 		announcement: null,
 		links: []
 	},

@@ -8,9 +8,10 @@
 	import Field from '$lib/components/admin/Field.svelte';
 	import TargetEditor from '$lib/components/admin/TargetEditor.svelte';
 	import type { TargetDraft } from '$lib/shared/drafts';
-	import { api, ApiError, errMessage } from '$lib/state/admin.svelte';
+	import { api, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
 	import { relativeTime } from '$lib/utils/format';
+	import { cloneJson } from '$lib/utils/clone';
 
 	interface NotifSection {
 		enabled?: boolean;
@@ -72,14 +73,14 @@
 				api<{ subscribers: SubRow[] }>('/subscribers').catch(() => ({ subscribers: [] }))
 			]);
 			loaded = sec.value ?? {};
-			draft = structuredClone(loaded);
+			draft = cloneJson(loaded);
 			overridden = sec.overridden;
 			updatedAt = sec.updatedAt;
 			services = Array.isArray(svc.value) ? svc.value : [];
 			logEntries = log.entries;
 			subs = subRes.subscribers;
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'load failed');
+			toast('error', errMessage(err, 'load failed'));
 		} finally {
 			loading = false;
 		}
@@ -92,7 +93,7 @@
 		if (editingIdx === -1) list.push(t);
 		else list[editingIdx] = t;
 		draft = { ...draft, targets: list };
-		toast('info', 'Target saved; apply with Save');
+		toast('info', 'Target saved. Apply with Save.');
 	}
 
 	async function save(): Promise<void> {
@@ -119,7 +120,7 @@
 			const log = await api<{ entries: LogEntry[] }>('/notifications/log');
 			logEntries = log.entries;
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'test failed');
+			toast('error', errMessage(err, 'test failed'));
 			const log = await api<{ entries: LogEntry[] }>('/notifications/log').catch(() => null);
 			if (log) logEntries = log.entries;
 		} finally {
@@ -135,7 +136,7 @@
 			subs = subs.filter((x) => x.id !== s.id);
 			toast('success', 'Subscriber removed');
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'delete failed');
+			toast('error', errMessage(err, 'delete failed'));
 		}
 	}
 </script>
@@ -336,7 +337,7 @@
 	{/if}
 {/if}
 
-<SaveBar {dirty} {saving} onsave={save} ondiscard={() => (draft = structuredClone(loaded))} />
+<SaveBar {dirty} {saving} onsave={save} ondiscard={() => (draft = cloneJson(loaded))} />
 
 <TargetEditor
 	bind:open={editorOpen}

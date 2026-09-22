@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Modal from '$lib/components/admin/Modal.svelte';
 	import Field from '$lib/components/admin/Field.svelte';
+	import EmptyHint from '$lib/components/admin/EmptyHint.svelte';
 	import type { AppSource, DeployApp, DeployRuntime, Healthcheck } from '$lib/shared/deploy';
 	import { FORGE_KINDS, SOURCE_KINDS, RUNTIMES } from '$lib/shared/deploy';
 	import type { ServiceGroup } from '$lib/shared/groups';
@@ -218,15 +219,25 @@
 		}}
 	>
 		<div class="grid gap-4 sm:grid-cols-2">
-			<Field label="Name" hint="Lowercase dns-label; used in container names" required>
+			<Field label="Name" hint="Lowercase dns-label. Used in container names" required>
 				<input class="input" bind:value={name} placeholder="my-app" required />
 			</Field>
 			<Field label="Target system" hint="Agent that builds and runs the workload" required>
-				<select class="input" bind:value={agentId} required>
-					{#each agents as a (a.id)}
-						<option value={a.id}>{a.name}</option>
-					{/each}
-				</select>
+				{#if agents.length === 0}
+					<div class="input flex items-center text-faint">No target systems</div>
+					<EmptyHint
+						message="Register an agent before deploying."
+						href="/agents"
+						linkLabel="Add a system"
+						perm="agents.manage"
+					/>
+				{:else}
+					<select class="input" bind:value={agentId} required>
+						{#each agents as a (a.id)}
+							<option value={a.id}>{a.name}</option>
+						{/each}
+					</select>
+				{/if}
 			</Field>
 		</div>
 
@@ -238,7 +249,7 @@
 					{/each}
 				</select>
 			</Field>
-			<Field label="Runtime" hint="Podman is the default; k8s needs a kubeconfig on the agent">
+			<Field label="Runtime" hint="Podman is the default. K8s needs a kubeconfig on the agent">
 				<select class="input" bind:value={runtime}>
 					{#each RUNTIMES as rt (rt)}
 						<option value={rt}>{rt}</option>
@@ -249,7 +260,7 @@
 
 		{#if runtime === 'k8s'}
 			<div class="grid gap-4 sm:grid-cols-2">
-				<Field label="Namespace" hint="Optional DNS-1123 label; empty uses the agent default">
+				<Field label="Namespace" hint="Optional DNS-1123 label. Empty uses the agent default">
 					<input class="input" bind:value={namespace} placeholder="default" />
 				</Field>
 				<Field label="Replicas" hint="Pod count, 1-10">
@@ -305,7 +316,7 @@
 			<div class="grid gap-4 sm:grid-cols-2">
 				<Field
 					label="Forge"
-					hint="Drives commit-status posts; auto detects github/gitlab/gitea hosts"
+					hint="Drives commit-status posts. Auto detects github/gitlab/gitea hosts"
 				>
 					<select class="input" bind:value={forge}>
 						<option value="auto">auto</option>
@@ -316,7 +327,7 @@
 				</Field>
 				<Field
 					label="Path filters"
-					hint="Comma-separated globs; push deploys only when a touched path matches"
+					hint="Comma-separated globs. Push deploys only when a touched path matches"
 				>
 					<input class="input font-mono" bind:value={pathsText} placeholder="apps/web, libs/**" />
 				</Field>
@@ -350,7 +361,7 @@
 			</Field>
 			<Field
 				label="Ports"
-				hint="host:container pairs; first one is the edge upstream and the k8s service port. With domains but no ports the healthcheck port is published"
+				hint="host:container pairs. First one is the edge upstream and the k8s service port. With domains but no ports the healthcheck port is published"
 			>
 				<input class="input font-mono" bind:value={portsText} placeholder="8080:80, 9090:90" />
 			</Field>

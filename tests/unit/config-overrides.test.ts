@@ -9,7 +9,8 @@ import {
 	planSectionSave,
 	resolveEffective,
 	sectionsEqual,
-	validateMerged
+	validateMerged,
+	validateMergedDoc
 } from '$lib/server/config/effective';
 import { ConfigError, loadRawConfig } from '$lib/server/config/load';
 
@@ -111,6 +112,19 @@ describe('resolveEffective', () => {
 		await store.set('site', { name: 42 }, 'alice');
 		await expect(resolveEffective(rawOf(), store)).rejects.toThrow(ConfigError);
 	});
+
+	it('rejects an empty services override and dangling page refs', async () => {
+		const fileRaw = rawOf(
+			`${MINIMAL}\n[[pages]]\nslug = "pub"\ntitle = "Public"\nservices = ["web"]\n`
+		);
+		const store = new ConfigStore(freshDb());
+		await store.set('services', [], 'alice');
+		await expect(resolveEffective(fileRaw, store)).rejects.toThrow(ConfigError);
+		// Keeping the service but pointing the page at a missing id also fails.
+		const store2 = new ConfigStore(freshDb());
+		await store2.set('pages', [{ slug: 'pub', title: 'Public', services: ['gone'] }], 'alice');
+		await expect(resolveEffective(fileRaw, store2)).rejects.toThrow(ConfigError);
+	});
 });
 
 describe('planSectionSave', () => {
@@ -164,5 +178,59 @@ describe('validateMerged', () => {
 		]);
 		// removing services breaks the pages override that references web
 		expect(() => validateMerged(fileRaw, overrides, 'services', undefined)).toThrow(ConfigError);
+	});
+});
+
+describe('placeholder inheritance', () => {
+	const WITH_ENV = `
+[site]
+name = "Test Co"
+url = "\${WF_TEST_SITE_URL:-https://fallback.example.com}"
+
+[[services]]
+id = "web"
+name = "Web"
+type = "http"
+url = "https://example.com"
+`;
+
+	it('resolves a file placeholder copied unchanged into an override', () => {
+		const fileRaw = rawOf(WITH_ENV);
+		const overrides = new Map<string, unknown>([
+			[
+				'site',
+				{
+					name: 'Edited Co',
+					url: '${WF_TEST_SITE_URL:-https://fallback.example.com}'
+				}
+			]
+		]);
+		const merged = validateMergedDoc(fileRaw, overrides);
+		expect(merged.site.name).toBe('Edited Co');
+		expect(merged.site.url).toBe('https://fallback.example.com');
+	});
+
+	it('keeps invented placeholders literal so they cannot read env', () => {
+		const fileRaw = rawOf(WITH_ENV);
+		const overrides = new Map<string, unknown>([
+			['site', { name: 'Edited Co', url: '${WF_INVENTED:-https://evil.example.com}' }]
+		]);
+		// the literal placeholder is not a valid URL, so validation rejects it
+		expect(() => validateMergedDoc(fileRaw, overrides)).toThrow(ConfigError);
+	});
+
+	it('resolves placeholders inside overrides at effective load', async () => {
+		const store = new ConfigStore(freshDb());
+		await store.set(
+			'site',
+			{ name: 'Edited Co', url: '${WF_TEST_SITE_URL:-https://fallback.example.com}' },
+			'alice'
+		);
+		const eff = await resolveEffective(rawOf(WITH_ENV), store);
+		expect(eff.config.site.url).toBe('https://fallback.example.com');
+		// raw keeps the placeholder verbatim so the editor round-trips it
+		expect((eff.raw.site as Record<string, unknown>).url).toBe(
+			'${WF_TEST_SITE_URL:-https://fallback.example.com}'
+		);
 	});
 });

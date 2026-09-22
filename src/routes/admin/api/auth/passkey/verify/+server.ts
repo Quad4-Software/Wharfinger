@@ -34,7 +34,7 @@ export const POST: RequestHandler = async (event) => {
 	};
 	const locked = await rt.protection.lockedUntil(ip, policy);
 	if (locked !== null) {
-		return apiError(429, 'too many failed attempts; try again later', {
+		return apiError(429, 'too many failed attempts. Try again later', {
 			retry_after: Math.ceil((locked - Date.now()) / 1000)
 		});
 	}

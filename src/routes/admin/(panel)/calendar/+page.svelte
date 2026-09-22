@@ -4,7 +4,7 @@
 	import { CalendarDays } from '@lucide/svelte';
 	import PageHeader from '$lib/components/admin/PageHeader.svelte';
 	import Calendar, { type CalEvent } from '$lib/components/admin/Calendar.svelte';
-	import { api, ApiError, adminHref } from '$lib/state/admin.svelte';
+	import { api, adminHref, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
 	import { weeklyOccurrences } from '$lib/shared/maintenance';
 	import type { MaintDraft } from '$lib/shared/drafts';
@@ -58,7 +58,7 @@
 			}
 			events = out;
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'load failed');
+			toast('error', errMessage(err, 'load failed'));
 		} finally {
 			loading = false;
 		}

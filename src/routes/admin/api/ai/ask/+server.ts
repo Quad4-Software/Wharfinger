@@ -22,7 +22,7 @@ export const POST: RequestHandler = async (event) => {
 	if (!rt.config.ai.enabled) return apiError(404, 'ai is not enabled');
 
 	if (!aiLimiter.allow(`u${user.id}`)) {
-		return apiError(429, 'ai rate limit exceeded; try again in a minute');
+		return apiError(429, 'ai rate limit exceeded. Try again in a minute');
 	}
 	const body = await readJson<{
 		question?: unknown;

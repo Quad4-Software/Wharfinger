@@ -82,7 +82,7 @@ export const POST: RequestHandler = async (event) => {
 	if (pwError) return apiError(422, pwError);
 	if (await rt.users.rowByName(username)) return apiError(409, 'that username is taken');
 	if (!(await rt.roles.exists(inv.role))) {
-		return apiError(422, `the role "${inv.role}" no longer exists; ask for a new invite`);
+		return apiError(422, `the role "${inv.role}" no longer exists. Ask for a new invite`);
 	}
 
 	if (!(await rt.invites.tryClaim(inv.tokenHash))) {

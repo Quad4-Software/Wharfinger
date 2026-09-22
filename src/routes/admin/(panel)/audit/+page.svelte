@@ -15,7 +15,7 @@
 	} from '@lucide/svelte';
 	import PageHeader from '$lib/components/admin/PageHeader.svelte';
 	import StatTile from '$lib/components/admin/StatTile.svelte';
-	import { api, ApiError, adminHref } from '$lib/state/admin.svelte';
+	import { api, adminHref, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
 	import { fmtDate, fmtDateTime, relativeTime } from '$lib/utils/format';
 	import { describeAction, iconForAction, type AuditKind } from '$lib/utils/audit-kind';
@@ -82,7 +82,7 @@
 			actions = r.actions;
 			summary = r.summary;
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'load failed');
+			toast('error', errMessage(err, 'load failed'));
 		} finally {
 			loading = false;
 		}
@@ -186,7 +186,7 @@
 		try {
 			chainResult = await api<{ ok: boolean; rows: number; firstBadId?: number }>('/audit/verify');
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'verify failed');
+			toast('error', errMessage(err, 'verify failed'));
 		} finally {
 			verifying = false;
 		}

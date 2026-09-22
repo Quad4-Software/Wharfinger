@@ -161,7 +161,7 @@
 			rotated = await api(`/agents/${id}/token`, { method: 'POST' });
 			rotateOpen = false;
 			rotatedOpen = true;
-			toast('success', 'Token rotated; update the agent config');
+			toast('success', 'Token rotated. Update the agent config.');
 		} catch (err) {
 			toast('error', errMessage(err));
 		} finally {

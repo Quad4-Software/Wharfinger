@@ -106,7 +106,7 @@ export const DELETE: RequestHandler = async (event) => {
 	const id = parseId(event.params.id);
 	if (!id) return apiError(404, 'unknown incident');
 	if (id.kind === 'auto') {
-		return apiError(422, 'auto incidents are managed by the monitor; resolve instead');
+		return apiError(422, 'auto incidents are managed by the monitor. Resolve instead');
 	}
 	const raw = rt.effective().raw;
 	const incidents = asArray(raw.incidents);

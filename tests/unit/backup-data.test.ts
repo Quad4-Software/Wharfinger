@@ -54,7 +54,8 @@ describe('backup data export', () => {
 				'deploy_keys',
 				'deploy_releases',
 				'hub_keys',
-				'secret_sets'
+				'secret_sets',
+				'secret_set_versions'
 			].sort()
 		);
 		expect(data.deploy_apps[0].name).toBe('shop');

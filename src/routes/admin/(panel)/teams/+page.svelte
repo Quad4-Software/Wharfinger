@@ -6,7 +6,7 @@
 	import Modal from '$lib/components/admin/Modal.svelte';
 	import ConfirmDialog from '$lib/components/admin/ConfirmDialog.svelte';
 	import ChatAvatar from '$lib/components/admin/ChatAvatar.svelte';
-	import { api, ApiError, errMessage } from '$lib/state/admin.svelte';
+	import { api, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
 	import type { GroupRef, TeamInfo, TeamMember } from '$lib/shared/groups';
 
@@ -84,7 +84,7 @@
 			editOpen = false;
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'save failed');
+			toast('error', errMessage(err, 'save failed'));
 		} finally {
 			busy = false;
 		}
@@ -364,7 +364,7 @@
 <ConfirmDialog
 	bind:open={deleteOpen}
 	title="Delete team?"
-	description={`"${deleteTarget?.name ?? 'This team'}" will be removed; member accounts are unaffected.`}
+	description={`"${deleteTarget?.name ?? 'This team'}" will be removed. Member accounts are unaffected.`}
 	confirmLabel="Delete"
 	danger
 	onconfirm={() => void remove()}

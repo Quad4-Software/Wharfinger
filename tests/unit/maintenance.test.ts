@@ -36,6 +36,11 @@ function cfgWith(maintenance: StatusConfig['maintenance']): StatusConfig {
 			name: 't',
 			description: '',
 			accent: '#fff',
+			og_title: '',
+			og_description: '',
+			og_image: '',
+			twitter_site: '',
+			robots: 'index',
 			announcement_severity: 'info',
 			frame_ancestors: ["'self'"]
 		},
@@ -118,7 +123,18 @@ function cfgWith(maintenance: StatusConfig['maintenance']): StatusConfig {
 			dsn: '',
 			environment: 'test',
 			client_reports: true,
-			max_per_minute: 60
+			max_per_minute: 60,
+			ingest: {
+				mode: 'local',
+				upstream_dsn: '',
+				upstream_timeout_ms: 10_000,
+				max_queue: 1000,
+				flush_interval_ms: 1000,
+				retry_base_ms: 1000,
+				retry_max_ms: 30_000,
+				retry_attempts: 5,
+				rate_limit_per_minute: 600
+			}
 		},
 		ai: {
 			enabled: false,

@@ -9,7 +9,7 @@
 	} from '@simplewebauthn/browser';
 	import AuthCard from '$lib/components/admin/AuthCard.svelte';
 	import Field from '$lib/components/admin/Field.svelte';
-	import { adminHref, api, ApiError, safeNext } from '$lib/state/admin.svelte';
+	import { adminHref, api, ApiError, errMessage, safeNext } from '$lib/state/admin.svelte';
 
 	const {
 		data
@@ -40,7 +40,7 @@
 	const next = $derived(page.url.searchParams.get('next') ?? adminHref('/'));
 
 	const ERROR_TEXT: Record<string, string> = {
-		oidc_state: 'SSO session expired; try again',
+		oidc_state: 'SSO session expired. Try again.',
 		oidc_denied: 'Your account is not permitted to sign in',
 		oidc_disabled: 'This account has been disabled',
 		oidc_unavailable: 'SSO is temporarily unavailable',
@@ -116,7 +116,7 @@
 			}
 			location.href = safeNext(next);
 		} catch (err) {
-			localError = err instanceof ApiError ? err.message : 'sign-in failed';
+			localError = errMessage(err, 'sign-in failed');
 		} finally {
 			busy = false;
 		}
@@ -124,10 +124,10 @@
 </script>
 
 <svelte:head>
-	<title>Sign in · Status panel</title>
+	<title>Sign in · Wharfinger</title>
 </svelte:head>
 
-<AuthCard title="Sign in" subtitle="Status panel">
+<AuthCard title="Sign in" subtitle="Wharfinger">
 	<form class="space-y-4" onsubmit={submit}>
 		{#if passkeyAssertion}
 			<p class="text-sm text-muted">

@@ -4,9 +4,11 @@
 	import PageHeader from '$lib/components/admin/PageHeader.svelte';
 	import SectionChip from '$lib/components/admin/SectionChip.svelte';
 	import SaveBar from '$lib/components/admin/SaveBar.svelte';
+	import ConfigToml from '$lib/components/admin/ConfigToml.svelte';
 	import Field from '$lib/components/admin/Field.svelte';
-	import { api, ApiError, errMessage } from '$lib/state/admin.svelte';
+	import { api, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
+	import { cloneJson } from '$lib/utils/clone';
 
 	type Dict = Record<string, unknown>;
 	interface View {
@@ -63,8 +65,8 @@
 			KEYS.forEach((k, i) => {
 				const v = (results[i].value ?? (k === 'links' ? [] : {})) as Dict | unknown[];
 				secs[k] = {
-					loaded: structuredClone(v),
-					draft: structuredClone(v),
+					loaded: cloneJson(v),
+					draft: cloneJson(v),
 					overridden: results[i].overridden,
 					updatedAt: results[i].updatedAt,
 					saving: false
@@ -75,7 +77,7 @@
 			tomlLoaded = t.toml;
 			tomlOverrides = t.overrides;
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'load failed');
+			toast('error', errMessage(err, 'load failed'));
 		} finally {
 			loading = false;
 		}
@@ -90,7 +92,7 @@
 				method: 'PUT',
 				body: { value: secs[k].draft, expected: secs[k].updatedAt }
 			});
-			secs[k].loaded = structuredClone(secs[k].draft);
+			secs[k].loaded = cloneJson(secs[k].draft);
 			secs[k].overridden = r.overridden;
 			secs[k].updatedAt = r.updatedAt;
 			toast('success', `${k} applied`);
@@ -158,7 +160,7 @@
 		{ key: 'links', label: 'Links' },
 		{ key: 'admin', label: 'Panel' },
 		{ key: 'telemetry', label: 'Telemetry' },
-		{ key: 'toml', label: 'Raw config' },
+		{ key: 'toml', label: 'Config' },
 		{ key: 'backup', label: 'Backup' }
 	];
 	const dirtyKeys = $derived(KEYS.filter((k) => dirty(k)));
@@ -201,7 +203,7 @@
 			a.click();
 			URL.revokeObjectURL(a.href);
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'export failed');
+			toast('error', errMessage(err, 'export failed'));
 		} finally {
 			backupBusy = false;
 		}
@@ -222,7 +224,7 @@
 			}
 			const rec = raw as Record<string, unknown>;
 			if ('encrypted' in rec && !importPassphrase) {
-				throw new Error('this backup is encrypted; enter its passphrase first');
+				throw new Error('this backup is encrypted. Enter its passphrase first.');
 			}
 			const r = await api<{
 				applied: string[];
@@ -250,7 +252,7 @@
 			toast(r.failed.length === 0 ? 'success' : 'error', 'Import finished');
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : errMessage(err));
+			toast('error', errMessage(err));
 		} finally {
 			backupBusy = false;
 		}
@@ -344,7 +346,7 @@
 							}}
 						/></Field
 					>
-					<Field label="Accent" hint="Hex color.">
+					<Field label="Accent" hint="Hex color, or click the swatch to pick.">
 						<div class="flex gap-2">
 							<input
 								class="input flex-1 font-mono"
@@ -352,12 +354,27 @@
 								oninput={(e) => {
 									set('site', { accent: e.currentTarget.value });
 								}}
-								placeholder="#10b981"
+								placeholder="#d9a648"
 							/>
-							{#if str(obj('site').accent)}<span
-									class="size-9 shrink-0 rounded-lg border border-edge"
-									style:background={str(obj('site').accent)}
-								></span>{/if}
+							<label
+								class="relative block size-9 shrink-0 cursor-pointer overflow-hidden rounded-lg border border-edge"
+								style:background={/^#[0-9a-f]{3,8}$/i.test(str(obj('site').accent))
+									? str(obj('site').accent)
+									: 'var(--color-panel)'}
+								title="Pick accent color"
+							>
+								<input
+									type="color"
+									class="absolute inset-0 size-full cursor-pointer opacity-0"
+									value={/^#[0-9a-f]{6}$/i.test(str(obj('site').accent))
+										? str(obj('site').accent)
+										: '#d9a648'}
+									oninput={(e) => {
+										set('site', { accent: e.currentTarget.value });
+									}}
+									aria-label="Pick accent color"
+								/>
+							</label>
 						</div>
 					</Field>
 				</div>
@@ -389,7 +406,7 @@
 					dirty={dirty('site')}
 					saving={secs.site.saving}
 					onsave={() => save('site')}
-					ondiscard={() => (secs.site.draft = structuredClone(secs.site.loaded))}
+					ondiscard={() => (secs.site.draft = cloneJson(secs.site.loaded))}
 				/>
 			</section>
 
@@ -440,7 +457,7 @@
 					dirty={dirty('page')}
 					saving={secs.page.saving}
 					onsave={() => save('page')}
-					ondiscard={() => (secs.page.draft = structuredClone(secs.page.loaded))}
+					ondiscard={() => (secs.page.draft = cloneJson(secs.page.loaded))}
 				/>
 			</section>
 
@@ -556,7 +573,7 @@
 					dirty={dirty('monitor')}
 					saving={secs.monitor.saving}
 					onsave={() => save('monitor')}
-					ondiscard={() => (secs.monitor.draft = structuredClone(secs.monitor.loaded))}
+					ondiscard={() => (secs.monitor.draft = cloneJson(secs.monitor.loaded))}
 				/>
 			</section>
 
@@ -610,7 +627,7 @@
 					dirty={dirty('links')}
 					saving={secs.links.saving}
 					onsave={() => save('links')}
-					ondiscard={() => (secs.links.draft = structuredClone(secs.links.loaded))}
+					ondiscard={() => (secs.links.draft = cloneJson(secs.links.loaded))}
 				/>
 			</section>
 
@@ -623,7 +640,7 @@
 				<div class="grid gap-3 sm:grid-cols-3">
 					<Field
 						label="Panel enabled"
-						hint="Cannot be disabled from here; use wharfinger.toml or WHARFINGER_ADMIN_ENABLED=false."
+						hint="Cannot be disabled from here. Use wharfinger.toml or WHARFINGER_ADMIN_ENABLED=false."
 					>
 						<select
 							class="input"
@@ -636,7 +653,7 @@
 							<option value="off">disabled</option>
 						</select>
 					</Field>
-					<Field label="Base path" hint="Changes the panel URL; the old path stops working.">
+					<Field label="Base path" hint="Changes the panel URL. The old path stops working.">
 						<input
 							class="input font-mono"
 							value={str(obj('admin').base_path) || '/admin'}
@@ -722,7 +739,7 @@
 					dirty={dirty('admin')}
 					saving={secs.admin.saving}
 					onsave={() => save('admin')}
-					ondiscard={() => (secs.admin.draft = structuredClone(secs.admin.loaded))}
+					ondiscard={() => (secs.admin.draft = cloneJson(secs.admin.loaded))}
 				/>
 			</section>
 
@@ -733,7 +750,7 @@
 					<SectionChip section="telemetry" overridden={secs.telemetry.overridden} onreset={load} />
 				</div>
 				<div class="grid gap-3 sm:grid-cols-3">
-					<Field label="Enabled" hint="Sentry protocol; works with Sentry, GlitchTip, and Bugsink.">
+					<Field label="Enabled" hint="Sentry protocol. Works with Sentry, GlitchTip, and Bugsink.">
 						<select
 							class="input"
 							value={bool(obj('telemetry').enabled, true) ? 'on' : 'off'}
@@ -777,7 +794,7 @@
 							<option value="off">disabled</option>
 						</select>
 					</Field>
-					<Field label="Max per minute" hint="Event cap; duplicates always collapse.">
+					<Field label="Max per minute" hint="Event cap. Duplicates always collapse.">
 						<input
 							class="input"
 							type="number"
@@ -803,13 +820,13 @@
 					dirty={dirty('telemetry')}
 					saving={secs.telemetry.saving}
 					onsave={() => save('telemetry')}
-					ondiscard={() => (secs.telemetry.draft = structuredClone(secs.telemetry.loaded))}
+					ondiscard={() => (secs.telemetry.draft = cloneJson(secs.telemetry.loaded))}
 				/>
 			</section>
 
-			<!-- Raw TOML -->
+			<!-- Config document -->
 			<section id="sec-toml" class="card scroll-mt-4 p-5">
-				<h2 class="mb-1 text-sm font-semibold">Raw config</h2>
+				<h2 class="mb-1 text-sm font-semibold">Config</h2>
 				<p class="mb-4 text-xs text-faint">
 					Effective document as TOML. Saving diffs each section against the file and stores
 					overrides only for what changed
@@ -817,11 +834,8 @@
 						· overridden: <span class="font-mono">{tomlOverrides.join(', ')}</span>
 					{/if}
 				</p>
-				<textarea
-					class="input h-72 w-full font-mono text-xs leading-5"
-					bind:value={toml}
-					spellcheck="false"></textarea>
-				<SaveBar
+				<ConfigToml
+					bind:toml
 					dirty={tomlDirty}
 					saving={tomlSaving}
 					onsave={saveToml}
@@ -834,12 +848,12 @@
 				<h2 class="mb-1 text-sm font-semibold">Backup</h2>
 				<p class="mb-4 text-xs text-faint">
 					Export every config section as JSON, or restore from a file. Merge adds imported services
-					by id; replace overwrites whole sections. Auth sections (admin, oidc, ldap) are never
+					by id. Replace overwrites whole sections. Auth sections (admin, oidc, ldap) are never
 					imported. A full export also dumps deploy apps/releases/keys, sealed secrets, agents, and
-					api keys; sealed fields only open under the same WHARFINGER_SECRET_KEY.
+					api keys. Sealed fields only open under the same WHARFINGER_SECRET_KEY.
 				</p>
 				<div class="mb-3 grid gap-3 sm:grid-cols-2">
-					<Field label="Export passphrase" hint="Seals the file; required again on restore.">
+					<Field label="Export passphrase" hint="Seals the file. Required again on restore.">
 						<input
 							class="input"
 							type="password"

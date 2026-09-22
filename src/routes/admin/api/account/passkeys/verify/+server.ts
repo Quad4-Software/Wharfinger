@@ -5,7 +5,7 @@ import { getRuntime } from '$lib/server/runtime';
 import { clientDataChallenge, passkeyInfo, relyingParty } from '$lib/server/admin/webauthn';
 import { apiError, apiJson, asString, audit, readJson, requireUser } from '$lib/server/admin/http';
 
-const CEREMONY_EXPIRED = 'passkey ceremony expired; try again';
+const CEREMONY_EXPIRED = 'passkey ceremony expired. Try again';
 
 /**
  * Step 2 of passkey enrollment: verify the attestation against the

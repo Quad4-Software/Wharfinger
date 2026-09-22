@@ -4,7 +4,7 @@
 	import AuthCard from '$lib/components/admin/AuthCard.svelte';
 	import Field from '$lib/components/admin/Field.svelte';
 	import PasswordStrength from '$lib/components/admin/PasswordStrength.svelte';
-	import { adminHref, api, ApiError } from '$lib/state/admin.svelte';
+	import { adminHref, api, errMessage } from '$lib/state/admin.svelte';
 
 	interface InviteInfo {
 		valid: boolean;
@@ -50,7 +50,7 @@
 			done = true;
 			setTimeout(() => (location.href = adminHref('/')), 1200);
 		} catch (err) {
-			error = err instanceof ApiError ? err.message : 'could not use this link';
+			error = errMessage(err, 'could not use this link');
 		} finally {
 			busy = false;
 		}
@@ -58,7 +58,7 @@
 </script>
 
 <svelte:head>
-	<title>Invite · Status panel</title>
+	<title>Invite · Wharfinger</title>
 </svelte:head>
 
 {#if info === null}
@@ -81,7 +81,7 @@
 {:else}
 	<AuthCard
 		title={info.kind === 'reset' ? 'Reset your password' : `Join as ${info.role}`}
-		subtitle="Status panel access"
+		subtitle="Wharfinger access"
 	>
 		<form class="space-y-4" onsubmit={submit}>
 			{#if info.kind === 'invite'}

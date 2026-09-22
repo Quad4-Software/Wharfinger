@@ -2,7 +2,7 @@
 	import AuthCard from '$lib/components/admin/AuthCard.svelte';
 	import Field from '$lib/components/admin/Field.svelte';
 	import PasswordStrength from '$lib/components/admin/PasswordStrength.svelte';
-	import { adminHref, api, ApiError } from '$lib/state/admin.svelte';
+	import { adminHref, api, errMessage } from '$lib/state/admin.svelte';
 
 	let username = $state('');
 	let displayName = $state('');
@@ -26,7 +26,7 @@
 			});
 			location.href = adminHref('/');
 		} catch (err) {
-			error = err instanceof ApiError ? err.message : 'setup failed';
+			error = errMessage(err, 'setup failed');
 		} finally {
 			busy = false;
 		}
@@ -34,7 +34,7 @@
 </script>
 
 <svelte:head>
-	<title>Setup · Status panel</title>
+	<title>Setup · Wharfinger</title>
 </svelte:head>
 
 <AuthCard title="Welcome" subtitle="Create the first admin account">

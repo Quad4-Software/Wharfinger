@@ -7,9 +7,10 @@
 	import ConfirmDialog from '$lib/components/admin/ConfirmDialog.svelte';
 	import MaintenanceEditor from '$lib/components/admin/MaintenanceEditor.svelte';
 	import type { MaintDraft } from '$lib/shared/drafts';
-	import { api, ApiError, errMessage } from '$lib/state/admin.svelte';
+	import { api, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
 	import { fmtDateTime } from '$lib/utils/format';
+	import { cloneJson } from '$lib/utils/clone';
 
 	interface SectionView {
 		value: MaintDraft[];
@@ -48,13 +49,13 @@
 				api<{ value: { id: string; name: string }[] }>('/sections/services')
 			]);
 			loaded = Array.isArray(sec.value) ? sec.value : [];
-			draft = structuredClone(loaded);
+			draft = cloneJson(loaded);
 			overridden = sec.overridden;
 			updatedAt = sec.updatedAt;
 			activeTitles = new Set(ov.maintenance.active.map((w) => w.title));
 			services = Array.isArray(svc.value) ? svc.value : [];
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'load failed');
+			toast('error', errMessage(err, 'load failed'));
 		} finally {
 			loading = false;
 		}
@@ -75,7 +76,7 @@
 	function onEditorSave(d: MaintDraft): void {
 		if (editingIdx === -1) draft = [...draft, d];
 		else draft = draft.map((w, i) => (i === editingIdx ? d : w));
-		toast('info', 'Window saved; apply with Save');
+		toast('info', 'Window saved. Apply with Save.');
 	}
 
 	function describe(w: MaintDraft): string {
@@ -157,7 +158,7 @@
 	</div>
 {/if}
 
-<SaveBar {dirty} {saving} onsave={save} ondiscard={() => (draft = structuredClone(loaded))} />
+<SaveBar {dirty} {saving} onsave={save} ondiscard={() => (draft = cloneJson(loaded))} />
 
 <MaintenanceEditor bind:open={editorOpen} window_={editing} {services} onsave={onEditorSave} />
 

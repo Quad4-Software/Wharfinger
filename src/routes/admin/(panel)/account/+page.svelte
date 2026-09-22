@@ -20,7 +20,7 @@
 	import Modal from '$lib/components/admin/Modal.svelte';
 	import ConfirmDialog from '$lib/components/admin/ConfirmDialog.svelte';
 	import SessionList from '$lib/components/admin/SessionList.svelte';
-	import { api, ApiError, adminHref } from '$lib/state/admin.svelte';
+	import { api, ApiError, adminHref, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
 	import { relativeTime } from '$lib/utils/format';
 	import type { PasskeyInfo, PublicUser } from '$lib/shared/auth';
@@ -110,7 +110,7 @@
 			toast('success', 'Avatar removed');
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'remove failed');
+			toast('error', errMessage(err, 'remove failed'));
 		} finally {
 			busy = false;
 		}
@@ -125,7 +125,7 @@
 			const p = await api<{ passkeys: PasskeyInfo[] }>('/account/passkeys');
 			passkeys = p.passkeys;
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'load failed');
+			toast('error', errMessage(err, 'load failed'));
 		} finally {
 			loading = false;
 		}
@@ -151,7 +151,7 @@
 			toast('success', 'Display name updated');
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'save failed');
+			toast('error', errMessage(err, 'save failed'));
 		} finally {
 			busy = false;
 		}
@@ -168,13 +168,13 @@
 				method: 'PATCH',
 				body: { current_password: currentPw, new_password: newPw }
 			});
-			toast('success', 'Password changed; other sessions were signed out');
+			toast('success', 'Password changed. Other sessions were signed out.');
 			currentPw = '';
 			newPw = '';
 			confirmPw = '';
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'change failed');
+			toast('error', errMessage(err, 'change failed'));
 		} finally {
 			busy = false;
 		}
@@ -192,7 +192,7 @@
 			backupCodes = null;
 			totpOpen = true;
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'setup failed');
+			toast('error', errMessage(err, 'setup failed'));
 		} finally {
 			busy = false;
 		}
@@ -208,7 +208,7 @@
 			toast('success', 'Two-factor enabled');
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'verification failed');
+			toast('error', errMessage(err, 'verification failed'));
 		} finally {
 			busy = false;
 		}
@@ -223,7 +223,7 @@
 			disablePw = '';
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'disable failed');
+			toast('error', errMessage(err, 'disable failed'));
 		} finally {
 			busy = false;
 		}
@@ -300,7 +300,7 @@
 			revokeAllOpen = false;
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'revoke failed');
+			toast('error', errMessage(err, 'revoke failed'));
 		}
 	}
 
@@ -313,7 +313,7 @@
 			revokeOpen = false;
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'revoke failed');
+			toast('error', errMessage(err, 'revoke failed'));
 		}
 	}
 </script>
@@ -587,7 +587,7 @@
 	{:else}
 		<div class="space-y-4">
 			<p class="text-sm text-muted">
-				Two-factor is on. Save these backup codes somewhere safe; each works once when you lose your
+				Two-factor is on. Save these backup codes somewhere safe. Each works once when you lose your
 				authenticator. They are shown only now.
 			</p>
 			<div class="grid grid-cols-2 gap-1.5">
@@ -641,7 +641,7 @@
 	bind:open={revokeOpen}
 	title="Sign out session?"
 	description={revokeTarget?.current
-		? 'This is your current session; you will be signed out.'
+		? 'This is your current session. You will be signed out.'
 		: 'That device will need to sign in again.'}
 	confirmLabel="Revoke"
 	danger

@@ -31,7 +31,7 @@ export const DELETE: RequestHandler = async (event) => {
 	if (res === 'missing') return apiError(404, 'unknown role');
 	if (res === 'protected') return apiError(422, 'built-in roles cannot be deleted');
 	if (res === 'in_use') {
-		return apiError(409, 'role is still assigned to users; reassign them first');
+		return apiError(409, 'role is still assigned to users. Reassign them first');
 	}
 	await audit(rt, event, 'roles.delete', `name=${event.params.name}`);
 	return apiJson({ ok: true });

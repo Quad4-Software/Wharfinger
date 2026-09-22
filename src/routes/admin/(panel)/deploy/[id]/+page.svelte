@@ -78,7 +78,7 @@
 			releases = d.releases;
 			jobs = j.jobs;
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'load failed');
+			toast('error', errMessage(err, 'load failed'));
 		} finally {
 			loading = false;
 		}
@@ -400,7 +400,7 @@
 			<Field
 				label="Variables"
 				hint={app.hasEnv
-					? 'One KEY=VALUE per line. Sealed at rest; saved values are never shown again.'
+					? 'One KEY=VALUE per line. Sealed at rest. Saved values are never shown again.'
 					: 'One KEY=VALUE per line. Sealed at rest on save.'}
 			>
 				<textarea

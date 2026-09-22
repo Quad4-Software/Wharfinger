@@ -107,8 +107,8 @@
 			<Field
 				label="Forge API token"
 				hint={app.hasForgeToken
-					? 'PAT or app token for commit-status posts; set. Enter a new one to replace, blank to clear'
-					: 'PAT or app token for commit-status posts; sealed at rest, never echoed'}
+					? 'PAT or app token for commit-status posts. Already set. Enter a new one to replace, blank to clear'
+					: 'PAT or app token for commit-status posts. Sealed at rest, never echoed'}
 			>
 				<div class="flex gap-2">
 					<input

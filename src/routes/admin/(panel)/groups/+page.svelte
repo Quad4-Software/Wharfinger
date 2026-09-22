@@ -5,7 +5,7 @@
 	import Field from '$lib/components/admin/Field.svelte';
 	import Modal from '$lib/components/admin/Modal.svelte';
 	import ConfirmDialog from '$lib/components/admin/ConfirmDialog.svelte';
-	import { api, ApiError, errMessage } from '$lib/state/admin.svelte';
+	import { api, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
 	import type { GroupMember, ServiceGroup } from '$lib/shared/groups';
 
@@ -97,7 +97,7 @@
 			editOpen = false;
 			await load();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'save failed');
+			toast('error', errMessage(err, 'save failed'));
 		} finally {
 			busy = false;
 		}
@@ -245,7 +245,7 @@
 		<Field label="Name" required>
 			<input class="input" bind:value={name} placeholder="production" required maxlength="64" />
 		</Field>
-		<Field label="Color" hint="Optional hex color like #3b82f6; leave empty for none">
+		<Field label="Color" hint="Optional hex color like #3b82f6. Leave empty for none">
 			<input class="input font-mono" bind:value={color} placeholder="#3b82f6" />
 		</Field>
 		<div class="flex justify-end gap-2">

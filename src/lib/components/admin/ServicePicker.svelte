@@ -1,4 +1,5 @@
 <script lang="ts">
+	import EmptyHint from '$lib/components/admin/EmptyHint.svelte';
 	// Chip multi-select over the configured service ids, plus 'all'.
 	let {
 		services,
@@ -48,6 +49,15 @@
 		</button>
 	{/each}
 </div>
-{#if !allOn && selected.length === 0}
+{#if services.length === 0}
+	<div class="mt-1.5">
+		<EmptyHint
+			message="No services configured yet."
+			href="/services"
+			linkLabel="Add a service"
+			perm="status.manage"
+		/>
+	</div>
+{:else if !allOn && selected.length === 0}
 	<p class="mt-1 text-xs text-degraded-fg">Select at least one service</p>
 {/if}

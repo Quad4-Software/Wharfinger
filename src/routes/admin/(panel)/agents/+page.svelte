@@ -207,7 +207,7 @@
 
 {#if !ingressEnabled}
 	<div class="card mb-4 border-degraded/40 px-4 py-3 text-sm text-degraded">
-		Ingress is disabled in the <code class="font-mono">[ingress]</code> config section; agents cannot
+		Ingress is disabled in the <code class="font-mono">[ingress]</code> config section. Agents cannot
 		connect until it is enabled.
 	</div>
 {/if}
@@ -268,7 +268,7 @@
 									title="{u.pending} pending update{u.pending === 1
 										? ''
 										: 's'} ({u.security} security){u.rebootRequired
-										? '; reboot required'
+										? ', reboot required'
 										: ''} via {u.manager}">{u.rebootRequired ? 'reboot' : `${u.pending} upd`}</span
 								>
 							{/if}
@@ -396,7 +396,7 @@
 	{#if created}
 		{@const c = created}
 		<p class="text-sm text-muted">
-			Copy the token now; it is shown once and only its hash is stored.
+			Copy the token now. It is shown once and only its hash is stored.
 		</p>
 		<div class="mt-3 space-y-3">
 			<Field label="Bearer token">
@@ -440,7 +440,7 @@
 				<input type="checkbox" class="accent-accent" bind:checked={selfUpdate} />
 				Enable the auto-updater
 				<span class="text-xs text-faint">
-					(periodic checksum-verified upgrades; the service restarts on the new binary)
+					(periodic checksum-verified upgrades, with the service restarting on the new binary)
 				</span>
 			</label>
 			<Field

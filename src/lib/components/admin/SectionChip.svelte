@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { RotateCcw } from '@lucide/svelte';
-	import { api, ApiError } from '$lib/state/admin.svelte';
+	import { api, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 
@@ -24,7 +24,7 @@
 			toast('success', 'Section reset to file config');
 			onreset?.();
 		} catch (err) {
-			toast('error', err instanceof ApiError ? err.message : 'reset failed');
+			toast('error', errMessage(err, 'reset failed'));
 		}
 	}
 </script>
