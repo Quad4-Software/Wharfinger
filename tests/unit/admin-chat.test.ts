@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -6,14 +6,16 @@ import type { DatabaseSync } from 'node:sqlite';
 import { openDb } from '$lib/server/store/db';
 import { openSecret } from '$lib/server/admin/crypto';
 import { ChatError, ChatStore } from '$lib/server/admin/chat';
+import { attachmentKey, attachmentPath, cleanFilename } from '$lib/server/admin/chat-files';
 import { UserStore } from '$lib/server/admin/users';
 
 process.env.WHARFINGER_SECRET_KEY = 'unit-test-secret-key-material';
 
-function stores(): { db: DatabaseSync; users: UserStore; chat: ChatStore } {
-	const db = openDb(mkdtempSync(join(tmpdir(), 'wharfinger-chat-')));
+function stores(): { dir: string; db: DatabaseSync; users: UserStore; chat: ChatStore } {
+	const dir = mkdtempSync(join(tmpdir(), 'wharfinger-chat-'));
+	const db = openDb(dir);
 	const users = new UserStore(db);
-	return { db, users, chat: new ChatStore(db, users) };
+	return { dir, db, users, chat: new ChatStore(db, users, dir) };
 }
 
 async function expectChatError(fn: () => unknown, status: number): Promise<void> {
@@ -192,7 +194,10 @@ describe('ChatStore rooms', () => {
 
 		await expectChatError(() => chat.createRoom('  ', [b.id], a.id), 422);
 		await expectChatError(() => chat.createRoom('r', [99999], a.id), 422);
-		await expectChatError(() => chat.createRoom('r', [], a.id), 422);
+
+		// A room with only the creator is allowed; members can be added later.
+		const solo = await chat.createRoom('notes', [], a.id);
+		expect(solo.members).toHaveLength(1);
 
 		const room = await chat.createRoom('ops', [b.id, c.id], a.id);
 		expect(room.members).toHaveLength(3);
@@ -230,5 +235,251 @@ describe('ChatStore rooms', () => {
 		const dm = await chat.openDm(a.id, b.id);
 		await expectChatError(() => chat.addMember(dm.id, a.id, c.id), 422);
 		await expectChatError(() => chat.removeMember(dm.id, a.id, b.id, true), 422);
+	});
+});
+
+describe('ChatStore attachments', () => {
+	const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+
+	it('rejects bad mime, oversize, empty, and non-member uploads', async () => {
+		const { users, chat } = stores();
+		const a = await users.create('alice', 'a-very-long-password', 'operator');
+		const b = await users.create('bob', 'a-very-long-password', 'viewer');
+		const c = await users.create('carol', 'a-very-long-password', 'viewer');
+		const room = await chat.openDm(a.id, b.id);
+
+		await expectChatError(
+			() =>
+				chat.uploadAttachment(room.id, a.id, {
+					name: 'evil.html',
+					mime: 'text/html',
+					data: png
+				}),
+			422
+		);
+		await expectChatError(
+			() =>
+				chat.uploadAttachment(room.id, a.id, {
+					name: 'big.png',
+					mime: 'image/png',
+					data: new Uint8Array(10 * 1024 * 1024 + 1)
+				}),
+			413
+		);
+		await expectChatError(
+			() =>
+				chat.uploadAttachment(room.id, a.id, {
+					name: 'empty.png',
+					mime: 'image/png',
+					data: new Uint8Array(0)
+				}),
+			422
+		);
+		await expectChatError(
+			() =>
+				chat.uploadAttachment(room.id, c.id, {
+					name: 'a.png',
+					mime: 'image/png',
+					data: png
+				}),
+			403
+		);
+		await expectChatError(
+			() =>
+				chat.uploadAttachment('no-such-room', a.id, {
+					name: 'a.png',
+					mime: 'image/png',
+					data: png
+				}),
+			404
+		);
+	});
+
+	it('sanitizes the filename and stores the file under the room dir', async () => {
+		const { dir, users, chat } = stores();
+		const a = await users.create('alice', 'a-very-long-password', 'operator');
+		const b = await users.create('bob', 'a-very-long-password', 'viewer');
+		const room = await chat.openDm(a.id, b.id);
+
+		const att = await chat.uploadAttachment(room.id, a.id, {
+			name: '../../etc/passwd\x07.png',
+			mime: 'image/png',
+			data: png
+		});
+		expect(att.name).toBe('passwd.png');
+		expect(att.size).toBe(png.length);
+		// The disk key is id-based under the room directory.
+		const files = readdirSync(join(dir, 'chat-attachments', room.id));
+		expect(files).toHaveLength(1);
+		expect(files[0].startsWith(att.id)).toBe(true);
+		expect(files[0].endsWith('.png')).toBe(true);
+	});
+
+	it('attaches uploads to a send and serializes them on the message', async () => {
+		const { users, chat } = stores();
+		const a = await users.create('alice', 'a-very-long-password', 'operator');
+		const b = await users.create('bob', 'a-very-long-password', 'viewer');
+		const room = await chat.openDm(a.id, b.id);
+
+		const att = await chat.uploadAttachment(room.id, a.id, {
+			name: 'shot.png',
+			mime: 'image/png',
+			data: png
+		});
+		// Attachment-only sends are allowed.
+		const m = await chat.send(room.id, a.id, '', [att.id]);
+		expect(m.body).toBe('');
+		expect(m.attachments).toEqual([
+			{ id: att.id, name: 'shot.png', mime: 'image/png', size: png.length }
+		]);
+
+		// History and the room preview carry the attachment.
+		const page = await chat.list(room.id, b.id);
+		expect(page.messages.at(-1)?.attachments).toHaveLength(1);
+		expect(page.messages.at(-1)?.attachments[0].name).toBe('shot.png');
+		const view = (await chat.listRoomsFor(b.id)).find((r) => r.id === room.id);
+		expect(view?.preview?.body).toBe('shot.png');
+
+		// A second send cannot reuse the claimed id.
+		await expectChatError(() => chat.send(room.id, a.id, 'again', [att.id]), 422);
+	});
+
+	it('rejects attachments from other rooms, other uploaders, and bad ids', async () => {
+		const { users, chat } = stores();
+		const a = await users.create('alice', 'a-very-long-password', 'operator');
+		const b = await users.create('bob', 'a-very-long-password', 'viewer');
+		const room = await chat.openDm(a.id, b.id);
+		const other = await chat.createRoom('side', [b.id], b.id);
+
+		const foreign = await chat.uploadAttachment(other.id, b.id, {
+			name: 'x.png',
+			mime: 'image/png',
+			data: png
+		});
+		const own = await chat.uploadAttachment(room.id, b.id, {
+			name: 'y.png',
+			mime: 'image/png',
+			data: png
+		});
+
+		// Wrong room.
+		await expectChatError(() => chat.send(room.id, a.id, 'hi', [foreign.id]), 422);
+		// Right room but alice did not upload it.
+		await expectChatError(() => chat.send(room.id, a.id, 'hi', [own.id]), 422);
+		// Unknown id.
+		await expectChatError(() => chat.send(room.id, a.id, 'hi', ['nope']), 422);
+		// A failed claim must not leave a dangling message row.
+		expect((await chat.list(room.id, a.id)).messages).toHaveLength(0);
+		// The unclaimed upload is still usable by its owner.
+		const m = await chat.send(room.id, b.id, 'here', [own.id]);
+		expect(m.attachments).toHaveLength(1);
+
+		// The per-message cap holds.
+		const ids = Array.from({ length: 11 }, (_, i) => `x${i}`);
+		await expectChatError(() => chat.send(room.id, a.id, 'hi', ids), 422);
+	});
+
+	it('gates downloads on room membership', async () => {
+		const { users, chat } = stores();
+		const a = await users.create('alice', 'a-very-long-password', 'operator');
+		const b = await users.create('bob', 'a-very-long-password', 'viewer');
+		const c = await users.create('carol', 'a-very-long-password', 'viewer');
+		const room = await chat.openDm(a.id, b.id);
+		// Carol belongs to a different room entirely.
+		await chat.createRoom('side', [c.id], c.id);
+
+		const att = await chat.uploadAttachment(room.id, a.id, {
+			name: 'spec.pdf',
+			mime: 'application/pdf',
+			data: new Uint8Array([1, 2, 3, 4])
+		});
+		await chat.send(room.id, a.id, 'see attached', [att.id]);
+
+		const file = await chat.attachmentDownload(att.id, b.id);
+		expect(file.name).toBe('spec.pdf');
+		expect(file.mime).toBe('application/pdf');
+		expect([...file.data]).toEqual([1, 2, 3, 4]);
+
+		// Members of a different room cannot pull it.
+		await expectChatError(() => chat.attachmentDownload(att.id, c.id), 403);
+		await expectChatError(() => chat.attachmentDownload('nope', b.id), 404);
+	});
+
+	it('tombstones attachments with the message and prunes files later', async () => {
+		const { dir, db, users, chat } = stores();
+		const a = await users.create('alice', 'a-very-long-password', 'operator');
+		const b = await users.create('bob', 'a-very-long-password', 'viewer');
+		const room = await chat.openDm(a.id, b.id);
+
+		const att = await chat.uploadAttachment(room.id, a.id, {
+			name: 'log.txt',
+			mime: 'text/plain',
+			data: new Uint8Array([65])
+		});
+		const m = await chat.send(room.id, a.id, '', [att.id]);
+		const key = join(dir, 'chat-attachments', room.id);
+		const stored = readdirSync(key)[0];
+
+		// Delete denies download for everyone, including a moderator
+		// delete path (moderator flag only widens who may remove).
+		await chat.remove(m.id, b.id, true);
+		await expectChatError(() => chat.attachmentDownload(att.id, a.id), 410);
+		// The tombstoned message serializes without attachment metadata.
+		const page = await chat.list(room.id, b.id);
+		expect(page.messages.at(-1)?.attachments).toEqual([]);
+		// The file survives until the retention sweep.
+		expect(existsSync(join(key, stored))).toBe(true);
+
+		// Age the rows past retention and sweep: row and file both go.
+		const old = Date.now() - 31 * 86_400_000;
+		db.prepare('UPDATE chat_messages SET deleted_at = ? WHERE id = ?').run(old, m.id);
+		db.prepare('UPDATE chat_attachments SET deleted_at = ? WHERE id = ?').run(old, att.id);
+		expect(await chat.prune()).toBe(1);
+		expect(existsSync(join(key, stored))).toBe(false);
+		expect(
+			db.prepare('SELECT COUNT(*) AS n FROM chat_attachments WHERE id = ?').get(att.id)
+		).toEqual({ n: 0 });
+	});
+
+	it('sweeps stale unattached uploads', async () => {
+		const { dir, db, users, chat } = stores();
+		const a = await users.create('alice', 'a-very-long-password', 'operator');
+		const b = await users.create('bob', 'a-very-long-password', 'viewer');
+		const room = await chat.openDm(a.id, b.id);
+
+		const att = await chat.uploadAttachment(room.id, a.id, {
+			name: 'draft.md',
+			mime: 'text/markdown',
+			data: new Uint8Array([35])
+		});
+		const key = join(dir, 'chat-attachments', room.id);
+		expect(readdirSync(key)).toHaveLength(1);
+
+		// Fresh uploads survive; a stale one is reclaimed.
+		db.prepare('UPDATE chat_attachments SET created_at = ? WHERE id = ?').run(
+			Date.now() - 25 * 3600_000,
+			att.id
+		);
+		expect(await chat.prune()).toBe(0);
+		expect(readdirSync(key)).toHaveLength(0);
+		expect(
+			db.prepare('SELECT COUNT(*) AS n FROM chat_attachments WHERE id = ?').get(att.id)
+		).toEqual({ n: 0 });
+	});
+});
+
+describe('chat-files helpers', () => {
+	it('reduces names to a bounded basename and keys by id', () => {
+		expect(cleanFilename('a/b\\c/../../../etc/passwd')).toBe('passwd');
+		expect(cleanFilename('   ')).toBe('file');
+		expect(cleanFilename('x'.repeat(300))).toHaveLength(128);
+		expect(attachmentKey('room1', 'id9', 'report.PDF')).toBe('room1/id9.pdf');
+		expect(attachmentKey('room1', 'id9', 'noext')).toBe('room1/id9');
+	});
+
+	it('refuses keys that escape the attachments dir', () => {
+		expect(attachmentPath('/var/data/chat-attachments', 'r/f.png')).not.toBeNull();
+		expect(attachmentPath('/var/data/chat-attachments', '../secret')).toBeNull();
+		expect(attachmentPath('/var/data/chat-attachments', 'r/../../x')).toBeNull();
 	});
 });

@@ -28,6 +28,13 @@ export interface ChatRoom {
 	preview: ChatPreview | null;
 }
 
+export interface ChatAttachment {
+	id: string;
+	name: string;
+	mime: string;
+	size: number;
+}
+
 export interface ChatMessage {
 	id: number;
 	roomId: string;
@@ -36,6 +43,7 @@ export interface ChatMessage {
 	displayName: string;
 	hasAvatar: boolean;
 	body: string;
+	attachments: ChatAttachment[];
 	at: number;
 	editedAt: number | null;
 	deletedAt: number | null;

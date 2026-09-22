@@ -28,10 +28,27 @@ export const GET: RequestHandler = async (event) => {
 export const POST: RequestHandler = async (event) => {
 	const rt = getRuntime();
 	const user = await chatActor(event, rt.users);
-	const body = await readJson<{ body?: unknown }>(event.request, 32 * 1024);
+	const body = await readJson<{ body?: unknown; attachment_ids?: unknown }>(
+		event.request,
+		32 * 1024
+	);
 	const raw = typeof body.body === 'string' ? body.body : '';
+	// Ids returned by POST ../attachments; the store claims them only
+	// when they belong to this room, this uploader, and no message yet.
+	const attachmentIds: string[] = [];
+	if (body.attachment_ids !== undefined) {
+		if (!Array.isArray(body.attachment_ids)) {
+			return apiError(422, 'invalid attachment_ids');
+		}
+		for (const x of body.attachment_ids as unknown[]) {
+			if (typeof x !== 'string' || x.length === 0 || x.length > 64) {
+				return apiError(422, 'invalid attachment_ids');
+			}
+			attachmentIds.push(x);
+		}
+	}
 	try {
-		const message = await rt.chat.send(event.params.id, user.id, raw);
+		const message = await rt.chat.send(event.params.id, user.id, raw, attachmentIds);
 		const members = await rt.chat.memberIds(event.params.id);
 		emitChat({ type: 'message', room: event.params.id, members, message });
 		return apiJson({ ok: true, message, members }, 201);

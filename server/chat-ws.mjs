@@ -1,5 +1,6 @@
 import { WebSocketServer } from 'ws';
 import { registerChatEmitter, registerChatPresence } from './chat-bus.mjs';
+import { trustForwarded } from './net.mjs';
 
 // Chat websocket bridge. Session auth and message writes live in the
 // SvelteKit /admin/api/chat routes; this file adapts ws framing to
@@ -12,7 +13,7 @@ import { registerChatEmitter, registerChatPresence } from './chat-bus.mjs';
 // Wire protocol (JSON text frames, 8KB cap):
 //   upgrade   GET <adminBase>/chat/ws with the wharfinger_admin cookie
 //   server -> { type: "ready", user, presence }   presence = {userId: state}
-//   client -> { type: "send", room, body }
+//   client -> { type: "send", room, body, attachments? }  attachments = upload ids
 //   server -> { type: "message", room, message }  to every member socket
 //   server -> { type: "update", room, message }   edit/delete fan-out
 //   client -> { type: "typing", room }
@@ -46,14 +47,12 @@ const memberCache = new Map();
 // ip -> { count, resetAt } handshake bucket
 const handshakeBuckets = new Map();
 
-const TRUST_PROXY = /^(1|true|yes)$/i.test(process.env.WHARFINGER_TRUST_PROXY ?? '');
-
 function token() {
 	return process.env.CHAT_INTERNAL_TOKEN ?? '';
 }
 
 function clientIp(req) {
-	if (TRUST_PROXY) {
+	if (trustForwarded(req.socket.remoteAddress)) {
 		const fwd = req.headers['x-forwarded-for'];
 		if (typeof fwd === 'string' && fwd.length > 0) return fwd.split(',')[0].trim();
 	}
@@ -181,6 +180,22 @@ async function handleFrame(ws, meta, msg) {
 		typeof msg.body === 'string' &&
 		msg.body.length <= 16 * 1024
 	) {
+		// Uploads land over REST (POST ../attachments); a send frame may
+		// carry their ids as { attachments: [id, ...] } which the REST
+		// route claims atomically. Anything malformed is rejected here
+		// so a bad client cannot silently send without its files.
+		let attachments;
+		if (msg.attachments !== undefined) {
+			const ok =
+				Array.isArray(msg.attachments) &&
+				msg.attachments.length <= 10 &&
+				msg.attachments.every((a) => typeof a === 'string' && a.length > 0 && a.length <= 64);
+			if (!ok) {
+				send(ws, { type: 'error', error: 'invalid attachments' });
+				return;
+			}
+			attachments = msg.attachments;
+		}
 		if (meta.inFlight >= MAX_INFLIGHT) {
 			send(ws, { type: 'error', error: 'slow down' });
 			return;
@@ -189,7 +204,7 @@ async function handleFrame(ws, meta, msg) {
 		presenceDiff(meta.userId);
 		post(
 			`${meta.internalBase}${meta.adminBase}/api/chat/rooms/${msg.room}/messages`,
-			{ body: msg.body },
+			{ body: msg.body, attachment_ids: attachments },
 			{ 'x-chat-internal': token(), 'x-chat-user': String(meta.userId) }
 		)
 			.then((r) => {

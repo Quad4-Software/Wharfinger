@@ -1,10 +1,23 @@
 import { error, type RequestEvent } from '@sveltejs/kit';
+import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { openSecret, randomToken, sealSecret } from './crypto';
 import { apiError, requireUser } from './http';
+import {
+	CHAT_ATTACHMENT_MAX_BYTES,
+	CHAT_ATTACHMENT_MIMES,
+	attachmentKey,
+	cleanFilename,
+	readAttachment,
+	removeAttachments,
+	writeAttachment
+} from './chat-files';
 import { asDb, isUniqueViolation, type Db } from '$lib/server/store/driver';
+import { dataDir } from '$lib/server/store/db';
 import type { User, UserStore } from './users';
 import type {
+	ChatAttachment,
 	ChatMember,
 	ChatMessage,
 	ChatPresenceState,
@@ -17,9 +30,13 @@ const CHAT_NAME_MAX = 80;
 const MESSAGE_PAGE = 50;
 const EDIT_WINDOW_MS = 10 * 60_000;
 const PREVIEW_LEN = 80;
-const ROOM_MEMBERS_MIN = 2;
+const ROOM_MEMBERS_MIN = 1;
 const ROOM_MEMBERS_MAX = 50;
 const PRUNE_AGE_MS = 30 * 86_400_000;
+const ATTACHMENTS_PER_MESSAGE = 10;
+// Unattached uploads are staging rows: abandoned ones (client closed
+// the composer) get swept once they are a day old.
+const ATTACHMENT_STALE_MS = 24 * 3600_000;
 // Presence fallback for users without a socket (dev mode, REST
 // polling): recent activity reads as online, stale as away.
 const ACTIVE_ONLINE_MS = 120_000;
@@ -65,6 +82,21 @@ interface MessageRow extends RawMessageRow {
 	username: string;
 	display_name: string;
 	has_avatar: boolean;
+	attachments: AttachmentRow[];
+}
+
+interface AttachmentRow {
+	id: string;
+	message_id: number | null;
+	room_id: string;
+	uploader_id: number;
+	filename: string;
+	mime: string;
+	size: number;
+	sha256: string;
+	path: string;
+	created_at: number;
+	deleted_at: number | null;
 }
 
 interface UserBrief {
@@ -76,12 +108,18 @@ interface UserBrief {
 const ROOM_SELECT = 'SELECT id, kind, name, dm_key, created_by, created_at FROM chat_rooms';
 const MESSAGE_SELECT =
 	'SELECT id, room_id, user_id, body, at, edited_at, deleted_at FROM chat_messages';
+const ATTACHMENT_SELECT =
+	'SELECT id, message_id, room_id, uploader_id, filename, mime, size, sha256, path, created_at, deleted_at FROM chat_attachments';
 
 /** Plain text only: drop control chars except newline, cap length. */
 function cleanBody(raw: string): string {
 	// eslint-disable-next-line no-control-regex
 	const stripped = raw.replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, '');
 	return stripped.trim().slice(0, CHAT_BODY_MAX);
+}
+
+function toAttachment(row: AttachmentRow): ChatAttachment {
+	return { id: row.id, name: row.filename, mime: row.mime, size: row.size };
 }
 
 function toMessage(row: MessageRow): ChatMessage {
@@ -94,6 +132,7 @@ function toMessage(row: MessageRow): ChatMessage {
 			displayName: row.display_name,
 			hasAvatar: row.has_avatar,
 			body: '',
+			attachments: [],
 			at: row.at,
 			editedAt: row.edited_at,
 			deletedAt: row.deleted_at
@@ -109,6 +148,7 @@ function toMessage(row: MessageRow): ChatMessage {
 		// Sealed bodies that fail to unseal (key rotation, tamper)
 		// render as empty rather than leaking ciphertext.
 		body: openSecret(row.body) ?? '',
+		attachments: row.attachments.map(toAttachment),
 		at: row.at,
 		editedAt: row.edited_at,
 		deletedAt: null
@@ -117,12 +157,15 @@ function toMessage(row: MessageRow): ChatMessage {
 
 export class ChatStore {
 	private readonly db: Db;
+	private readonly attachDir: string;
 
 	constructor(
 		db: Db | DatabaseSync,
-		private readonly users: UserStore
+		private readonly users: UserStore,
+		dir = dataDir()
 	) {
 		this.db = asDb(db);
+		this.attachDir = join(dir, 'chat-attachments');
 	}
 
 	// Last-activity timestamps for the REST fallback presence path.
@@ -169,14 +212,34 @@ export class ChatStore {
 		return briefs;
 	}
 
-	/** Attach author fields; rows from deleted users drop out, matching the old inner join. */
+	/** Live attachment rows grouped by message id, for message hydration. */
+	private async attachmentsFor(messageIds: number[]): Promise<Map<number, AttachmentRow[]>> {
+		const byMessage = new Map<number, AttachmentRow[]>();
+		const ids = [...new Set(messageIds)];
+		if (ids.length === 0) return byMessage;
+		const rows = (await this.db
+			.prepare(
+				`${ATTACHMENT_SELECT} WHERE deleted_at IS NULL AND message_id IN (${ids.map(() => '?').join(',')}) ORDER BY created_at`
+			)
+			.all(...ids)) as unknown as AttachmentRow[];
+		for (const r of rows) {
+			if (r.message_id === null) continue;
+			const list = byMessage.get(r.message_id) ?? [];
+			list.push(r);
+			byMessage.set(r.message_id, list);
+		}
+		return byMessage;
+	}
+
+	/** Attach author and file fields; rows from deleted users drop out, matching the old inner join. */
 	private async hydrateMessages(rows: RawMessageRow[]): Promise<MessageRow[]> {
 		const briefs = await this.userBriefs(rows.map((r) => r.user_id));
+		const attachments = await this.attachmentsFor(rows.map((r) => r.id));
 		const out: MessageRow[] = [];
 		for (const r of rows) {
 			const brief = briefs.get(r.user_id);
 			if (brief === undefined) continue;
-			out.push({ ...r, ...brief });
+			out.push({ ...r, ...brief, attachments: attachments.get(r.id) ?? [] });
 		}
 		return out;
 	}
@@ -219,6 +282,15 @@ export class ChatStore {
 				return b ? [{ ...m, ...b }] : [];
 			})
 			.sort((a, b) => a.username.localeCompare(b.username));
+	}
+
+	/**
+	 * Membership gate for routes that must reject before doing work
+	 * (uploads buffer the body; the check belongs ahead of that read).
+	 */
+	async assertMember(roomId: string, userId: number): Promise<void> {
+		const room = await this.requireRoom(roomId);
+		await this.requireMembership(room.id, userId);
 	}
 
 	async memberIds(roomId: string): Promise<number[]> {
@@ -264,7 +336,10 @@ export class ChatStore {
 				const msg = toMessage(joined);
 				preview = {
 					id: msg.id,
-					body: msg.deletedAt !== null ? '' : msg.body.slice(0, PREVIEW_LEN),
+					body:
+						msg.deletedAt !== null
+							? ''
+							: msg.body.slice(0, PREVIEW_LEN) || (msg.attachments[0]?.name ?? ''),
 					at: msg.at,
 					username: msg.username,
 					deleted: msg.deletedAt !== null
@@ -391,16 +466,41 @@ export class ChatStore {
 		return this.roomInfo(room, userId);
 	}
 
-	async send(roomId: string, userId: number, rawBody: string): Promise<ChatMessage> {
+	async send(
+		roomId: string,
+		userId: number,
+		rawBody: string,
+		attachmentIds: string[] = []
+	): Promise<ChatMessage> {
 		const room = await this.requireRoom(roomId);
 		await this.requireMembership(room.id, userId);
 		const body = cleanBody(rawBody);
-		if (!body) throw new ChatError(422, 'message is empty');
-		const r = await this.db
-			.prepare('INSERT INTO chat_messages (room_id, user_id, body, at) VALUES (?, ?, ?, ?)')
-			.run(room.id, userId, sealSecret(body), Date.now());
+		const ids = [...new Set(attachmentIds)];
+		if (ids.length > ATTACHMENTS_PER_MESSAGE) {
+			throw new ChatError(422, `at most ${ATTACHMENTS_PER_MESSAGE} attachments per message`);
+		}
+		if (!body && ids.length === 0) throw new ChatError(422, 'message is empty');
+		const messageId = await this.db.tx(async (tx) => {
+			const r = await tx
+				.prepare('INSERT INTO chat_messages (room_id, user_id, body, at) VALUES (?, ?, ?, ?)')
+				.run(room.id, userId, sealSecret(body), Date.now());
+			const mid = Number(r.lastInsertRowid);
+			// The conditional claim serializes double-submits: a second
+			// send referencing an already-claimed upload changes nothing
+			// and rolls the whole insert back with it.
+			const claim = tx.prepare(
+				'UPDATE chat_attachments SET message_id = ? WHERE id = ? AND room_id = ? AND uploader_id = ? AND message_id IS NULL AND deleted_at IS NULL'
+			);
+			for (const id of ids) {
+				const claimed = await claim.run(mid, id, room.id, userId);
+				if (Number(claimed.changes) !== 1) {
+					throw new ChatError(422, 'attachment is unavailable or already used');
+				}
+			}
+			return mid;
+		});
 		this.touch(userId);
-		const row = await this.messageRow(Number(r.lastInsertRowid));
+		const row = await this.messageRow(messageId);
 		if (!row) throw new Error('message insert failed');
 		return toMessage(row);
 	}
@@ -477,9 +577,18 @@ export class ChatStore {
 			throw new ChatError(403, 'only the author can delete a message');
 		}
 		if (row.deleted_at === null) {
-			await this.db
-				.prepare('UPDATE chat_messages SET deleted_at = ? WHERE id = ?')
-				.run(now, messageId);
+			await this.db.tx(async (tx) => {
+				await tx
+					.prepare('UPDATE chat_messages SET deleted_at = ? WHERE id = ?')
+					.run(now, messageId);
+				// Tombstone attachments with the message so downloads deny
+				// immediately; the files themselves are swept by prune.
+				await tx
+					.prepare(
+						'UPDATE chat_attachments SET deleted_at = ? WHERE message_id = ? AND deleted_at IS NULL'
+					)
+					.run(now, messageId);
+			});
 		}
 		const updated = await this.messageRow(messageId);
 		if (!updated) throw new Error('message delete failed');
@@ -515,15 +624,102 @@ export class ChatStore {
 			.run(room.id, targetId);
 	}
 
-	/** Drop soft-deleted message bodies past the retention window. */
+	/**
+	 * Stage an uploaded file. Returns the descriptor the client then
+	 * references by id in a send call. The upload is bound to the
+	 * uploader and room, and stays claimable until attached or swept.
+	 */
+	async uploadAttachment(
+		roomId: string,
+		userId: number,
+		file: { name: string; mime: string; data: Uint8Array }
+	): Promise<ChatAttachment> {
+		const room = await this.requireRoom(roomId);
+		await this.requireMembership(room.id, userId);
+		if (!CHAT_ATTACHMENT_MIMES.has(file.mime)) {
+			throw new ChatError(422, 'unsupported file type');
+		}
+		if (file.data.length === 0) throw new ChatError(422, 'file is empty');
+		if (file.data.length > CHAT_ATTACHMENT_MAX_BYTES) {
+			throw new ChatError(413, 'file exceeds 10 MB');
+		}
+		const name = cleanFilename(file.name);
+		const id = randomToken(12);
+		const key = attachmentKey(room.id, id, name);
+		const sha256 = createHash('sha256').update(file.data).digest('hex');
+		// A failed insert leaves an orphan file the stale-upload sweep
+		// reclaims.
+		writeAttachment(this.attachDir, key, file.data);
+		await this.db
+			.prepare(
+				`INSERT INTO chat_attachments (id, message_id, room_id, uploader_id, filename, mime, size, sha256, path, created_at)
+				 VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`
+			)
+			.run(id, room.id, userId, name, file.mime, file.data.length, sha256, key, Date.now());
+		return { id, name, mime: file.mime, size: file.data.length };
+	}
+
+	/**
+	 * Read an attachment for download. Membership on the owning room
+	 * gates access; tombstoned rows answer 410, missing files 404.
+	 */
+	async attachmentDownload(
+		id: string,
+		userId: number
+	): Promise<{ name: string; mime: string; data: Uint8Array }> {
+		const row = (await this.db.prepare(`${ATTACHMENT_SELECT} WHERE id = ?`).get(id)) as
+			AttachmentRow | undefined;
+		if (!row) throw new ChatError(404, 'unknown attachment');
+		await this.requireMembership(row.room_id, userId);
+		if (row.deleted_at !== null) throw new ChatError(410, 'attachment was deleted');
+		const data = readAttachment(this.attachDir, row.path);
+		if (data === null) throw new ChatError(404, 'attachment file is missing');
+		return { name: row.filename, mime: row.mime, data };
+	}
+
+	/**
+	 * Drop soft-deleted message bodies past the retention window, and
+	 * purge attachment rows/files that are tombstoned past the same
+	 * window, orphaned by a doomed message, or stale unattached uploads.
+	 */
 	async prune(now = Date.now()): Promise<number> {
-		return Number(
-			(
-				await this.db
-					.prepare('DELETE FROM chat_messages WHERE deleted_at IS NOT NULL AND deleted_at < ?')
-					.run(now - PRUNE_AGE_MS)
-			).changes
+		const cutoff = now - PRUNE_AGE_MS;
+		const stale = now - ATTACHMENT_STALE_MS;
+		const doomed = (
+			(await this.db
+				.prepare('SELECT id FROM chat_messages WHERE deleted_at IS NOT NULL AND deleted_at < ?')
+				.all(cutoff)) as unknown as { id: number }[]
+		).map((r) => r.id);
+		const doomedIn = doomed.map(() => '?').join(',');
+		const purgeRows = (await (doomed.length > 0
+			? this.db
+					.prepare(
+						`${ATTACHMENT_SELECT} WHERE (deleted_at IS NOT NULL AND deleted_at < ?) OR (message_id IS NULL AND created_at < ?) OR message_id IN (${doomedIn})`
+					)
+					.all(cutoff, stale, ...doomed)
+			: this.db
+					.prepare(
+						`${ATTACHMENT_SELECT} WHERE (deleted_at IS NOT NULL AND deleted_at < ?) OR (message_id IS NULL AND created_at < ?)`
+					)
+					.all(cutoff, stale))) as unknown as AttachmentRow[];
+		const purgeIds = purgeRows.map((r) => r.id);
+		await this.db.tx(async (tx) => {
+			if (purgeIds.length > 0) {
+				await tx
+					.prepare(
+						`DELETE FROM chat_attachments WHERE id IN (${purgeIds.map(() => '?').join(',')})`
+					)
+					.run(...purgeIds);
+			}
+			if (doomed.length > 0) {
+				await tx.prepare(`DELETE FROM chat_messages WHERE id IN (${doomedIn})`).run(...doomed);
+			}
+		});
+		removeAttachments(
+			this.attachDir,
+			purgeRows.map((r) => r.path)
 		);
+		return doomed.length;
 	}
 }
 

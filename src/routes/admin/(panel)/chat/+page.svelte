@@ -1,12 +1,22 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import { SvelteMap } from 'svelte/reactivity';
+	import { page } from '$app/state';
 	import {
 		ArrowLeft,
 		Check,
+		CheckCheck,
+		Copy,
+		Download,
+		FileText,
 		Hash,
+		Image as ImageIcon,
+		LoaderCircle,
+		LogOut,
 		MessageSquare,
+		Paperclip,
 		Pencil,
+		Search,
 		Send,
 		Trash,
 		UserPlus,
@@ -15,13 +25,16 @@
 	} from '@lucide/svelte';
 	import Modal from '$lib/components/admin/Modal.svelte';
 	import ConfirmDialog from '$lib/components/admin/ConfirmDialog.svelte';
+	import ContextMenu, { type CtxItem } from '$lib/components/admin/ContextMenu.svelte';
 	import Field from '$lib/components/admin/Field.svelte';
 	import ChatAvatar from '$lib/components/admin/ChatAvatar.svelte';
 	import { adminHref, api, errMessage } from '$lib/state/admin.svelte';
 	import { toast } from '$lib/state/toasts.svelte';
 	import { setChatUnread } from '$lib/state/chat.svelte';
-	import { relativeTime } from '$lib/utils/format';
+	import { notifyLocal } from '$lib/state/push-notify.svelte';
+	import { fmtBytes, relativeTime } from '$lib/utils/format';
 	import type {
+		ChatAttachment,
 		ChatMember,
 		ChatMessage,
 		ChatPeer,
@@ -71,18 +84,38 @@
 	let deleteTarget = $state<ChatMessage | null>(null);
 	let deleteOpen = $state(false);
 	let leaveOpen = $state(false);
+	// Room id the leave confirmation targets; null means the open room.
+	let leaveTargetId = $state<string | null>(null);
 	let busy = $state(false);
+	let memberFilter = $state('');
+	let dragOver = $state(false);
+	let menu = $state<{ x: number; y: number; items: CtxItem[] } | null>(null);
+	let lightbox = $state<{ url: string; name: string; size: number } | null>(null);
 
 	let listEl = $state<HTMLDivElement | null>(null);
 	let composerEl = $state<HTMLTextAreaElement | null>(null);
+	let fileInputEl = $state<HTMLInputElement | null>(null);
+	// Attachments staged for the next send; ids come from the upload API.
+	let pendingFiles = $state<ChatAttachment[]>([]);
+	// Local object URLs for staged image previews, keyed by attachment id.
+	const pendingBlobs = new SvelteMap<string, string>();
+	let uploading = $state(false);
 	let ws: WebSocket | null = null;
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
 	let retryTimer: ReturnType<typeof setTimeout> | null = null;
+	let clockTimer: ReturnType<typeof setInterval> | null = null;
 	let lastTypingSent = 0;
 	let destroyed = false;
+	// Ticks every 30s so relative timestamps age without a refresh.
+	let now = $state(Date.now());
 	// Highest message id already acknowledged per room, so markRead
 	// posts once per watermark instead of once per incoming frame.
 	const readSent = new SvelteMap<string, number>();
+	// Attachment previews come from fetch->blob because the download
+	// route serves content-disposition: attachment, which img cannot
+	// render. The map holds every object URL for revocation.
+	type Thumb = { state: 'loading' | 'err' } | { state: 'ok'; url: string };
+	const thumbs = new SvelteMap<string, Thumb>();
 
 	const openRoom = $derived(rooms.find((r) => r.id === openId) ?? null);
 
@@ -132,6 +165,15 @@
 	const memberCandidates = $derived(
 		openRoom ? peers.filter((p) => !openRoom.members.some((m) => m.id === p.id)) : []
 	);
+
+	const visibleMembers = $derived.by(() => {
+		if (!openRoom) return [];
+		const q = memberFilter.trim().toLowerCase();
+		if (!q) return openRoom.members;
+		return openRoom.members.filter(
+			(m) => m.username.toLowerCase().includes(q) || m.displayName.toLowerCase().includes(q)
+		);
+	});
 
 	const typingNames = $derived.by(() => {
 		if (!openId) return [];
@@ -243,19 +285,43 @@
 
 	async function markRead(): Promise<void> {
 		if (!openId || messages.length === 0) return;
-		const last = messages[messages.length - 1].id;
-		if ((readSent.get(openId) ?? 0) >= last) return;
-		readSent.set(openId, last);
+		await postRead(openId, messages[messages.length - 1].id);
+	}
+
+	// Read cursor for a room that may not be open: the rail preview id
+	// is the newest message the server knows about.
+	async function markReadRoom(room: ChatRoom): Promise<void> {
+		if (!room.preview) return;
+		await postRead(room.id, room.preview.id);
+	}
+
+	async function postRead(roomId: string, last: number): Promise<void> {
+		if ((readSent.get(roomId) ?? 0) >= last) return;
+		readSent.set(roomId, last);
 		try {
-			await api(`/chat/rooms/${openId}/read`, { body: { messageId: last } });
-			const room = rooms.find((r) => r.id === openId);
+			await api(`/chat/rooms/${roomId}/read`, { body: { messageId: last } });
+			const room = rooms.find((r) => r.id === roomId);
 			if (room) {
 				room.unread = 0;
 				syncUnread();
 			}
 		} catch {
-			readSent.delete(openId);
+			readSent.delete(roomId);
 		}
+	}
+
+	function clearPending(): void {
+		for (const url of pendingBlobs.values()) URL.revokeObjectURL(url);
+		pendingBlobs.clear();
+		pendingFiles = [];
+	}
+
+	function revokeThumbs(): void {
+		for (const t of thumbs.values()) {
+			if (t.state === 'ok') URL.revokeObjectURL(t.url);
+		}
+		thumbs.clear();
+		lightbox = null;
 	}
 
 	async function open(roomId: string): Promise<void> {
@@ -263,6 +329,8 @@
 		showRail = false;
 		editId = null;
 		draft = '';
+		memberFilter = '';
+		clearPending();
 		await loadMessages(roomId);
 		await markRead();
 		composerEl?.focus();
@@ -270,25 +338,92 @@
 
 	async function send(): Promise<void> {
 		const body = draft.trim();
-		if (!body || !openId || sending) return;
+		const attachmentIds = pendingFiles.map((f) => f.id);
+		if ((!body && attachmentIds.length === 0) || !openId || sending || uploading) return;
 		sending = true;
 		try {
 			if (wsLive && ws?.readyState === WebSocket.OPEN) {
-				ws.send(JSON.stringify({ type: 'send', room: openId, body }));
+				ws.send(JSON.stringify({ type: 'send', room: openId, body, attachments: attachmentIds }));
 			} else {
 				const r = await api<{ message: ChatMessage }>(`/chat/rooms/${openId}/messages`, {
-					body: { body }
+					body: { body, attachment_ids: attachmentIds }
 				});
 				mergeMessages([r.message]);
 				await tick();
 				scrollBottom();
 			}
 			draft = '';
+			clearPending();
 		} catch (err) {
 			toast('error', errMessage(err, 'send failed'));
 		} finally {
 			sending = false;
 		}
+	}
+
+	async function uploadFiles(files: FileList | null): Promise<void> {
+		if (!files || !openId) return;
+		uploading = true;
+		try {
+			for (const file of Array.from(files)) {
+				const r = await api<{ attachment: ChatAttachment }>(
+					`/chat/rooms/${openId}/attachments?filename=${encodeURIComponent(file.name)}`,
+					{ method: 'POST', rawBody: file }
+				);
+				pendingFiles = [...pendingFiles, r.attachment];
+				if (file.type.startsWith('image/')) {
+					pendingBlobs.set(r.attachment.id, URL.createObjectURL(file));
+				}
+			}
+		} catch (err) {
+			toast('error', errMessage(err, 'upload failed'));
+		} finally {
+			uploading = false;
+			if (fileInputEl) fileInputEl.value = '';
+		}
+	}
+
+	function removePending(id: string): void {
+		const url = pendingBlobs.get(id);
+		if (url) {
+			URL.revokeObjectURL(url);
+			pendingBlobs.delete(id);
+		}
+		pendingFiles = pendingFiles.filter((x) => x.id !== id);
+	}
+
+	function onComposerPaste(e: ClipboardEvent): void {
+		const files = e.clipboardData?.files;
+		if (files && files.length > 0) {
+			e.preventDefault();
+			void uploadFiles(files);
+		}
+	}
+
+	function hasDropFiles(e: DragEvent): boolean {
+		return e.dataTransfer?.types.includes('Files') ?? false;
+	}
+
+	function onDragOver(e: DragEvent): void {
+		if (!hasDropFiles(e)) return;
+		e.preventDefault();
+		dragOver = true;
+	}
+
+	// dragleave also fires between children; only clear when the
+	// pointer truly leaves the drop zone.
+	function onDragLeave(e: DragEvent): void {
+		if (!hasDropFiles(e)) return;
+		const to = e.relatedTarget;
+		const el = e.currentTarget as HTMLElement;
+		if (!(to instanceof Node) || !el.contains(to)) dragOver = false;
+	}
+
+	function onDrop(e: DragEvent): void {
+		if (!hasDropFiles(e)) return;
+		e.preventDefault();
+		dragOver = false;
+		void uploadFiles(e.dataTransfer?.files ?? null);
 	}
 
 	function onComposerKey(e: KeyboardEvent): void {
@@ -333,8 +468,10 @@
 			if (!document.hidden) void markRead();
 		}
 		if (m.userId !== me.id && (openId !== m.roomId || document.hidden)) {
-			const preview = m.body.length > 60 ? `${m.body.slice(0, 60)}...` : m.body;
+			const body = m.body || m.attachments[0]?.name || 'attachment';
+			const preview = body.length > 60 ? `${body.slice(0, 60)}...` : body;
 			toast('info', `${m.displayName || m.username}: ${preview}`);
+			if (document.hidden) notifyLocal(m.displayName || m.username, preview);
 		}
 	}
 
@@ -435,7 +572,7 @@
 	}
 
 	async function createRoom(): Promise<void> {
-		if (!roomName.trim() || roomPicks.length === 0 || busy) return;
+		if (!roomName.trim() || busy) return;
 		busy = true;
 		try {
 			const r = await api<{ room: ChatRoom }>('/chat/rooms', {
@@ -467,17 +604,18 @@
 		}
 	}
 
-	async function removeMember(target: number): Promise<void> {
-		if (!openId) return;
+	async function removeMember(roomId: string, target: number): Promise<void> {
 		try {
-			await api(`/chat/rooms/${openId}/members/${target}`, { method: 'DELETE' });
+			await api(`/chat/rooms/${roomId}/members/${target}`, { method: 'DELETE' });
 			if (target === me.id) {
-				rooms = rooms.filter((r) => r.id !== openId);
-				membersOpen = false;
-				openId = null;
-				showRail = true;
+				rooms = rooms.filter((r) => r.id !== roomId);
+				if (roomId === openId) {
+					membersOpen = false;
+					openId = null;
+					showRail = true;
+				}
 			} else {
-				const room = rooms.find((r) => r.id === openId);
+				const room = rooms.find((r) => r.id === roomId);
 				if (room) room.members = room.members.filter((m) => m.id !== target);
 			}
 		} catch (err) {
@@ -520,6 +658,119 @@
 		} finally {
 			deleteTarget = null;
 			deleteOpen = false;
+		}
+	}
+
+	function isImage(a: ChatAttachment): boolean {
+		return a.mime.startsWith('image/');
+	}
+
+	function loadThumb(id: string): void {
+		if (thumbs.has(id)) return;
+		thumbs.set(id, { state: 'loading' });
+		void fetch(adminHref(`/api/chat/attachments/${id}`))
+			.then(async (res) => {
+				if (!res.ok) throw new Error(`attachment ${res.status}`);
+				thumbs.set(id, { state: 'ok', url: URL.createObjectURL(await res.blob()) });
+			})
+			.catch(() => thumbs.set(id, { state: 'err' }));
+	}
+
+	function downloadAttachment(a: ChatAttachment): void {
+		const el = document.createElement('a');
+		el.href = adminHref(`/api/chat/attachments/${a.id}`);
+		el.download = a.name;
+		el.click();
+	}
+
+	async function copyBody(body: string): Promise<void> {
+		try {
+			await navigator.clipboard.writeText(body);
+			toast('success', 'Copied to clipboard');
+		} catch {
+			// clipboard is undefined on insecure origins
+			toast('error', 'could not copy');
+		}
+	}
+
+	function openMenu(e: MouseEvent, items: CtxItem[]): void {
+		if (items.length === 0) return;
+		e.preventDefault();
+		menu = { x: e.clientX, y: e.clientY, items };
+	}
+
+	function messageMenu(e: MouseEvent, m: ChatMessage): void {
+		const items: CtxItem[] = [];
+		if (m.deletedAt !== null || editId === m.id) return;
+		if (m.body) {
+			items.push({ label: 'Copy text', icon: Copy, action: () => copyBody(m.body) });
+		}
+		for (const a of m.attachments) {
+			items.push({
+				label: m.attachments.length === 1 ? 'Download attachment' : `Download ${a.name}`,
+				icon: Download,
+				action: () => {
+					downloadAttachment(a);
+				}
+			});
+		}
+		if (canEdit(m)) {
+			items.push({
+				label: 'Edit',
+				icon: Pencil,
+				action: () => {
+					editId = m.id;
+					editDraft = m.body;
+				}
+			});
+		}
+		if (canDelete(m)) {
+			items.push({
+				label: 'Delete',
+				icon: Trash,
+				danger: true,
+				action: () => {
+					deleteTarget = m;
+					deleteOpen = true;
+				}
+			});
+		}
+		openMenu(e, items);
+	}
+
+	function roomMenu(e: MouseEvent, room: ChatRoom): void {
+		const items: CtxItem[] = [
+			{
+				label: 'Open',
+				icon: MessageSquare,
+				disabled: room.id === openId,
+				action: () => open(room.id)
+			},
+			{
+				label: 'Mark read',
+				icon: CheckCheck,
+				disabled: !room.preview || room.unread === 0,
+				action: () => markReadRoom(room)
+			}
+		];
+		if (room.kind === 'room') {
+			items.push({
+				label: 'Leave room',
+				icon: LogOut,
+				danger: true,
+				action: () => {
+					leaveTargetId = room.id;
+					leaveOpen = true;
+				}
+			});
+		}
+		openMenu(e, items);
+	}
+
+	function onWinKey(e: KeyboardEvent): void {
+		if (e.key === 'Escape' && lightbox) {
+			e.preventDefault();
+			lightbox = null;
 		}
 	}
 
@@ -568,10 +819,42 @@
 		return new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 	}
 
+	// Deep link from search/palette: /chat?room=<id>. Tracked so it also
+	// fires when the query changes while already on this page.
+	let appliedRoomParam = '';
+	$effect(() => {
+		const want = page.url.searchParams.get('room') ?? '';
+		if (want && want !== appliedRoomParam && rooms.some((r) => r.id === want)) {
+			appliedRoomParam = want;
+			void open(want);
+		}
+	});
+
+	// Kick off thumbnail fetches for image attachments in view.
+	$effect(() => {
+		for (const m of messages) {
+			for (const a of m.attachments) {
+				if (isImage(a)) loadThumb(a.id);
+			}
+		}
+	});
+
+	// Object URLs belong to the open room. The cleanup runs before the
+	// effect re-runs and on destroy, so thumbs and staged blobs are
+	// released on every room switch and on unmount.
+	$effect(() => {
+		if (openId === null) return;
+		return () => {
+			revokeThumbs();
+			clearPending();
+		};
+	});
+
 	onMount(() => {
 		void loadRooms();
 		void loadPeers();
 		connect();
+		clockTimer = setInterval(() => (now = Date.now()), 30_000);
 		pollTimer = setInterval(() => {
 			if (!wsLive) {
 				void loadRooms();
@@ -586,13 +869,20 @@
 		return () => {
 			destroyed = true;
 			if (pollTimer) clearInterval(pollTimer);
+			if (clockTimer) clearInterval(clockTimer);
 			if (retryTimer) clearTimeout(retryTimer);
 			ws?.close();
+			revokeThumbs();
+			clearPending();
 		};
 	});
 </script>
 
-<div class="card flex h-[calc(100dvh-10rem)] overflow-hidden md:h-[calc(100dvh-6rem)]">
+<svelte:window onkeydown={onWinKey} />
+
+<div
+	class="-mx-4 -mb-16 flex h-[calc(100dvh-5rem)] overflow-hidden border-t border-edge md:-mx-8 md:h-[calc(100dvh-2rem)]"
+>
 	<!-- Conversation rail -->
 	<aside class="w-72 shrink-0 flex-col border-r border-edge {showRail ? 'flex' : 'hidden'} md:flex">
 		<div class="flex items-center gap-2 border-b border-edge px-3 py-3">
@@ -649,6 +939,9 @@
 							? 'bg-panel'
 							: 'hover:bg-panel/50'}"
 						onclick={() => void open(room.id)}
+						oncontextmenu={(e) => {
+							roomMenu(e, room);
+						}}
 					>
 						<span class="flex shrink-0 -space-x-2.5">
 							{#if room.kind === 'dm'}
@@ -693,7 +986,7 @@
 								<span class="truncate text-sm font-medium text-fg">{title}</span>
 								{#if room.preview}
 									<span class="shrink-0 text-[10px] text-faint"
-										>{relativeTime(room.preview.at)}</span
+										>{relativeTime(room.preview.at, now)}</span
 									>
 								{/if}
 							</span>
@@ -724,7 +1017,13 @@
 	</aside>
 
 	<!-- Conversation pane -->
-	<section class="flex min-w-0 flex-1 flex-col {showRail ? 'hidden md:flex' : 'flex'}">
+	<section
+		class="relative flex min-w-0 flex-1 flex-col {showRail ? 'hidden md:flex' : 'flex'}"
+		aria-label="Conversation"
+		ondragover={onDragOver}
+		ondragleave={onDragLeave}
+		ondrop={onDrop}
+	>
 		{#if openRoom}
 			{@const others = openRoom.members.filter((m) => m.id !== me.id)}
 			<header class="flex items-center gap-3 border-b border-edge px-3 py-2.5 md:px-4">
@@ -768,7 +1067,12 @@
 					</p>
 				</div>
 				{#if openRoom.kind === 'room'}
-					<button class="btn btn-ghost btn-sm" title="Members" onclick={() => (membersOpen = true)}>
+					<button
+						class="btn btn-ghost btn-sm {membersOpen ? 'bg-panel text-fg' : ''}"
+						title="Members"
+						aria-pressed={membersOpen}
+						onclick={() => (membersOpen = !membersOpen)}
+					>
 						<Users class="size-4" />
 					</button>
 				{/if}
@@ -873,8 +1177,63 @@
 												class="rounded-2xl px-3 py-1.5 text-sm leading-relaxed {own
 													? 'bg-accent/15 text-fg'
 													: 'bg-panel text-fg'}"
+												role="article"
+												oncontextmenu={(e) => {
+													messageMenu(e, m);
+												}}
 											>
-												<p class="whitespace-pre-wrap break-words">{m.body}</p>
+												{#if m.body}<p class="whitespace-pre-wrap break-words">{m.body}</p>{/if}
+												{#if m.attachments.length > 0}
+													{@const imgs = m.attachments.filter(
+														(a) => isImage(a) && thumbs.get(a.id)?.state !== 'err'
+													)}
+													{@const files = m.attachments.filter(
+														(a) => !isImage(a) || thumbs.get(a.id)?.state === 'err'
+													)}
+													{#if imgs.length > 0}
+														<div
+															class="{m.body ? 'mt-1.5' : ''} grid gap-1.5 {imgs.length === 1
+																? 'max-w-[280px]'
+																: 'grid-cols-2'}"
+														>
+															{#each imgs as a (a.id)}
+																{@const t = thumbs.get(a.id)}
+																{#if t?.state === 'ok'}
+																	<button
+																		type="button"
+																		class="cursor-zoom-in overflow-hidden rounded-lg border border-edge"
+																		aria-label="Preview {a.name}"
+																		onclick={() =>
+																			(lightbox = { url: t.url, name: a.name, size: a.size })}
+																	>
+																		<img
+																			src={t.url}
+																			alt={a.name}
+																			loading="lazy"
+																			class="{imgs.length === 1
+																				? 'max-h-64'
+																				: 'h-28'} w-full object-cover"
+																		/>
+																	</button>
+																{:else}
+																	<div
+																		class="{imgs.length === 1
+																			? 'h-40'
+																			: 'h-28'} animate-pulse rounded-lg bg-panel"
+																	></div>
+																{/if}
+															{/each}
+														</div>
+													{/if}
+													{#if files.length > 0}
+														<div class="{m.body || imgs.length > 0 ? 'mt-1.5' : ''} space-y-1">
+															{#each files as a (a.id)}
+																<!-- eslint-disable-next-line @typescript-eslint/no-confusing-void-expression -- render tags on locally declared snippets type as void -->
+																{@render fileChip(a)}
+															{/each}
+														</div>
+													{/if}
+												{/if}
 												{#if m.editedAt !== null}
 													<span class="mt-0.5 block text-[10px] text-faint"
 														>edited {fmtTime(m.editedAt)}</span
@@ -917,7 +1276,58 @@
 			</div>
 
 			<footer class="border-t border-edge px-3 py-2.5 md:px-4">
+				{#if pendingFiles.length > 0}
+					<div class="mb-2 flex flex-wrap gap-1.5">
+						{#each pendingFiles as f (f.id)}
+							{@const blob = pendingBlobs.get(f.id)}
+							{#if blob}
+								<span class="relative">
+									<img
+										src={blob}
+										alt={f.name}
+										class="size-14 rounded-lg border border-edge object-cover"
+									/>
+									<button
+										type="button"
+										class="absolute -right-1.5 -top-1.5 rounded-full border border-edge bg-raised p-0.5 text-faint transition-colors hover:text-fg"
+										aria-label="Remove attachment"
+										onclick={() => {
+											removePending(f.id);
+										}}
+									>
+										<X class="size-3" />
+									</button>
+								</span>
+							{:else}
+								<span class="chip">
+									{f.name}
+									<span class="text-faint">{fmtBytes(f.size)}</span>
+									<button
+										class="-mr-1 rounded-full p-0.5 text-faint hover:text-fg"
+										aria-label="Remove attachment"
+										onclick={() => {
+											removePending(f.id);
+										}}
+									>
+										<X class="size-3" />
+									</button>
+								</span>
+							{/if}
+						{/each}
+					</div>
+				{/if}
 				<div class="flex items-end gap-2">
+					<button
+						class="btn btn-ghost shrink-0 !px-2"
+						aria-label="Attach files"
+						title="Attach files"
+						disabled={uploading}
+						onclick={() => fileInputEl?.click()}
+					>
+						{#if uploading}<LoaderCircle class="size-4 animate-spin" />{:else}<Paperclip
+								class="size-4"
+							/>{/if}
+					</button>
 					<textarea
 						bind:this={composerEl}
 						class="input field-sizing-content max-h-36 flex-1 resize-none"
@@ -927,31 +1337,47 @@
 						aria-label="Message"
 						bind:value={draft}
 						onkeydown={onComposerKey}
-						oninput={onComposerInput}></textarea>
+						oninput={onComposerInput}
+						onpaste={onComposerPaste}></textarea>
+					{#if draft.length > BODY_MAX - 500}
+						<span
+							class="shrink-0 self-center text-[10px] {draft.length >= BODY_MAX
+								? 'text-down-fg'
+								: 'text-faint'}">{draft.length}/{BODY_MAX}</span
+						>
+					{/if}
 					<button
 						class="btn btn-primary shrink-0"
-						disabled={!draft.trim() || sending}
+						disabled={(!draft.trim() && pendingFiles.length === 0) || sending || uploading}
 						aria-label="Send"
 						onclick={() => void send()}
 					>
 						<Send class="size-4" />
 					</button>
 				</div>
-				<div class="mt-1 flex items-center justify-between text-[10px] text-faint">
-					<span>{wsLive ? 'live' : 'polling'}</span>
-					{#if draft.length > BODY_MAX - 500}
-						<span class={draft.length >= BODY_MAX ? 'text-down-fg' : ''}
-							>{draft.length}/{BODY_MAX}</span
-						>
-					{/if}
-				</div>
+				<input
+					bind:this={fileInputEl}
+					type="file"
+					class="hidden"
+					multiple
+					onchange={(e) => void uploadFiles(e.currentTarget.files)}
+				/>
 			</footer>
+			{#if dragOver}
+				<div
+					class="pointer-events-none absolute inset-0 z-10 flex items-end justify-center border-2 border-dashed border-accent/50 bg-accent/5 p-6"
+				>
+					<span class="rounded-lg border border-edge bg-raised px-3 py-1.5 text-xs text-muted">
+						Drop files to attach
+					</span>
+				</div>
+			{/if}
 		{:else}
 			<div class="hidden h-full flex-col items-center justify-center text-center md:flex">
 				<MessageSquare class="size-10 text-faint" />
 				<p class="mt-4 text-sm font-medium text-muted">Pick a conversation</p>
 				<p class="mt-1 max-w-xs text-xs text-faint">
-					Internal chat for the ops team. Bodies are encrypted at rest on this server; it is not
+					Internal chat for the ops team. Bodies are encrypted at rest on this server. It is not
 					end-to-end encryption.
 				</p>
 				<div class="mt-5 flex gap-2">
@@ -965,6 +1391,94 @@
 			</div>
 		{/if}
 	</section>
+
+	<!-- Members sidebar -->
+	{#if openRoom && membersOpen}
+		<button
+			class="fixed inset-0 z-40 bg-black/50 lg:hidden"
+			aria-label="Close members"
+			onclick={() => (membersOpen = false)}
+		></button>
+		<aside
+			class="fixed inset-y-0 right-0 z-50 flex w-64 flex-col border-l border-edge bg-raised lg:static lg:z-auto"
+			aria-label="Members"
+		>
+			<div class="flex items-center justify-between border-b border-edge px-3 py-2.5">
+				<p class="text-xs font-semibold tracking-wide text-muted uppercase">
+					Members · {openRoom.members.length}
+				</p>
+				<button
+					class="btn btn-ghost btn-sm !p-1.5"
+					aria-label="Close members"
+					onclick={() => (membersOpen = false)}
+				>
+					<X class="size-4" />
+				</button>
+			</div>
+			<div class="border-b border-edge px-3 py-2">
+				<div class="relative">
+					<input
+						class="input py-1.5 pl-8 text-xs"
+						placeholder="Search members"
+						bind:value={memberFilter}
+						aria-label="Search members"
+					/>
+					<Search class="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-faint" />
+				</div>
+			</div>
+			<ul class="thin-scroll flex-1 divide-y divide-edge overflow-y-auto">
+				{#each visibleMembers as m (m.id)}
+					<li class="flex items-center gap-3 px-3 py-2.5">
+						<ChatAvatar
+							userId={m.id}
+							name={m.displayName || m.username}
+							hasAvatar={m.hasAvatar}
+							presence={presenceOf(m.id)}
+							size="size-8"
+						/>
+						<span class="min-w-0 flex-1">
+							<span class="block truncate text-sm text-fg">{m.displayName || m.username}</span>
+							<span class="block truncate text-xs text-faint">
+								{m.username}
+								{#if m.id === openRoom.createdBy}· creator{/if}
+								{#if m.id === me.id}· you{/if}
+							</span>
+						</span>
+						<span class="text-xs capitalize text-faint">{presenceOf(m.id)}</span>
+						{#if m.id === me.id}
+							<button
+								class="btn btn-ghost btn-sm text-down-fg"
+								onclick={() => {
+									leaveTargetId = null;
+									leaveOpen = true;
+								}}>Leave</button
+							>
+						{:else if openRoom.createdBy === me.id || canModerate}
+							<button
+								class="btn btn-ghost btn-sm text-down-fg"
+								onclick={() => void removeMember(openRoom.id, m.id)}>Remove</button
+							>
+						{/if}
+					</li>
+				{:else}
+					<li class="px-3 py-6 text-center text-xs text-faint">No members match.</li>
+				{/each}
+			</ul>
+			{#if memberCandidates.length > 0}
+				<div class="flex items-center gap-2 border-t border-edge p-3">
+					<select class="input flex-1 text-xs" bind:value={addPick} aria-label="Add member">
+						<option value={0}>Add member...</option>
+						{#each memberCandidates as p (p.id)}
+							<option value={p.id}>{p.displayName || p.username}</option>
+						{/each}
+					</select>
+					<button class="btn btn-sm" disabled={!addPick} onclick={() => void addMember()}
+						>Add</button
+					>
+				</div>
+			{/if}
+		</aside>
+	{/if}
 </div>
 
 <!-- New DM modal -->
@@ -1006,13 +1520,20 @@
 		<Field label="Room name" required>
 			<input class="input" bind:value={roomName} maxlength={80} placeholder="ops-war-room" />
 		</Field>
-		<Field label="Members" hint="You are added automatically.">
+		<Field label="Members" hint="Optional. You are added automatically, others can join later.">
 			<div class="max-h-56 space-y-1 overflow-y-auto rounded-lg border border-edge p-2">
 				{#each peers as p (p.id)}
-					<label
-						class="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-panel/50"
+					{@const on = roomPicks.includes(p.id)}
+					<button
+						type="button"
+						class="flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors {on
+							? 'bg-accent/10'
+							: 'hover:bg-panel/50'}"
+						aria-pressed={on}
+						onclick={() => {
+							roomPicks = on ? roomPicks.filter((x) => x !== p.id) : [...roomPicks, p.id];
+						}}
 					>
-						<input type="checkbox" bind:group={roomPicks} value={p.id} />
 						<ChatAvatar
 							userId={p.id}
 							name={p.displayName || p.username}
@@ -1021,7 +1542,14 @@
 						/>
 						<span class="truncate text-sm text-fg">{p.displayName || p.username}</span>
 						<span class="ml-auto text-xs text-faint">{p.username}</span>
-					</label>
+						<span
+							class="flex size-4.5 shrink-0 items-center justify-center rounded-full border transition-colors {on
+								? 'border-accent bg-accent text-bg'
+								: 'border-edge text-transparent'}"
+						>
+							<Check class="size-3" />
+						</span>
+					</button>
 				{:else}
 					<p class="px-2 py-3 text-xs text-faint">No other enabled users.</p>
 				{/each}
@@ -1031,7 +1559,7 @@
 			<button class="btn" onclick={() => (newRoomOpen = false)}>Cancel</button>
 			<button
 				class="btn btn-primary"
-				disabled={!roomName.trim() || roomPicks.length === 0 || busy}
+				disabled={!roomName.trim() || busy}
 				onclick={() => void createRoom()}
 			>
 				Create room
@@ -1039,55 +1567,6 @@
 		</div>
 	</div>
 </Modal>
-
-<!-- Members modal -->
-{#if openRoom}
-	<Modal bind:open={membersOpen} title="Members of {roomTitle(openRoom)}">
-		<ul class="divide-y divide-edge">
-			{#each openRoom.members as m (m.id)}
-				<li class="flex items-center gap-3 py-2.5">
-					<ChatAvatar
-						userId={m.id}
-						name={m.displayName || m.username}
-						hasAvatar={m.hasAvatar}
-						presence={presenceOf(m.id)}
-						size="size-8"
-					/>
-					<span class="min-w-0 flex-1">
-						<span class="block truncate text-sm text-fg">{m.displayName || m.username}</span>
-						<span class="block truncate text-xs text-faint">
-							{m.username}
-							{#if m.id === openRoom.createdBy}· creator{/if}
-							{#if m.id === me.id}· you{/if}
-						</span>
-					</span>
-					<span class="text-xs capitalize text-faint">{presenceOf(m.id)}</span>
-					{#if m.id === me.id}
-						<button class="btn btn-ghost btn-sm text-down-fg" onclick={() => (leaveOpen = true)}
-							>Leave</button
-						>
-					{:else if openRoom.createdBy === me.id || canModerate}
-						<button
-							class="btn btn-ghost btn-sm text-down-fg"
-							onclick={() => void removeMember(m.id)}>Remove</button
-						>
-					{/if}
-				</li>
-			{/each}
-		</ul>
-		{#if memberCandidates.length > 0}
-			<div class="mt-4 flex items-center gap-2 border-t border-edge pt-4">
-				<select class="input w-auto flex-1 text-xs" bind:value={addPick} aria-label="Add member">
-					<option value={0}>Add member...</option>
-					{#each memberCandidates as p (p.id)}
-						<option value={p.id}>{p.displayName || p.username}</option>
-					{/each}
-				</select>
-				<button class="btn btn-sm" disabled={!addPick} onclick={() => void addMember()}>Add</button>
-			</div>
-		{/if}
-	</Modal>
-{/if}
 
 <ConfirmDialog
 	bind:open={deleteOpen}
@@ -1106,6 +1585,58 @@
 	danger
 	onconfirm={() => {
 		leaveOpen = false;
-		void removeMember(me.id);
+		const roomId = leaveTargetId ?? openId;
+		leaveTargetId = null;
+		if (roomId) void removeMember(roomId, me.id);
 	}}
 />
+
+{#snippet fileChip(a: ChatAttachment)}
+	<a
+		href={adminHref(`/api/chat/attachments/${a.id}`)}
+		class="flex items-center gap-2 rounded-lg border border-edge bg-bg/40 px-2 py-1.5 text-xs transition-colors hover:border-accent/40"
+		download
+	>
+		{#if isImage(a)}
+			<ImageIcon class="size-3.5 shrink-0 text-faint" />
+		{:else}
+			<FileText class="size-3.5 shrink-0 text-faint" />
+		{/if}
+		<span class="min-w-0 flex-1 truncate">{a.name}</span>
+		<span class="shrink-0 text-faint">{fmtBytes(a.size)}</span>
+	</a>
+{/snippet}
+
+{#if menu}
+	{#key menu}
+		<ContextMenu x={menu.x} y={menu.y} items={menu.items} onclose={() => (menu = null)} />
+	{/key}
+{/if}
+
+{#if lightbox}
+	<div
+		class="animate-fade-in fixed inset-0 z-[90] flex items-center justify-center"
+		role="dialog"
+		aria-modal="true"
+		aria-label="Image preview"
+	>
+		<button
+			type="button"
+			class="absolute inset-0 cursor-zoom-out bg-black/80"
+			aria-label="Close preview"
+			onclick={() => (lightbox = null)}
+		></button>
+		<figure
+			class="pointer-events-none relative z-10 flex max-h-full max-w-5xl flex-col items-center gap-3"
+		>
+			<img
+				src={lightbox.url}
+				alt={lightbox.name}
+				class="max-h-[82vh] max-w-full rounded-lg object-contain shadow-2xl"
+			/>
+			<figcaption class="text-xs text-faint">
+				{lightbox.name} · {fmtBytes(lightbox.size)}
+			</figcaption>
+		</figure>
+	</div>
+{/if}
