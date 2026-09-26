@@ -9,7 +9,21 @@ strictDepBuilds: true
 # Nothing in the dependency tree legitimately needs build scripts.
 # esbuild/rollup/lighthouse-style optional platform binaries ship as
 # optionalDependencies and do not require postinstall.
-onlyBuiltDependencies: []
+# allowBuilds is the pnpm 10.26+ spelling of onlyBuiltDependencies.
+allowBuilds: {}
+# Transitive deps may only resolve from the registry: no git, tarball, or
+# link specifiers below the root, where they would bypass registry
+# scanning. Direct deps in package.json are still free to use them.
+blockExoticSubdeps: true
+# Fail the install when a package's trust evidence drops versus earlier
+# releases (trusted-publisher provenance downgraded to provenance-only or
+# to nothing), which is what a hijacked maintainer account looks like.
+trustPolicy: no-downgrade
+# chokidar@4.0.3 (via svelte-check) predates npm provenance so it always
+# reads as a downgrade against its newer releases. Exempt that exact
+# version only; any newer chokidar is still checked.
+trustPolicyExclude:
+  - chokidar@4.0.3
 
 # cookie <0.7.0 ships in @sveltejs/kit's transitive tree and dependabot
 # cannot bump it; pin the fixed line. cookie 1.x/2.x renamed the

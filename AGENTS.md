@@ -48,8 +48,10 @@ deploy-pipeline, safe-breakdown, security-audit, ui-standards), and
 
 ## Conventions
 
-- pnpm-workspace.yaml enforces minimumReleaseAge=7d and blocks install
-  scripts; prefer dependency versions published at least a week ago
+- pnpm 12 is pinned via packageManager; pnpm-workspace.yaml enforces
+  minimumReleaseAge=7d, blocks dep build scripts (allowBuilds) and
+  exotic transitive deps, and fails on trust downgrades; prefer
+  dependency versions published at least a week ago
 - typescript stays on 6.x for svelte-check/typescript-eslint; tsgo is a sidecar
 - `--breakpoint-rail` (72rem) in app.css drives the two-column public
   layout: past incidents pin as a sticky aside above it, stack below

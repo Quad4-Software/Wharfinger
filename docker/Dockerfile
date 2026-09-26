@@ -5,7 +5,7 @@ ARG NODE_IMAGE=node:26.8.2-alpine3.24@sha256:ef24c5053d50fdc3e4e56eb4e7ddb786187
 # ---------- deps: install all dependencies with a cached pnpm store ----------
 FROM ${NODE_IMAGE} AS deps
 # Node 26 no longer ships corepack; install the pinned pnpm directly.
-RUN npm install -g pnpm@11.24.0 && npm cache clean --force
+RUN npm install -g pnpm@12.6.0 && npm cache clean --force
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
