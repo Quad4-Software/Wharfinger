@@ -49,4 +49,4 @@ cd agent && go test ./...
 
 ## License
 
-0BSD. Do what you want.
+QSL-1.0-0BSD. See [LICENSE](LICENSE).

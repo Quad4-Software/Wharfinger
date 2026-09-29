@@ -2,7 +2,7 @@
 	"name": "wharfinger",
 	"version": "0.1.0",
 	"description": "Self-hosted ops platform: monitoring, status pages, deployments, and agents",
-	"license": "0BSD",
+	"license": "QSL-1.0-0BSD",
 	"type": "module",
 	"packageManager": "pnpm@12.6.0",
 	"engines": {

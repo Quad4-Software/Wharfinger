@@ -20,7 +20,7 @@ RUN pnpm run build
 FROM ${NODE_IMAGE} AS runtime
 LABEL org.opencontainers.image.title="wharfinger" \
       org.opencontainers.image.description="Self-hosted ops platform: monitoring, status pages, deployments, and agents" \
-      org.opencontainers.image.licenses="0BSD" \
+      org.opencontainers.image.licenses="QSL-1.0-0BSD" \
       org.opencontainers.image.source="https://github.com/Quad4-Software/Wharfinger"
 ENV NODE_ENV=production \
     WHARFINGER_CONFIG=/etc/wharfinger/wharfinger.toml \
